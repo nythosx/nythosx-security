@@ -26,6 +26,18 @@ Isang command lang:
 python run.py auto https://target.example.com --auto-baseline
 ```
 
+O gamitin ang **web UI** — isang URL input lang sa gitna:
+
+```cmd
+python run.py web
+```
+
+Buksan ang `http://127.0.0.1:8900`, ilagay ang target URL, at pipindutin ang
+**Analyze & Scan**. Pag-aaralan ng system ang link (framework detection, API
+discovery, JS crawl, auto-login) tapos ie-execute ang buong scan at ipapakita
+ang findings, counts, at ang engine log. Naka-bind lang sa `127.0.0.1` at
+**ROE-enforced** — tatanggihan ang URL na wala sa `configs/roe.yaml` scope.
+
 ---
 
 ## Architecture
@@ -106,6 +118,7 @@ python run.py auto https://target.example.com --auto-baseline
 | `xss.py`             | **NEW** — blind/reflected XSS probe (OOB + real browser exec)      |
 | `combo.py`           | **NEW** — combination explorer (pairwise + outlier detection)      |
 | `smuggle.py`         | **NEW** — HTTP smuggling timing probe (non-destructive CL.TE/TE.CL) |
+| `webui.py`           | **NEW** — local web dashboard (single URL input → study → scan)    |
 | `util.py`            | `safe_name`, atomic writes                                         |
 | `session.py`         | **DEPRECATED** — raises `ImportError` on import                    |
 
@@ -266,6 +279,7 @@ python run.py auto https://target.example.com --auto-baseline
 ### CLI
 
 ```
+web           Launch local web UI (single URL input → study → scan)
 auto          Full pipeline (--auto-baseline available)
 adapters      List framework adapters
 enumerate     Route enumeration
@@ -473,7 +487,7 @@ Expected: `401 {"message":"Unauthenticated"}` — hindi 860 KB HTML.
 
 ### Phase 12
 
-- [ ] Web UI dashboard
+- [x] Web UI dashboard — `engine/webui.py` + `web` command (centered URL input)
 - [ ] Multi-target campaigns
 - [ ] Continuous monitoring mode
 
@@ -638,6 +652,7 @@ sec-checker/
 │   ├── xss.py                   Blind/reflected XSS probe
 │   ├── combo.py                 Combination explorer
 │   ├── smuggle.py               HTTP smuggling timing probe
+│   ├── webui.py                 Local web dashboard
 │   ├── util.py                  safe_name, atomic writes
 │   ├── ratelimit.py             token bucket (+ shared registry)
 │   └── session.py               DEPRECATED stub
@@ -673,6 +688,7 @@ sec-checker/
 │   ├── test_xss.py              blind/reflected XSS via OOB + browser
 │   ├── test_combo.py            pairwise coverage + outlier detection
 │   ├── test_smuggle.py          CL.TE/TE.CL timing differential
+│   ├── test_webui.py            web UI: HTML, ROE block, job flow
 │   └── test_config_keys.py      evidence + report config keys
 ├── evidence/                    (gitignored)
 ├── findings/                    (gitignored)
@@ -804,7 +820,7 @@ python -m playwright install chromium
 python run.py --version            # sec-checker 1.2.0
 python run.py validate             # 27 OK, 0 FAIL
 python run.py adapters             # 11 adapters
-python -m pytest tests/ -q         # 81 passed
+python -m pytest tests/ -q         # 87 passed
 python a.py                        # ROE audit: CLEAN, 20/20 guard tests
 ```
 
@@ -917,7 +933,7 @@ Before opening a PR, Claude Code should be able to check off:
 
 - [x] `python run.py --version` prints `1.2.0`
 - [x] `python run.py validate` returns 27 OK, 0 FAIL
-- [x] `python -m pytest tests/ -q` returns 81 passed
+- [x] `python -m pytest tests/ -q` returns 87 passed
 - [x] `python a.py` returns CLEAN and 20/20 guard tests
 - [ ] `python run.py auto http://localhost:3000 --auto-baseline` completes without worker errors
 - [x] `python run.py report ... --format sarif` produces valid JSON that passes `jsonschema` validation (see `test_sarif_output_is_schema_valid`)

@@ -603,6 +603,36 @@ def cmd_report(args):
     console.print(f"[green]Report:[/green] {path}")
 
 
+def cmd_web(args):
+    host = "127.0.0.1"
+    port = 8900
+    i = 0
+    while i < len(args):
+        if args[i] == "--port" and i + 1 < len(args):
+            port = int(args[i + 1])
+            i += 2
+        elif args[i] == "--host" and i + 1 < len(args):
+            host = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    from . import webui
+    httpd = webui.serve(host=host, port=port)
+    url = f"http://{host}:{port}"
+    console.print(f"[bold cyan]sec-checker web UI[/bold cyan]")
+    console.print(f"  Open: [green]{url}[/green]")
+    console.print(f"  [dim]Enter a target URL in the page. ROE scope still applies "
+                  f"(configs/roe.yaml).[/dim]")
+    console.print(f"  [dim]Ctrl+C to stop.[/dim]")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopping web UI...[/yellow]")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def cmd_smuggle(args):
     if not args:
         console.print("[red]Usage: smuggle <target_url> [--timeout N] "
@@ -950,6 +980,7 @@ def cmd_help(args):
     console.print("[bold cyan]sec-checker MVP[/bold cyan]")
     console.print()
     console.print("[bold]Main[/bold]")
+    console.print("  web [--port N]                    Launch web UI (single URL input)")
     console.print("  auto <url>                        Full auto-discovery + scan")
     console.print("  adapters                          List framework adapters")
     console.print()
@@ -1010,6 +1041,7 @@ COMMANDS = {
     "xss": cmd_xss,
     "explore": cmd_explore,
     "smuggle": cmd_smuggle,
+    "web": cmd_web,
     "history": cmd_history,
     "targets": cmd_targets,
     "help": cmd_help,
