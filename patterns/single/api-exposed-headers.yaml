@@ -1,0 +1,29 @@
+id: api-exposed-headers
+name: API Disclosure Headers
+severity: low
+tags: [info-disclosure, wstg-info-02, cwe-200]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: header_value_match
+    header: X-Powered-By
+    regex: "(PHP|Laravel|Symfony|ASP\\.NET)"
+    verdict: SUSPICIOUS
+  - type: header_value_match
+    header: Server
+    regex: "Apache/[0-9]|nginx/[0-9]|LiteSpeed"
+    verdict: SUSPICIOUS
+  - type: header_value_match
+    header: X-Debug-Token
+    regex: ".+"
+    verdict: VULNERABLE

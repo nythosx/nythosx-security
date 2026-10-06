@@ -1,0 +1,66 @@
+id: aspnet
+name: ASP.NET (.NET)
+priority: 85
+
+detect:
+  headers_any:
+    X-AspNet-Version:
+      - ".+"
+    X-AspNetMvc-Version:
+      - ".+"
+    Server:
+      - "Kestrel"
+      - "IIS"
+  cookies_any:
+    - "ASP.NET_SessionId"
+    - ".AspNetCore.Session"
+    - ".AspNetCore.Identity.Application"
+  html_contains:
+    - "__RequestVerificationToken"
+    - "aspnet"
+  meta_generator: ""
+
+runtime_config:
+  html_patterns:
+    - 'window\.__API__\s*=\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+  json_scripts: []
+
+auth:
+  login_paths:
+    - /api/auth/login
+    - /Account/Login
+    - /api/login
+    - /login
+  login_fields:
+    - Email
+    - UserName
+    - username
+    - email
+  token_paths:
+    - token
+    - access_token
+    - data.token
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/me
+    - /api/user
+    - /api/users/me
+  health:
+    - /health
+    - /healthz
+
+ports:
+  - 5000
+  - 5001
+  - 8080
+  - 44300
+
+api_hints:
+  - api
+  - auth
+  - account
+  - me
+  - user

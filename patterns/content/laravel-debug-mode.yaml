@@ -1,0 +1,32 @@
+id: laravel-debug-mode
+name: Laravel Debug Mode Enabled (Error Page Disclosure)
+severity: critical
+tags: [debug, info-disclosure, wstg-conf-02, cwe-209, laravel]
+endpoint_suffix: /me
+ignore_default_auth: true
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: no_auth_probe
+    no_auth: true
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: debug_signature
+    min_size: 100000
+    signatures:
+      - Laravel
+      - stack trace
+      - vendor
+      - Ignition
+      - Whoops
+      - bootstrap/app
+      - app.php
+      - /storage/
+    verdict: VULNERABLE

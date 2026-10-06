@@ -1,0 +1,61 @@
+id: spring_boot
+name: Spring Boot (Java)
+priority: 85
+
+detect:
+  headers_any:
+    X-Application-Context:
+      - ".+"
+    Server:
+      - "Apache-Coyote"
+  cookies_any:
+    - "JSESSIONID"
+  html_contains:
+    - "Whitelabel Error Page"
+    - "spring"
+  meta_generator: ""
+
+runtime_config:
+  html_patterns:
+    - 'window\.__SPRING__\s*=\s*(\{[^}]+\})'
+  json_scripts: []
+
+auth:
+  login_paths:
+    - /api/auth/login
+    - /login
+    - /j_spring_security_check
+  login_fields:
+    - username
+    - email
+    - j_username
+  token_paths:
+    - token
+    - access_token
+    - data.token
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/me
+    - /api/user
+    - /api/v1/me
+  health:
+    - /actuator/health
+    - /health
+    - /api/health
+
+ports:
+  - 8080
+  - 8081
+  - 8443
+  - 8000
+
+api_hints:
+  - api
+  - auth
+  - actuator
+  - login
+  - me
+  - user

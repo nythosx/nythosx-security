@@ -1,0 +1,75 @@
+id: laravel
+name: Laravel / PHP
+priority: 100
+
+detect:
+  headers_any:
+    X-Powered-By:
+      - "PHP"
+      - "Laravel"
+    Server:
+      - "PHP"
+  cookies_any:
+    - "laravel_session"
+    - "XSRF-TOKEN"
+    - "sanctum"
+  html_contains:
+    - "csrf-token"
+    - "bootstrap/app.php"
+  meta_generator: "Laravel"
+
+runtime_config:
+  html_patterns:
+    - 'apiBase\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'api_url\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'API_URL\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'NUXT_PUBLIC_[A-Z_]*API[A-Z_]*\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+  json_scripts:
+    - "__NUXT_DATA__"
+    - "__NEXT_DATA__"
+
+auth:
+  login_paths:
+    - /api/login
+    - /api/auth/login
+    - /sanctum/csrf-cookie
+    - /login
+  login_fields:
+    - email
+    - username
+    - identifier
+  token_paths:
+    - token
+    - access_token
+    - data.token
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/me
+    - /api/user
+    - /api/auth/me
+  health:
+    - /api/health
+    - /up
+
+ports:
+  - 8000
+  - 8001
+  - 8080
+
+api_hints:
+  - api
+  - auth
+  - login
+  - logout
+  - register
+  - token
+  - session
+  - user
+  - account
+  - me
+  - roster
+  - roles
+  - permissions

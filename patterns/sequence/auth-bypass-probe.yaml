@@ -1,0 +1,30 @@
+id: auth-bypass-probe
+name: Auth Bypass Probe
+severity: high
+tags: [auth, wstg-athn-04, cwe-287]
+endpoint_suffix: /me
+ignore_default_auth: true
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: no_auth
+    no_auth: true
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+  - name: bad_auth
+    no_auth: true
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      headers:
+        Authorization: "Bearer invalid_token_xyz_123"
+
+oracles:
+  - type: status_code_present
+    code: 200
+    verdict: VULNERABLE

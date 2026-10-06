@@ -1,0 +1,60 @@
+id: rails
+name: Ruby on Rails
+priority: 80
+
+detect:
+  headers_any:
+    X-Powered-By:
+      - "Phusion Passenger"
+    Server:
+      - "WEBrick"
+      - "Puma"
+  cookies_any:
+    - "_rails_session"
+    - "_session_id"
+  html_contains:
+    - "csrf-token"
+    - "data-turbo"
+    - "rails-ujs"
+  meta_generator: ""
+
+runtime_config:
+  html_patterns:
+    - 'window\.apiUrl\s*=\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+  json_scripts: []
+
+auth:
+  login_paths:
+    - /api/v1/login
+    - /users/sign_in
+    - /api/login
+    - /login
+  login_fields:
+    - email
+    - username
+  token_paths:
+    - token
+    - access_token
+    - auth_token
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/v1/me
+    - /api/me
+    - /api/users/me
+  health:
+    - /up
+    - /health
+
+ports:
+  - 3000
+  - 3001
+
+api_hints:
+  - api
+  - auth
+  - users
+  - me
+  - session

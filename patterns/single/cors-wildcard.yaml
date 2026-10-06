@@ -1,0 +1,23 @@
+id: cors-wildcard
+name: CORS Wildcard Origin
+severity: high
+tags: [cors, wstg-conf-05, cwe-942]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      headers:
+        Origin: "https://attacker.example.com"
+
+oracles:
+  - type: header_value_match
+    header: Access-Control-Allow-Origin
+    regex: "\\*|attacker\\.example\\.com"
+    verdict: VULNERABLE

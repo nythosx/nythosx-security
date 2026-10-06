@@ -1,0 +1,20 @@
+id: cookie-flags-missing
+name: Cookie Missing Security Flags
+severity: medium
+tags: [cookies, wstg-sess-02, cwe-614]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: cookie_flags_check
+    required_flags: [Secure, HttpOnly, SameSite]
+    verdict: SUSPICIOUS

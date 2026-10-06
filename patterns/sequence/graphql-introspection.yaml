@@ -1,0 +1,22 @@
+id: graphql-introspection
+name: GraphQL Introspection Enabled
+severity: medium
+tags: [graphql, wstg-conf-01, cwe-200]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: introspect
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        query: "{ __schema { types { name } } }"
+
+oracles:
+  - type: pattern_match
+    regex: '"__schema"'
+    verdict: SUSPICIOUS

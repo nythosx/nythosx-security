@@ -1,0 +1,24 @@
+id: cache-poisoning-probe
+name: Cache Poisoning via Header Injection
+severity: high
+tags: [cache, wstg-conf-08, cwe-444]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: inject
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      headers:
+        X-Forwarded-Host: "evil-marker.example.com"
+        X-Original-URL: "/evil-marker"
+        X-Rewrite-URL: "/evil-marker"
+
+oracles:
+  - type: pattern_match
+    regex: 'evil-marker'
+    verdict: SUSPICIOUS

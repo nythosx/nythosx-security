@@ -1,0 +1,65 @@
+id: django
+name: Django (Python)
+priority: 80
+
+detect:
+  headers_any:
+    Server:
+      - "WSGIServer"
+      - "gunicorn"
+    X-Frame-Options:
+      - "DENY"
+      - "SAMEORIGIN"
+  cookies_any:
+    - "csrftoken"
+    - "sessionid"
+    - "django_language"
+  html_contains:
+    - "csrfmiddlewaretoken"
+    - "django"
+  meta_generator: ""
+
+runtime_config:
+  html_patterns:
+    - 'window\.__DJANGO__\s*=\s*(\{[^}]+\})'
+    - 'API_BASE\s*=\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+  json_scripts: []
+
+auth:
+  login_paths:
+    - /api-auth/login/
+    - /accounts/login/
+    - /api/login/
+    - /login/
+    - /admin/login/
+  login_fields:
+    - username
+    - email
+  token_paths:
+    - token
+    - access
+    - data.token
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/me/
+    - /api/user/
+    - /api/users/me/
+  health:
+    - /health/
+    - /api/health/
+
+ports:
+  - 8000
+  - 8080
+  - 8888
+
+api_hints:
+  - api
+  - auth
+  - accounts
+  - login
+  - me
+  - user

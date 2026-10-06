@@ -1,0 +1,29 @@
+id: rate-limit-absent
+name: Rate Limiting Absent on Login Endpoint
+severity: high
+tags: [rate-limit, wstg-athn-03, cwe-307]
+endpoint_suffix: /login
+
+inputs:
+  target_url:
+    type: string
+    required: true
+  iterations:
+    type: int
+    default: 20
+
+steps:
+  - name: flood
+    no_auth: true
+    repeat: "{{ inputs.iterations }}"
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        email: "probe_{{ loop_index }}@example.com"
+        password: "wrong_pass"
+
+oracles:
+  - type: status_code_absent
+    code: 429
+    verdict: VULNERABLE

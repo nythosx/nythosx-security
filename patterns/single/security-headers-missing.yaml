@@ -1,0 +1,25 @@
+id: security-headers-missing
+name: Missing Security Headers
+severity: medium
+tags: [headers, wstg-conf-07, cwe-693]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: header_absent
+    headers:
+      - Strict-Transport-Security
+      - X-Content-Type-Options
+      - X-Frame-Options
+      - Content-Security-Policy
+      - Referrer-Policy
+    verdict: VULNERABLE

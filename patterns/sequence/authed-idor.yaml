@@ -1,0 +1,32 @@
+id: authed-idor
+name: Authenticated IDOR Probe
+severity: high
+tags: [idor, auth, wstg-athz-04, cwe-639]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: baseline
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+  - name: id_1
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/1"
+  - name: id_2
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/2"
+  - name: id_99999
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/99999"
+
+oracles:
+  - type: status_code_present
+    code: 200
+    verdict: SUSPICIOUS

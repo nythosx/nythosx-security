@@ -1,0 +1,54 @@
+id: fastapi
+name: FastAPI (Python)
+priority: 75
+
+detect:
+  headers_any:
+    Server:
+      - "uvicorn"
+      - "hypercorn"
+  cookies_any: []
+  html_contains:
+    - "swagger-ui"
+    - "redoc"
+  meta_generator: ""
+
+runtime_config:
+  html_patterns: []
+  json_scripts: []
+
+auth:
+  login_paths:
+    - /api/login
+    - /token
+    - /auth/login
+    - /login
+  login_fields:
+    - username
+    - email
+  token_paths:
+    - access_token
+    - token
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/me
+    - /me
+    - /users/me
+  health:
+    - /health
+    - /api/health
+
+ports:
+  - 8000
+  - 8001
+  - 8080
+
+api_hints:
+  - api
+  - auth
+  - token
+  - me
+  - user

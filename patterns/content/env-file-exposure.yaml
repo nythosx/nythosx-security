@@ -1,0 +1,28 @@
+id: env-file-exposure
+name: Environment File Exposure
+severity: critical
+tags: [info-disclosure, wstg-conf-02, cwe-538]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe_env
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.env"
+  - name: probe_env_local
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.env.local"
+  - name: probe_env_backup
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.env.backup"
+
+oracles:
+  - type: pattern_match
+    regex: 'APP_KEY=|DB_PASSWORD=|SECRET_KEY=|API_KEY=|DATABASE_URL='
+    verdict: VULNERABLE

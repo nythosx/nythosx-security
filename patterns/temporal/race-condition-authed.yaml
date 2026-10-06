@@ -1,0 +1,27 @@
+id: race-condition-authed
+name: Race Condition on Authenticated Endpoint
+severity: high
+tags: [race-condition, auth, wstg-busl-04, cwe-362]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+  concurrency:
+    type: int
+    default: 30
+
+steps:
+  - name: concurrent
+    concurrency: "{{ inputs.concurrency }}"
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        action: "probe"
+
+oracles:
+  - type: state_inconsistent
+    verdict: SUSPICIOUS
+  - type: response_differs
+    verdict: SUSPICIOUS

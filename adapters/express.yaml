@@ -1,0 +1,58 @@
+id: express
+name: Express / Node.js
+priority: 70
+
+detect:
+  headers_any:
+    X-Powered-By:
+      - "Express"
+  cookies_any:
+    - "connect.sid"
+    - "express-session"
+  html_contains: []
+  meta_generator: ""
+
+runtime_config:
+  html_patterns:
+    - 'window\.__API[A-Z_]*__\s*=\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'API_URL\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+  json_scripts: []
+
+auth:
+  login_paths:
+    - /api/auth/login
+    - /api/login
+    - /auth/login
+    - /login
+  login_fields:
+    - email
+    - username
+  token_paths:
+    - token
+    - accessToken
+    - access_token
+    - data.token
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/me
+    - /api/user
+    - /api/users/me
+  health:
+    - /health
+    - /api/health
+
+ports:
+  - 3000
+  - 3001
+  - 5000
+  - 8080
+
+api_hints:
+  - api
+  - auth
+  - login
+  - me
+  - user

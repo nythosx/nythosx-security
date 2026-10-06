@@ -1,0 +1,28 @@
+id: idor-sequential
+name: IDOR Sequential ID Probe
+severity: high
+tags: [idor, wstg-athz-04, cwe-639]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: id_1
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/1"
+  - name: id_2
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/2"
+  - name: id_99999
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/99999"
+
+oracles:
+  - type: status_code_present
+    code: 200
+    verdict: SUSPICIOUS

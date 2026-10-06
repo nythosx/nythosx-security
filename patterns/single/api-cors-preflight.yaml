@@ -1,0 +1,29 @@
+id: api-cors-preflight
+name: API CORS Misconfiguration (Preflight)
+severity: high
+tags: [cors, wstg-conf-05, cwe-942]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: preflight
+    request:
+      method: OPTIONS
+      url: "{{ inputs.target_url }}"
+      headers:
+        Origin: "https://attacker.example.com"
+        Access-Control-Request-Method: "POST"
+        Access-Control-Request-Headers: "authorization"
+
+oracles:
+  - type: header_value_match
+    header: Access-Control-Allow-Origin
+    regex: '\\*|attacker\\.example\\.com'
+    verdict: VULNERABLE
+  - type: header_value_match
+    header: Access-Control-Allow-Credentials
+    regex: '^true$'
+    verdict: SUSPICIOUS

@@ -1,0 +1,23 @@
+id: authed-security-headers
+name: Security Headers on Authenticated Endpoint
+severity: medium
+tags: [headers, auth, wstg-conf-07, cwe-693]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: header_absent
+    headers:
+      - X-Content-Type-Options
+      - X-Frame-Options
+      - Referrer-Policy
+    verdict: VULNERABLE

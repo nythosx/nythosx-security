@@ -1,0 +1,29 @@
+id: api-info-disclosure
+name: API Error Response Information Disclosure
+severity: medium
+tags: [info-disclosure, wstg-errh-01, cwe-209]
+endpoint_suffix: /me
+ignore_default_auth: true
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    no_auth: true
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: pattern_match
+    regex: '(SQLSTATE|QueryException|Stack trace|vendor/laravel|app\\Http|Illuminate\\|Symfony\\|Doctrine\\|/app/[\w/]+\.php)'
+    verdict: VULNERABLE
+  - type: pattern_match
+    regex: '(DB_PASSWORD|APP_KEY|AWS_SECRET|MAIL_PASSWORD|REDIS_PASSWORD|SANCTUM)'
+    verdict: VULNERABLE
+  - type: pattern_match
+    regex: '(bootstrap/app\.php|/app\.php|storage/framework|storage/logs)'
+    verdict: SUSPICIOUS

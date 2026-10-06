@@ -1,0 +1,26 @@
+id: race-condition-basic
+name: Race Condition Detection
+severity: high
+tags: [race-condition, wstg-busl-04, cwe-362]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+  concurrency:
+    type: int
+    default: 20
+
+steps:
+  - name: concurrent
+    concurrency: "{{ inputs.concurrency }}"
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        action: "probe"
+        amount: 1
+
+oracles:
+  - type: state_inconsistent
+    verdict: SUSPICIOUS

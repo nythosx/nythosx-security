@@ -1,0 +1,50 @@
+id: wordpress
+name: WordPress
+priority: 90
+
+detect:
+  headers_any:
+    X-Powered-By:
+      - "WordPress"
+  cookies_any:
+    - "wordpress_logged_in"
+    - "wp-settings"
+  html_contains:
+    - "/wp-content/"
+    - "/wp-includes/"
+    - "wp-json"
+  meta_generator: "WordPress"
+
+runtime_config:
+  html_patterns:
+    - 'wpApiSettings\s*=\s*(\{[^}]+\})'
+  json_scripts: []
+
+auth:
+  login_paths:
+    - /wp-login.php
+    - /wp-json/wp/v2/users
+    - /xmlrpc.php
+  login_fields:
+    - log
+    - pwd
+  token_paths: []
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /wp-json/wp/v2/users/me
+    - /wp-json/wp/v2/users
+  health: []
+
+ports:
+  - 80
+  - 443
+  - 8080
+
+api_hints:
+  - wp-json
+  - wp-admin
+  - api
+  - user

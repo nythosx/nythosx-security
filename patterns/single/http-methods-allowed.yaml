@@ -1,0 +1,20 @@
+id: http-methods-allowed
+name: Dangerous HTTP Methods Allowed
+severity: low
+tags: [methods, wstg-conf-06, cwe-650]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: trace
+    request:
+      method: TRACE
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: status_code_present
+    code: 200
+    verdict: SUSPICIOUS

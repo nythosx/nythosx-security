@@ -1,0 +1,29 @@
+http:
+  timeout_seconds: 30
+  follow_redirects: false
+  verify_tls: true
+  max_retries: 3
+  backoff_base_ms: 500
+  user_agent_rotation: true
+  default_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) sec-checker/1.0"
+
+rate_limit:
+  global_rps: 10
+  per_endpoint_rps: 5
+  burst: 20
+  on_429_backoff_ms: 5000
+
+concurrency:
+  max_workers: 50
+
+evidence:
+  save_raw_bodies: true
+  max_body_size_kb: 100
+
+report:
+  severity_threshold: info
+
+roe:
+  enabled: true
+  enforce_scope: true
+  enforce_methods: true

@@ -1,0 +1,22 @@
+api[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}
+secret[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}
+access[_-]?token['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}
+auth[_-]?token['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}
+private[_-]?key['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}
+client[_-]?secret['\"]?\s*[:=]\s*['\"][A-Za-z0-9_\-]{16,}
+password['\"]?\s*[:=]\s*['\"][^'\"]{6,}
+aws[_-]?access[_-]?key[_-]?id
+aws[_-]?secret[_-]?access[_-]?key
+AKIA[0-9A-Z]{16}
+ASIA[0-9A-Z]{16}
+ghp_[A-Za-z0-9]{36}
+gho_[A-Za-z0-9]{36}
+github_pat_[A-Za-z0-9_]{82}
+sk_live_[A-Za-z0-9]{24,}
+pk_live_[A-Za-z0-9]{24,}
+AIza[0-9A-Za-z\-_]{35}
+ya29\.[0-9A-Za-z\-_]+
+xox[baprs]-[0-9A-Za-z\-]+
+-----BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE KEY-----
+Bearer\s+[A-Za-z0-9\-_\.]{20,}
+eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+

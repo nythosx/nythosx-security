@@ -1,0 +1,71 @@
+id: generic
+name: Generic (Fallback)
+priority: 1
+
+detect:
+  headers_any: {}
+  cookies_any: []
+  html_contains: []
+  meta_generator: ""
+
+runtime_config:
+  html_patterns:
+    - 'apiBase\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'baseURL\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'apiUrl\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'API_URL\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'API_BASE\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'window\.__API[A-Z_]*__\s*=\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+  json_scripts:
+    - "__NUXT_DATA__"
+    - "__NEXT_DATA__"
+
+auth:
+  login_paths:
+    - /api/login
+    - /api/auth/login
+    - /api/v1/login
+    - /auth/login
+    - /login
+    - /signin
+  login_fields:
+    - email
+    - username
+    - identifier
+    - user
+  token_paths:
+    - token
+    - access_token
+    - accessToken
+    - data.token
+    - jwt
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/me
+    - /api/user
+    - /api/users/me
+  health:
+    - /api/health
+    - /health
+
+ports:
+  - 3000
+  - 3001
+  - 4000
+  - 5000
+  - 8000
+  - 8080
+  - 9000
+
+api_hints:
+  - api
+  - auth
+  - login
+  - me
+  - user
+  - account
+  - session
+  - token

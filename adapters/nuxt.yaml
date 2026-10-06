@@ -1,0 +1,55 @@
+id: nuxt
+name: Nuxt (Vue)
+priority: 90
+
+detect:
+  headers_any:
+    X-Powered-By:
+      - "Nuxt"
+  cookies_any:
+    - "nuxt"
+  html_contains:
+    - "__NUXT__"
+    - "/_nuxt/"
+    - "nuxt-link"
+  meta_generator: "Nuxt"
+
+runtime_config:
+  html_patterns:
+    - 'apiBase\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'NUXT_PUBLIC_[A-Z_]*API[A-Z_]*\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+  json_scripts:
+    - "__NUXT_DATA__"
+
+auth:
+  login_paths:
+    - /api/login
+    - /api/auth/login
+    - /login
+  login_fields:
+    - email
+    - username
+  token_paths:
+    - token
+    - access_token
+    - data.token
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/me
+    - /api/user
+  health:
+    - /api/health
+
+ports:
+  - 3000
+  - 3001
+
+api_hints:
+  - api
+  - auth
+  - login
+  - me
+  - user

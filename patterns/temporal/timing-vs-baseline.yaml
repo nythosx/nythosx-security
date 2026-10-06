@@ -1,0 +1,24 @@
+id: timing-vs-baseline
+name: Timing Deviation vs Baseline
+severity: medium
+tags: [timing, wstg-athn-04, cwe-208]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+  samples:
+    type: int
+    default: 10
+
+steps:
+  - name: probe
+    repeat: "{{ inputs.samples }}"
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: timing_vs_baseline
+    sigma: 3.0
+    verdict: SUSPICIOUS

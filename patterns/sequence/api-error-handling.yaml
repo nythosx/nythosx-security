@@ -1,0 +1,29 @@
+id: api-error-handling
+name: API Error Handling — 500 Instead of 401
+severity: high
+tags: [auth, error-handling, wstg-athn-04, cwe-755]
+endpoint_suffix: /me
+ignore_default_auth: true
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: no_auth
+    no_auth: true
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+  - name: bad_token
+    no_auth: true
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      headers:
+        Authorization: "Bearer invalid_token_xyz_probe"
+
+oracles:
+  - type: expected_status_mismatch
+    expected: [200, 401, 403]

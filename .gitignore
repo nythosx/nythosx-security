@@ -1,0 +1,26 @@
+# secrets
+configs/credentials.yaml
+configs/targets.yaml
+configs/sessions/
+configs/roe.yaml
+
+# scan artifacts
+evidence/
+findings/
+reports/
+logs/
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# build scripts (dev only)
+build*.py
+a.py
+diag*.py
+
+# xampp
+*.log

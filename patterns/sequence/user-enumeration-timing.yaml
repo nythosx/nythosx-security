@@ -1,0 +1,35 @@
+id: user-enumeration-timing
+name: User Enumeration via Timing
+severity: medium
+tags: [enumeration, wstg-athn-04, cwe-204]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+  samples:
+    type: int
+    default: 5
+
+steps:
+  - name: invalid_user
+    repeat: "{{ inputs.samples }}"
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        username: "doesnotexist_xyz@example.com"
+        password: "wrong"
+  - name: valid_user
+    repeat: "{{ inputs.samples }}"
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        username: "admin@example.com"
+        password: "wrong"
+
+oracles:
+  - type: timing_difference
+    threshold_ms: 100
+    verdict: SUSPICIOUS

@@ -1,0 +1,58 @@
+id: nextjs
+name: Next.js (React)
+priority: 90
+
+detect:
+  headers_any:
+    X-Powered-By:
+      - "Next.js"
+  cookies_any:
+    - "next-auth"
+    - "__Secure-next-auth"
+  html_contains:
+    - "__NEXT_DATA__"
+    - "/_next/"
+    - "next/head"
+  meta_generator: "Next.js"
+
+runtime_config:
+  html_patterns:
+    - 'NEXT_PUBLIC_[A-Z_]+_URL\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'NEXT_PUBLIC_API[A-Z_]*\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+  json_scripts:
+    - "__NEXT_DATA__"
+
+auth:
+  login_paths:
+    - /api/auth/login
+    - /api/auth/callback/credentials
+    - /api/login
+    - /login
+  login_fields:
+    - email
+    - username
+  token_paths:
+    - token
+    - access_token
+    - data.token
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /api/auth/session
+    - /api/me
+    - /api/user
+  health:
+    - /api/health
+
+ports:
+  - 3000
+  - 3001
+
+api_hints:
+  - api
+  - auth
+  - session
+  - me
+  - user

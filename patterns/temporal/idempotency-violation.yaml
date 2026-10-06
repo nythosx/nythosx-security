@@ -1,0 +1,27 @@
+id: idempotency-violation
+name: Idempotency Violation
+severity: medium
+tags: [state, wstg-busl-04, cwe-837]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: first
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        idempotency_test: true
+  - name: second
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        idempotency_test: true
+
+oracles:
+  - type: response_differs
+    verdict: SUSPICIOUS
