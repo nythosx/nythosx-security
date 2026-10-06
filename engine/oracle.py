@@ -74,6 +74,55 @@ def _crack_jwt(token, secrets):
     return {"alg": alg, "crackable": True, "secret": None}
 
 
+_DEFAULT_MASS_FIELDS = {"is_admin": True, "role": "admin", "is_superuser": True,
+                        "admin": True, "verified": True}
+
+
+def _find_reflected(obj, injected):
+    hits = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k in injected and _values_match(injected[k], v):
+                    hits.append({"field": k, "value": v})
+                walk(v)
+        elif isinstance(o, list):
+            for item in o[:50]:
+                walk(item)
+
+    walk(obj)
+    return hits
+
+
+def _values_match(sent, got):
+    if isinstance(sent, bool):
+        return got is True or str(got).lower() in ("true", "1")
+    return str(sent).lower() == str(got).lower()
+
+
+def _mass_assignment(oracle, context):
+    injected = oracle.get("injected") or _DEFAULT_MASS_FIELDS
+    steps = context.get("steps", [])
+    if not steps:
+        return {"verdict": "UNKNOWN", "reason": "no steps", "evidence": {}}
+    for s in steps:
+        body = s.get("body") or ""
+        try:
+            data = _json.loads(body)
+        except Exception:
+            continue
+        hits = _find_reflected(data, injected)
+        if hits:
+            return {
+                "verdict": oracle.get("verdict", "VULNERABLE"),
+                "reason": f"injected privileged field(s) reflected as accepted: "
+                          f"{', '.join(h['field'] for h in hits)}",
+                "evidence": {"reflected": hits[:10], "step": s.get("step_name")},
+            }
+    return {"verdict": "PASS", "reason": "no injected field reflected", "evidence": {}}
+
+
 def _jwt_weak_secret(oracle, context):
     steps = context.get("steps", [])
     if not steps:
@@ -504,6 +553,7 @@ _HANDLERS = {
     "debug_signature": _debug_signature,
     "json_error_field": _json_error_field,
     "jwt_weak_secret": _jwt_weak_secret,
+    "mass_assignment": _mass_assignment,
 }
 
 

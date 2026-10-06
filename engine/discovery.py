@@ -157,16 +157,57 @@ def extract_api_paths_from_js(js_text, adapter):
     return sorted(set(cleaned))
 
 
-def crawl_js_for_paths(base_url, js_urls, adapter, max_bundles=40):
+_CHUNK_RE = re.compile(r"""["'`]([\w\-./]+?\.m?js)(?:\?[\w=&.]*)?["'`]""")
+
+
+def _same_host(u1, u2):
+    return urlparse(u1).netloc == urlparse(u2).netloc
+
+
+def extract_chunk_urls(js_text, bundle_url, root_url):
+    refs = set()
+    for m in _CHUNK_RE.finditer(js_text):
+        name = m.group(1)
+        if name.startswith(("http://", "https://")):
+            if not _same_host(name, root_url):
+                continue
+            resolved = name
+        else:
+            resolved = urljoin(bundle_url, name)
+        if _same_host(resolved, root_url):
+            refs.add(resolved.split("?")[0])
+    return refs
+
+
+def crawl_js_for_paths(base_url, js_urls, adapter, max_bundles=40,
+                       recursive=True, max_rounds=3):
     all_paths = set()
     fetched = []
-    for u in js_urls[:max_bundles]:
-        text = fetch_js_text(u)
-        if not text:
-            continue
-        fetched.append({"url": u, "size": len(text)})
-        for p in extract_api_paths_from_js(text, adapter):
-            all_paths.add(p)
+    visited = set()
+    queue = list(js_urls)
+    rounds = 0
+    while queue and len(fetched) < max_bundles:
+        next_queue = []
+        for u in queue:
+            if len(fetched) >= max_bundles:
+                break
+            if u in visited:
+                continue
+            visited.add(u)
+            text = fetch_js_text(u)
+            if not text:
+                continue
+            fetched.append({"url": u, "size": len(text)})
+            for p in extract_api_paths_from_js(text, adapter):
+                all_paths.add(p)
+            if recursive:
+                for c in extract_chunk_urls(text, u, base_url):
+                    if c not in visited:
+                        next_queue.append(c)
+        rounds += 1
+        if not recursive or rounds >= max_rounds:
+            break
+        queue = next_queue
     return sorted(all_paths), fetched
 
 

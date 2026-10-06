@@ -101,6 +101,11 @@ python run.py auto https://target.example.com --auto-baseline
 | `report.py`          | HTML / Markdown / **SARIF** report generation                      |
 | `browser.py`         | **NEW** — Playwright capture (console, JS errors, screenshots)     |
 | `idor.py`            | **NEW** — IDOR live probe (ID extraction + neighbor probing)       |
+| `oob.py`             | **NEW** — out-of-band callback server (token-keyed collector)      |
+| `ssrf.py`            | **NEW** — blind SSRF probe (OOB payloads into params/headers)      |
+| `xss.py`             | **NEW** — blind/reflected XSS probe (OOB + real browser exec)      |
+| `combo.py`           | **NEW** — combination explorer (pairwise + outlier detection)      |
+| `smuggle.py`         | **NEW** — HTTP smuggling timing probe (non-destructive CL.TE/TE.CL) |
 | `util.py`            | `safe_name`, atomic writes                                         |
 | `session.py`         | **DEPRECATED** — raises `ImportError` on import                    |
 
@@ -124,9 +129,11 @@ python run.py auto https://target.example.com --auto-baseline
 
 ---
 
-## Patterns (26 total)
+## Patterns (27 total)
 
-> Phase 9 added `jwt-weak-secret`. Actual count ay **26**.
+> Phase 9 added `jwt-weak-secret`; Phase 10 added `mass-assignment`. Actual count ay **27**.
+> Note: `browser`, `idor`, `ssrf`, and `xss` are active-probe **commands** (not YAML
+> patterns), so they are not in this count.
 
 ### Single-request (8)
 
@@ -141,7 +148,7 @@ python run.py auto https://target.example.com --auto-baseline
 | api-cors-preflight       | high     | CORS via OPTIONS                        |
 | api-exposed-headers      | low      | X-Powered-By, X-Debug-Token             |
 
-### Sequence (8)
+### Sequence (9)
 
 | Pattern                 | Severity | Detects                                |
 | ----------------------- | -------- | -------------------------------------- |
@@ -153,6 +160,7 @@ python run.py auto https://target.example.com --auto-baseline
 | graphql-introspection   | medium   | GraphQL introspection enabled          |
 | api-error-handling      | high     | 500 instead of 401 on missing auth     |
 | api-info-disclosure     | medium   | Stack traces, SQL errors in response   |
+| mass-assignment         | high     | Injected privileged field accepted     |
 
 ### Temporal (5)
 
@@ -181,7 +189,7 @@ python run.py auto https://target.example.com --auto-baseline
 
 ---
 
-## Oracles (18 verdict evaluators)
+## Oracles (19 verdict evaluators)
 
 | Oracle                     | Logic                                    | Multi-step?                      |
 | -------------------------- | ---------------------------------------- | -------------------------------- |
@@ -203,6 +211,7 @@ python run.py auto https://target.example.com --auto-baseline
 | `debug_signature`          | Laravel/debug markers + size threshold   | ✅ all steps                     |
 | `json_error_field`         | Error message extraction                 | ✅ all steps                     |
 | `jwt_weak_secret`          | Brute-forces HMAC JWT secret (wordlist)  | ✅ all steps, bodies + headers   |
+| `mass_assignment`          | Injected privileged field reflected      | ✅ all steps, JSON walk          |
 
 ---
 
@@ -271,6 +280,10 @@ validate      Validate YAML
 report        Generate report (html | md | sarif)
 browser       Playwright capture (console, JS errors, screenshot)
 idor          IDOR live probe (extract ID + probe neighbors)
+ssrf          Blind SSRF probe (OOB callback server)
+xss           Blind/reflected XSS probe (OOB + real browser)
+explore       Combination explorer (pairwise cross-product + outliers)
+smuggle       HTTP request smuggling timing probe (non-destructive)
 history       Recent findings
 targets       Configured targets
 ```
@@ -298,7 +311,17 @@ else `0`. `run.py` also exits `1` on unknown command, `2` on missing `engine/`.
 ```cmd
 python run.py browser http://localhost:3000
 python run.py idor http://localhost:8000/api/me http://localhost:8000/api/users --session local-dev
+python run.py ssrf http://localhost:8000/api/fetch --fail-on high
+python run.py xss http://localhost:3000/search q
+python run.py explore http://localhost:8000/api --paths /admin,/orders,/users --methods GET,POST
+python run.py smuggle http://localhost:8000 --threshold-ms 3000
 ```
+
+The `ssrf` and `xss` probes spin up an in-process **out-of-band callback server**
+(`engine/oob.py`) on `127.0.0.1`, inject uniquely-tokened payloads, and report
+VULNERABLE only when the target actually calls back. `xss` additionally loads the
+page in headless Chromium, so it fires only on **executed** script, not reflected
+text.
 
 ---
 
@@ -353,45 +376,48 @@ Expected: `401 {"message":"Unauthenticated"}` — hindi 860 KB HTML.
 - ~~Report counts PASS as critical~~ (build8)
 - ~~Report lookup mismatch~~ (build9, loopback alias)
 
+### ✅ Detection gaps closed (Phase 9–10)
+
+- ~~XSS probes~~ — `xss` command (OOB + real browser execution)
+- ~~SSRF probes~~ — `ssrf` command (OOB callback server)
+- ~~Mass assignment~~ — `mass-assignment` pattern + oracle
+- ~~JWT weak secret~~ — `jwt-weak-secret` pattern + oracle
+- ~~IDOR live probe~~ — `idor` command (real ID extraction + neighbor probing)
+- ~~HTTP request smuggling~~ — `smuggle` command (non-destructive CL.TE/TE.CL timing)
+
 ### 🔴 Detection gaps (hindi pa)
 
 | Kulang                 | Bakit importante                    |
 | ---------------------- | ----------------------------------- |
 | SQL injection probes   | Classic OWASP Top 1                 |
-| XSS probes             | Reflected/stored XSS                |
 | SSTI probes            | Template injection                  |
-| SSRF probes            | OOB callback required               |
 | XXE probes             | XML parsing                         |
 | Open redirect          | Redirect chain validation           |
 | CSRF token analysis    | Missing/weak CSRF                   |
 | File upload bypass     | Content-Type, extension             |
-| Mass assignment        | Inject extra fields sa POST         |
-| JWT weak secret        | Brute force HMAC secret             |
-| IDOR live probe        | Actual ID extraction from `/api/me` |
 | Rate limit bypass      | X-Forwarded-For rotation            |
-| HTTP request smuggling | CL.TE, TE.CL                        |
 | Prototype pollution    | JSON body injection                 |
 
-### 🟠 Engine gaps (hindi pa)
+### 🟠 Engine gaps
 
-| Kulang                       | Impact                                |
-| ---------------------------- | ------------------------------------- |
-| Retry budget tuning          | Slow scans on partial failures        |
-| Playwright integration       | Console logs, JS errors, screenshots  |
-| OOB callback server          | Needed for blind SSRF, blind XSS      |
-| Recursive JS crawl           | Nuxt lazy chunks not fully parsed     |
-| State machine reconstruction | Implicit state mapping                |
-| Combination explorer         | Pairwise input/endpoint/timing combos |
-| RL-based adaptive search     | Hypothesis-driven exploration         |
+| Kulang                       | Impact                                | Status          |
+| ---------------------------- | ------------------------------------- | --------------- |
+| ~~Playwright integration~~   | Console logs, JS errors, screenshots  | ✅ `browser.py` |
+| ~~OOB callback server~~      | Needed for blind SSRF, blind XSS      | ✅ `oob.py`     |
+| ~~Recursive JS crawl~~       | Nuxt lazy chunks not fully parsed     | ✅ BFS crawl    |
+| ~~Combination explorer~~     | Pairwise input/endpoint/timing combos | ✅ `combo.py`   |
+| Retry budget tuning          | Slow scans on partial failures        | hindi pa        |
+| State machine reconstruction | Implicit state mapping                | hindi pa        |
+| RL-based adaptive search     | Hypothesis-driven exploration         | hindi pa        |
 
-### 🟡 Evidence gaps (hindi pa)
+### 🟡 Evidence gaps
 
-| Kulang                      | Impact                        |
-| --------------------------- | ----------------------------- |
-| Screenshot capture          | Proof of visual state         |
-| Full request/response pairs | Currently only bodies         |
-| Diff view between runs      | Trend analysis                |
-| Timeline view               | Attack sequence visualization |
+| Kulang                      | Impact                        | Status                  |
+| --------------------------- | ----------------------------- | ----------------------- |
+| ~~Screenshot capture~~      | Proof of visual state         | ✅ `browser` command    |
+| Full request/response pairs | Currently only bodies         | hindi pa                |
+| Diff view between runs      | Trend analysis                | hindi pa                |
+| Timeline view               | Attack sequence visualization | hindi pa                |
 
 ### 🟡 Safety gaps (hindi pa)
 
@@ -423,23 +449,24 @@ Expected: `401 {"message":"Unauthenticated"}` — hindi 860 KB HTML.
 - [x] Concurrent rate limiter (see Confidence Gaps #1)
 - [x] Race condition patterns rework (see Confidence Gaps #2)
 - [x] Playwright integration (console, JS errors, screenshots) — `engine/browser.py`
-- [ ] Recursive JS crawl for lazy chunks
+- [x] Recursive JS crawl for lazy chunks — `discovery.crawl_js_for_paths` (BFS, same-host)
 - [x] IDOR live probe (extract actual IDs from `/api/me`) — `engine/idor.py`
 - [x] JWT weak secret checker — `jwt-weak-secret` pattern + `jwt_weak_secret` oracle
 - [x] CI workflow (GitHub Actions + SARIF upload) — `.github/workflows/ci.yml`
 - [x] `--fail-on <severity>` exit codes (see Confidence Gaps #10)
 - [x] Dead config cleanup (see Config Files)
 
-### Phase 10
+### Phase 10 (in progress)
 
-- [ ] OOB callback server (Interactsh-style)
-- [ ] Blind SSRF/XSS patterns
-- [ ] Mass assignment patterns
-- [ ] HTTP request smuggling probes
+- [x] OOB callback server — `engine/oob.py` (in-process, token-keyed)
+- [x] Blind SSRF probe — `engine/ssrf.py` + `ssrf` command
+- [x] Blind/reflected XSS probe — `engine/xss.py` + `xss` command (OOB + browser)
+- [x] Mass assignment pattern — `mass-assignment` + `mass_assignment` oracle
+- [x] HTTP request smuggling probes — `engine/smuggle.py` + `smuggle` command (non-destructive timing only)
 
 ### Phase 11 (Novel)
 
-- [ ] Combination explorer
+- [x] Combination explorer — `engine/combo.py` + `explore` command (pairwise + outlier)
 - [ ] State machine reconstruction
 - [ ] Emergent behavior detector
 - [ ] Timing correlation matrix
@@ -601,19 +628,23 @@ sec-checker/
 ├── requirements-dev.txt         + pytest, jsonschema
 ├── .github/workflows/ci.yml     GitHub Actions (pytest + scan + SARIF upload)
 ├── .gitignore                   Protect credentials + artifacts
-├── build*.py                    Build scripts (dev tools, gitignored)
 ├── a.py                         ROE audit tool (dev, gitignored)
 ├── engine/
 │   ├── cli.py, auto.py, ...
 │   ├── browser.py               Playwright capture
 │   ├── idor.py                  IDOR live probe
+│   ├── oob.py                   Out-of-band callback server
+│   ├── ssrf.py                  Blind SSRF probe
+│   ├── xss.py                   Blind/reflected XSS probe
+│   ├── combo.py                 Combination explorer
+│   ├── smuggle.py               HTTP smuggling timing probe
 │   ├── util.py                  safe_name, atomic writes
 │   ├── ratelimit.py             token bucket (+ shared registry)
 │   └── session.py               DEPRECATED stub
 ├── adapters/                    11 YAML files
 ├── patterns/
 │   ├── single/                  8 patterns
-│   ├── sequence/                8 patterns
+│   ├── sequence/                9 patterns (+ mass-assignment)
 │   ├── temporal/                5 patterns
 │   ├── content/                 3 patterns
 │   └── meta/                    2 patterns (jwt-analysis, jwt-weak-secret)
@@ -636,6 +667,12 @@ sec-checker/
 │   ├── test_jwt_oracle.py       JWT weak-secret cracking
 │   ├── test_idor.py             IDOR extraction + live probe
 │   ├── test_browser.py          Playwright console/JS-error/screenshot
+│   ├── test_discovery_crawl.py  recursive lazy-chunk JS crawl
+│   ├── test_mass_assignment.py  mass-assignment oracle + live echo
+│   ├── test_oob_ssrf.py         OOB server + blind SSRF callback
+│   ├── test_xss.py              blind/reflected XSS via OOB + browser
+│   ├── test_combo.py            pairwise coverage + outlier detection
+│   ├── test_smuggle.py          CL.TE/TE.CL timing differential
 │   └── test_config_keys.py      evidence + report config keys
 ├── evidence/                    (gitignored)
 ├── findings/                    (gitignored)
@@ -765,9 +802,9 @@ python -m playwright install chromium
 
 ```cmd
 python run.py --version            # sec-checker 1.2.0
-python run.py validate             # 26 OK, 0 FAIL
+python run.py validate             # 27 OK, 0 FAIL
 python run.py adapters             # 11 adapters
-python -m pytest tests/ -q         # 48 passed
+python -m pytest tests/ -q         # 81 passed
 python a.py                        # ROE audit: CLEAN, 20/20 guard tests
 ```
 
@@ -879,8 +916,8 @@ IDOR, and JWT suites.
 Before opening a PR, Claude Code should be able to check off:
 
 - [x] `python run.py --version` prints `1.2.0`
-- [x] `python run.py validate` returns 26 OK, 0 FAIL
-- [x] `python -m pytest tests/ -q` returns 48 passed
+- [x] `python run.py validate` returns 27 OK, 0 FAIL
+- [x] `python -m pytest tests/ -q` returns 81 passed
 - [x] `python a.py` returns CLEAN and 20/20 guard tests
 - [ ] `python run.py auto http://localhost:3000 --auto-baseline` completes without worker errors
 - [x] `python run.py report ... --format sarif` produces valid JSON that passes `jsonschema` validation (see `test_sarif_output_is_schema_valid`)

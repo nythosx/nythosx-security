@@ -1,0 +1,26 @@
+id: mass-assignment
+name: Mass Assignment Probe
+severity: high
+tags: [mass-assignment, wstg-busl-01, cwe-915]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: inject_privileged_fields
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        name: "sec-checker-probe"
+        is_admin: true
+        role: "admin"
+        is_superuser: true
+        admin: true
+        verified: true
+
+oracles:
+  - type: mass_assignment
+    verdict: VULNERABLE

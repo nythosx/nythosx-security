@@ -603,6 +603,201 @@ def cmd_report(args):
     console.print(f"[green]Report:[/green] {path}")
 
 
+def cmd_smuggle(args):
+    if not args:
+        console.print("[red]Usage: smuggle <target_url> [--timeout N] "
+                      "[--threshold-ms N] [--fail-on SEV][/red]")
+        return
+    target = args[0]
+    timeout = 5.0
+    threshold_ms = 3000.0
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--timeout" and i + 1 < len(args):
+            timeout = float(args[i + 1])
+            i += 2
+        elif args[i] == "--threshold-ms" and i + 1 < len(args):
+            threshold_ms = float(args[i + 1])
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    from . import smuggle
+    console.print(f"[cyan]HTTP smuggling timing probe:[/cyan] {target}")
+    out = smuggle.probe(target, timeout=timeout, threshold_ms=threshold_ms)
+    if out.get("error"):
+        console.print(f"  [dim]baseline note: {out['error']}[/dim]")
+    result = out["result"]
+    color = VERDICT_COLOR.get(result["verdict"], "white")
+    console.print(f"  [{color}]{result['verdict']}[/{color}]  {result.get('reason')}")
+    for d in (result.get("evidence", {}) or {}).get("delayed", []):
+        console.print(f"    [yellow]{d['vector'].upper()}[/yellow]  "
+                      f"{d['elapsed_ms']:.0f}ms  timed_out={d['timed_out']}")
+    ledger.record_finding(
+        pattern_id="http-request-smuggling", target=target,
+        verdict=result["verdict"], severity="high",
+        reason=result.get("reason", ""), evidence_path="",
+        evidence_json=result.get("evidence", {}), category="sequence",
+        wstg_id="WSTG-INPV-15", cwe_id="CWE-444")
+    return _compute_fail_exit(
+        [{"severity": "high", "verdict": result["verdict"]}], fail_on)
+
+
+def cmd_explore(args):
+    if not args:
+        console.print("[red]Usage: explore <base_url> --paths /a,/b,/c "
+                      "[--methods GET,POST] [--strategy pairwise|cartesian] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/red]")
+        return
+    base = args[0]
+    paths = ["/"]
+    methods = ["GET"]
+    strategy = "pairwise"
+    auth_str = None
+    session = None
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--paths" and i + 1 < len(args):
+            paths = [p for p in args[i + 1].split(",") if p]
+            i += 2
+        elif args[i] == "--methods" and i + 1 < len(args):
+            methods = [m.upper() for m in args[i + 1].split(",") if m]
+            i += 2
+        elif args[i] == "--strategy" and i + 1 < len(args):
+            strategy = args[i + 1]
+            i += 2
+        elif args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+    from . import combo
+    dims = {"method": methods, "path": paths}
+    console.print(f"[cyan]Combination explorer:[/cyan] {base}  "
+                  f"({strategy}, {len(methods)} methods x {len(paths)} paths)")
+    out = combo.explore(base, dims, strategy=strategy, headers=headers, cookies=cookies)
+    console.print(f"  combos run: {out['combos_run']}")
+    result = out["analysis"]
+    color = VERDICT_COLOR.get(result["verdict"], "white")
+    console.print(f"  [{color}]{result['verdict']}[/{color}]  {result.get('reason')}")
+    for o in (result.get("evidence", {}) or {}).get("outliers", [])[:10]:
+        console.print(f"    [yellow]outlier[/yellow] {o['status']}  {o['combo']}")
+    ledger.record_finding(
+        pattern_id="combination-explorer", target=base, verdict=result["verdict"],
+        severity="medium", reason=result.get("reason", ""), evidence_path="",
+        evidence_json=result.get("evidence", {}), category="combination")
+    return _compute_fail_exit(
+        [{"severity": "medium", "verdict": result["verdict"]}], fail_on)
+
+
+def cmd_xss(args):
+    if len(args) < 2:
+        console.print("[red]Usage: xss <target_url> <param> "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/red]")
+        return
+    target = args[0]
+    param = args[1]
+    auth_str = None
+    session = None
+    fail_on = None
+    i = 2
+    while i < len(args):
+        if args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+    from . import xss
+    console.print(f"[cyan]Blind XSS probe:[/cyan] {target}  param={param}")
+    try:
+        out = xss.probe(target, param, headers=headers, cookies=cookies)
+    except Exception as e:
+        console.print(f"[red]{type(e).__name__}: {e}[/red]")
+        return 1
+    console.print(f"  OOB listener: {out['oob_base']}")
+    console.print(f"  payloads tried: {len(out['attempts'])}")
+    result = out["result"]
+    color = VERDICT_COLOR.get(result["verdict"], "white")
+    console.print(f"  [{color}]{result['verdict']}[/{color}]  {result.get('reason')}")
+    ledger.record_finding(
+        pattern_id="blind-xss", target=target, verdict=result["verdict"],
+        severity="high", reason=result.get("reason", ""), evidence_path="",
+        evidence_json=result.get("evidence", {}), category="sequence",
+        wstg_id="WSTG-INPV-01", cwe_id="CWE-79")
+    return _compute_fail_exit(
+        [{"severity": "high", "verdict": result["verdict"]}], fail_on)
+
+
+def cmd_ssrf(args):
+    if not args:
+        console.print("[red]Usage: ssrf <target_url> [--method GET|POST] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/red]")
+        return
+    target = args[0]
+    auth_str = None
+    session = None
+    method = "GET"
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--method" and i + 1 < len(args):
+            method = args[i + 1].upper()
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+    from . import ssrf
+    console.print(f"[cyan]Blind SSRF probe:[/cyan] {target}")
+    out = ssrf.probe(target, method=method, headers=headers, cookies=cookies)
+    console.print(f"  OOB listener: {out['oob_base']}")
+    console.print(f"  vectors injected: {len(out['injected'])}")
+    result = out["result"]
+    color = VERDICT_COLOR.get(result["verdict"], "white")
+    console.print(f"  [{color}]{result['verdict']}[/{color}]  {result.get('reason')}")
+    for c in out["callbacks"]:
+        console.print(f"    [red]callback[/red] via {c['vector']} ({c['hits']} hit(s))")
+    ledger.record_finding(
+        pattern_id="blind-ssrf", target=target, verdict=result["verdict"],
+        severity="high", reason=result.get("reason", ""), evidence_path="",
+        evidence_json=result.get("evidence", {}), category="sequence",
+        wstg_id="WSTG-INPV-19", cwe_id="CWE-918")
+    return _compute_fail_exit(
+        [{"severity": "high", "verdict": result["verdict"]}], fail_on)
+
+
 def cmd_idor(args):
     if len(args) < 2:
         console.print("[red]Usage: idor <identity_url> <resource_base> "
@@ -773,6 +968,14 @@ def cmd_help(args):
     console.print("  scan <pattern> <target>           Single pattern")
     console.print("  scan-all <target>                 All patterns")
     console.print()
+    console.print("[bold]Active probes[/bold]")
+    console.print("  browser <url>                     Playwright capture (console/JS/screenshot)")
+    console.print("  idor <identity_url> <resource>    IDOR live probe")
+    console.print("  ssrf <target>                     Blind SSRF (OOB callback)")
+    console.print("  xss <target> <param>              Blind/reflected XSS (OOB + browser)")
+    console.print("  explore <base> --paths /a,/b       Combination explorer (outliers)")
+    console.print("  smuggle <target>                  HTTP smuggling timing probe (safe)")
+    console.print()
     console.print("[bold]Report[/bold]")
     console.print("  report <target>                   Generate report")
     console.print("  history [--target X]              Recent findings")
@@ -784,6 +987,7 @@ def cmd_help(args):
     console.print("  --session <name>                  Use saved session")
     console.print("  --auth user:pass|bearer:X|...     Inline auth")
     console.print("  --auto-baseline                   Profile target before scanning")
+    console.print("  --fail-on <level>                 Exit 3 if finding >= level (CI)")
     console.print()
 
 
@@ -802,6 +1006,10 @@ COMMANDS = {
     "report": cmd_report,
     "browser": cmd_browser,
     "idor": cmd_idor,
+    "ssrf": cmd_ssrf,
+    "xss": cmd_xss,
+    "explore": cmd_explore,
+    "smuggle": cmd_smuggle,
     "history": cmd_history,
     "targets": cmd_targets,
     "help": cmd_help,
