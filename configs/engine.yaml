@@ -36,3 +36,6 @@ roe:
   enabled: true
   enforce_scope: true
   enforce_methods: true
+
+ssrf_cloud:
+  allow_direct_metadata_probe: false

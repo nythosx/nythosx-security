@@ -127,7 +127,10 @@ def _verify_tls():
 
 def _roe_block(guard, url, method="GET"):
     if guard is None:
-        return None
+        try:
+            guard = ROEGuard(engine_cfg=load_engine())
+        except Exception as e:
+            return f"ROE guard unavailable (fail-closed): {e}"
     try:
         guard.check_url(url, method)
         return None

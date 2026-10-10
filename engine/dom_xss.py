@@ -234,7 +234,10 @@ def _verify_tls():
 
 def _roe_block(guard, url, method="GET"):
     if guard is None:
-        return None
+        try:
+            guard = ROEGuard(engine_cfg=load_engine())
+        except Exception as e:
+            return f"ROE guard unavailable (fail-closed): {e}"
     try:
         guard.check_url(url, method)
         return None
@@ -320,9 +323,14 @@ def _probe_one_source(url, source, marker, html_marker, timeout_ms, verify_tls):
     return result
 
 
+BENIGN_SINKS = {"history.pushState", "history.replaceState"}
+
+
 def _filter_hits(hits, marker, html_marker):
     plain, html = [], []
     for h in hits or []:
+        if h.get("sink") in BENIGN_SINKS:
+            continue
         v = h.get("value") or ""
         if html_marker and html_marker in v:
             html.append(h)

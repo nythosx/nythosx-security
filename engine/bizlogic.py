@@ -133,7 +133,10 @@ def _verify_tls():
 
 def _roe_block(guard, url, method="GET"):
     if guard is None:
-        return None
+        try:
+            guard = ROEGuard(engine_cfg=load_engine())
+        except Exception as e:
+            return f"ROE guard unavailable (fail-closed): {e}"
     try:
         guard.check_url(url, method)
         return None
@@ -324,10 +327,16 @@ def probe_price_tampering(endpoint_url, method="POST", baseline_body=None,
                     "evidence": "tampered request produced different success response",
                 })
 
-    if out["findings"]:
+    strong = [f for f in out["findings"] if f["type"] == "price_tampering"]
+    if strong:
         out["verdict"] = "VULNERABLE"
-        out["reason"] = (f"{len(out['findings'])} price tampering vector(s) "
-                         f"produced altered success response")
+        out["reason"] = (f"{len(strong)} price tampering vector(s) succeeded where "
+                         f"the baseline request failed")
+    elif out["findings"]:
+        out["verdict"] = "SUSPICIOUS"
+        out["reason"] = (f"{len(out['findings'])} tamper(s) produced a different success "
+                         f"response; this may be an input echo, not an accepted price "
+                         f"change — confirm manually")
     else:
         out["verdict"] = "PASS"
         out["reason"] = f"no price tampering anomalies across {len(out['tampers'])} attempts"

@@ -107,9 +107,20 @@ def _verify_tls():
         return True
 
 
+def _direct_metadata_allowed():
+    try:
+        cfg = load_engine() or {}
+        return bool(cfg.get("ssrf_cloud", {}).get("allow_direct_metadata_probe", False))
+    except Exception:
+        return False
+
+
 def _roe_block(guard, url, method="GET"):
     if guard is None:
-        return None
+        try:
+            guard = ROEGuard(engine_cfg=load_engine())
+        except Exception as e:
+            return f"ROE guard unavailable (fail-closed): {e}"
     try:
         guard.check_url(url, method)
         return None
@@ -534,6 +545,8 @@ def scan(base_url=None, timeout=8, verify=None, roe_guard=None,
         "reason": "",
     }
 
+    allow_direct = _direct_metadata_allowed()
+
     providers = [
         ("aws_imdsv1", probe_aws_imdsv1),
         ("aws_imdsv2", probe_aws_imdsv2),
@@ -546,15 +559,24 @@ def scan(base_url=None, timeout=8, verify=None, roe_guard=None,
         ("kubernetes", probe_k8s),
     ]
 
-    for name, fn in providers:
-        try:
-            out["providers"][name] = fn(timeout=timeout, verify=verify,
-                                         roe_guard=roe_guard)
-        except Exception as e:
-            out["providers"][name] = {"verdict": "UNKNOWN",
-                                       "reason": f"{type(e).__name__}: {e}"}
+    if not allow_direct:
+        skip_reason = ("direct metadata self-probe disabled by default; these probes "
+                       "hit the scanner host's own metadata service (169.254.169.254 "
+                       "etc.), not the target. Set ssrf_cloud.allow_direct_metadata_probe: "
+                       "true in configs/engine.yaml AND add the metadata IPs to ROE scope "
+                       "to run them on an authorized cloud host.")
+        for name, _ in providers:
+            out["providers"][name] = {"verdict": "UNKNOWN", "reason": skip_reason}
+    else:
+        for name, fn in providers:
+            try:
+                out["providers"][name] = fn(timeout=timeout, verify=verify,
+                                             roe_guard=roe_guard)
+            except Exception as e:
+                out["providers"][name] = {"verdict": "UNKNOWN",
+                                           "reason": f"{type(e).__name__}: {e}"}
 
-    if base_url:
+    if base_url and allow_direct:
         try:
             out["bypasses"]["encoding"] = probe_ip_bypasses(
                 AWS_METADATA_BASE, timeout=timeout, verify=verify,
@@ -599,6 +621,10 @@ def scan(base_url=None, timeout=8, verify=None, roe_guard=None,
         out["reason"] = f"Cloud metadata partially reachable: {', '.join(susp)}"
     elif overall == "PASS":
         out["reason"] = "no cloud metadata endpoint reachable"
+    elif not allow_direct:
+        out["reason"] = ("direct metadata probing disabled (default) — scanner-host "
+                         "self-probe not run; enable ssrf_cloud.allow_direct_metadata_probe "
+                         "for authorized cloud-host testing")
     else:
         out["reason"] = "probes did not complete (check errors)"
     return out

@@ -173,6 +173,48 @@ def test_jwt_roe_fail_closed_no_guard(monkeypatch):
     assert out["results"] == []
 
 
+def test_domxss_history_sink_not_a_finding():
+    from engine import dom_xss
+    hits = [{"sink": "history.replaceState", "value": "SECMARK123"}]
+    plain, html = dom_xss._filter_hits(hits, "SECMARK123", "SECHTML123")
+    assert plain == [] and html == []
+    results = [{"source": "hash", "sink_hits": hits, "xss_hit": None,
+                "final_url": "https://x"}]
+    assert dom_xss._evaluate_sink_flow(results, "SECMARK123", "SECHTML123") == []
+
+
+def test_domxss_real_html_sink_is_flagged():
+    from engine import dom_xss
+    hits = [{"sink": "innerHTML", "value": "SECHTML123"}]
+    results = [{"source": "hash", "sink_hits": hits, "xss_hit": None,
+                "final_url": "https://x"}]
+    findings = dom_xss._evaluate_sink_flow(results, "SECMARK123", "SECHTML123")
+    assert findings and findings[0]["kind"] == "html_reachable"
+
+
+def test_bizlogic_tamper_effect_labels():
+    from engine import bizlogic
+    base_fail = {"status": 200, "body": '{"error":"out of stock"}'}
+    tampered_ok = {"status": 200, "body": '{"ok":true,"order":1}'}
+    assert bizlogic._find_tamper_effect(tampered_ok, base_fail) == \
+        "success_where_baseline_failed"
+    base_ok = {"status": 200, "body": '{"ok":true,"total":100}'}
+    tampered_diff = {"status": 200, "body": '{"ok":true,"total":0}'}
+    assert bizlogic._find_tamper_effect(tampered_diff, base_ok) == \
+        "success_different_from_baseline"
+
+
+def test_ssrf_cloud_roe_fail_closed_no_guard(monkeypatch):
+    from engine import ssrf_cloud
+
+    def _boom(*a, **kw):
+        raise AssertionError("httpx must not be called when ROE fails closed")
+
+    monkeypatch.setattr(ssrf_cloud.httpx, "Client", _boom)
+    r = ssrf_cloud.probe_single("http://not-in-scope.invalid", roe_guard=None)
+    assert r.get("blocked") and "ROE_BLOCK" in r.get("error", "")
+
+
 def test_graphql_roe_fail_closed_no_guard(monkeypatch):
     from engine import graphql_security
 

@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -13,12 +14,12 @@ CODE_SUFFIXES = {
 SKIP_DIRS = {
     ".git", ".github", "__pycache__", ".pytest_cache",
     ".venv", "venv", "env", ".env", "node_modules", "site-packages",
-    ".mypy_cache", ".ruff_cache", ".idea", ".vscode",
+    ".mypy_cache", ".ruff_cache", ".idea", ".vscode", ".claude", ".claude1",
     "evidence", "findings", "reports", "logs", "sessions",
 }
 
 SKIP_FILES = {
-    "a.py", "compile.py",
+    "a.py", "a2.py", "compile.py", "domxss_test.html",
     "credentials.yaml", "targets.yaml", "roe.yaml",
 }
 
@@ -28,6 +29,13 @@ SKIP_PREFIXES = ("build", "diag", "scratch", "tmp")
 def is_scratch(name: str) -> bool:
     stem = name.rsplit(".", 1)[0].lower()
     return any(stem.startswith(p) for p in SKIP_PREFIXES)
+
+
+def _skipped_dir(path: Path) -> bool:
+    for part in path.relative_to(ROOT).parts[:-1]:
+        if part in SKIP_DIRS or part.endswith(".bak"):
+            return True
+    return False
 
 
 def included(path: Path) -> bool:
@@ -45,18 +53,43 @@ def included(path: Path) -> bool:
     return True
 
 
-def collect():
+def _git_tracked():
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    files = []
+    for rel in out.stdout.splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
+        p = (ROOT / rel).resolve()
+        if p.is_file() and not _skipped_dir(p) and included(p):
+            files.append(p)
+    return sorted(set(files))
+
+
+def _walk():
     files = []
     for path in sorted(ROOT.rglob("*")):
         if path.is_dir():
             continue
-        if any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts[:-1]):
+        if _skipped_dir(path):
             continue
-        if any(part in SKIP_DIRS for part in path.parts):
+        if any(part in SKIP_DIRS or part.endswith(".bak") for part in path.parts):
             continue
         if included(path):
             files.append(path)
     return files
+
+
+def collect():
+    return _git_tracked() or _walk()
 
 
 def main():

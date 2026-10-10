@@ -1,5 +1,6 @@
 import base64
 import json
+import sys
 import time
 from rich.console import Console
 from rich.markup import escape
@@ -8,6 +9,12 @@ from . import (loader, executor, oracle, evidence, ledger, report,
                baseline, auth_flow, route_enum, adapter_loader)
 from .config import (load_engine, load_targets, get_target, save_session,
                      load_session, list_sessions)
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 console = Console()
 SEVERITY_RANK = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
