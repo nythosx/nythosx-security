@@ -73,3 +73,4 @@ api_hints:
   - roster
   - roles
   - permissions
+wordlist: paths_laravel

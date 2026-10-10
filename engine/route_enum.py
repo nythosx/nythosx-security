@@ -17,7 +17,7 @@ def _load_wordlist(name):
             if l.strip() and not l.startswith("#")]
 
 
-def enumerate_routes(base_url, wordlist="common_paths", headers=None, cookies=None,
+def _enumerate_routes_impl(base_url, wordlist="common_paths", headers=None, cookies=None,
                      delay_ms=50, max_paths=500):
     paths = _load_wordlist(wordlist)[:max_paths]
     client = HttpClient(default_headers=headers or {}, cookies=cookies or {})
@@ -53,3 +53,13 @@ def summarize(results):
         key = str(s) if s is not None else "ERR"
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+def enumerate_routes(base_url, wordlist="common_paths", headers=None,
+                     cookies=None, delay_ms=50, max_paths=500, adapter=None):
+    if adapter:
+        wl = adapter.get("wordlist") if isinstance(adapter, dict) else None
+        if wl:
+            wordlist = wl
+    return _enumerate_routes_impl(base_url, wordlist=wordlist,
+                                  headers=headers, cookies=cookies,
+                                  delay_ms=delay_ms, max_paths=max_paths)

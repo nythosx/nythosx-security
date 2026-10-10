@@ -64,3 +64,4 @@ api_hints:
   - account
   - me
   - user
+wordlist: paths_aspnet

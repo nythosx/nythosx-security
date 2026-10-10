@@ -1,0 +1,19 @@
+id: upload-probe
+name: File Upload Restriction Bypass
+severity: critical
+tags: [upload, rce, wstg-busl-09, cwe-434]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: upload_scan
+    verdict: VULNERABLE

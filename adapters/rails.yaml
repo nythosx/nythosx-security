@@ -58,3 +58,4 @@ api_hints:
   - users
   - me
   - session
+wordlist: paths_rails

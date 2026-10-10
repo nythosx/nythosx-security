@@ -1,0 +1,19 @@
+id: lockout-probe
+name: Missing Account Lockout
+severity: high
+tags: [lockout, auth, wstg-athn-03, cwe-307]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: lockout_scan
+    verdict: VULNERABLE

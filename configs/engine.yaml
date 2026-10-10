@@ -5,37 +5,88 @@ http:
   max_retries: 3
   backoff_base_ms: 500
   user_agent_rotation: true
-  default_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) sec-checker/1.0"
-
+  default_user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) sec-checker/1.0
 rate_limit:
   global_rps: 10
   per_endpoint_rps: 5
   burst: 20
   on_429_backoff_ms: 5000
-
 discovery:
   prefer_https: true
-  schemes: ["https", "http"]
-  base_paths: ["", "/api", "/api/v1", "/api/v2", "/api/latest", "/v1", "/v2", "/rest", "/graphql"]
-  confirm_subpaths: ["", "/health", "/healthz", "/status", "/ping", "/version"]
+  schemes:
+  - https
+  - http
+  base_paths:
+  - ''
+  - /api
+  - /api/v1
+  - /api/v2
+  - /api/latest
+  - /v1
+  - /v2
+  - /rest
+  - /graphql
+  confirm_subpaths:
+  - ''
+  - /health
+  - /healthz
+  - /status
+  - /ping
+  - /version
   reject_redirect_only: true
   follow_redirects: true
   probe_timeout_seconds: 6
-
 concurrency:
   max_workers: 50
-
 evidence:
   save_raw_bodies: true
   max_body_size_kb: 100
-
 report:
   severity_threshold: info
-
 roe:
   enabled: true
   enforce_scope: true
   enforce_methods: true
-
 ssrf_cloud:
   allow_direct_metadata_probe: false
+brain:
+  enabled: false
+  provider: rule_based
+  model: ''
+  llm:
+    provider: gemini
+    model: gemini-flash-lite-latest
+    base_url: ''
+    api_key_env: ''
+correlator:
+  enabled: true
+  confidence_threshold: 0.7
+coverage:
+  enabled: true
+  include_untested: true
+orchestrator:
+  budget:
+    max_iterations: 5
+    max_http_requests: 500
+    max_duration_seconds: 300
+    max_hypotheses_per_iter: 20
+    convergence_window: 2
+weak_password:
+  enabled: true
+  opt_in_destructive: false
+injection:
+  enabled: true
+  oob_callback_url: ''
+websocket:
+  enabled: true
+  timeout_seconds: 10
+oauth:
+  enabled: true
+  test_origins:
+  - https://attacker.example.com
+upload:
+  enabled: true
+  opt_in: false
+http2:
+  enabled: true
+  rapid_reset_max: 20

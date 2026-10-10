@@ -386,7 +386,7 @@ def _classify(vector, forged, baseline, invalid):
             "status": f_status}
 
 
-def run_attack_suite(target_url, token, method="GET", headers=None,
+def _run_attack_suite_impl(target_url, token, method="GET", headers=None,
                      public_key=None, secrets=None, claim_overrides=None,
                      timeout=15, roe_guard=None, verify=None):
     if verify is None:
@@ -450,3 +450,8 @@ def run_attack_suite(target_url, token, method="GET", headers=None,
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     return {"decoded": decoded, "baseline": baseline, "invalid": invalid,
             "results": results, "summary": counts}
+
+def run_attack_suite(*args, **kwargs):
+    from .contract import make_result
+    raw = _run_attack_suite_impl(*args, **kwargs)
+    return make_result(raw, capability="jwt_attacks", args=args, kwargs=kwargs)

@@ -1,0 +1,19 @@
+id: ssti-probe
+name: Server-Side Template Injection
+severity: high
+tags: [ssti, injection, wstg-inpv-18, cwe-1336]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: ssti_scan
+    verdict: VULNERABLE

@@ -619,7 +619,7 @@ def probe_verification_bypass(base_url, protected_path, headers=None,
             "evidence": {"status": r.get("status")}}
 
 
-def scan(base_url, headers=None, timeout=8, verify=None, roe_guard=None,
+def _scan_impl(base_url, headers=None, timeout=8, verify=None, roe_guard=None,
          endpoints=None):
     if verify is None:
         verify = _verify_tls()
@@ -690,3 +690,8 @@ def scan(base_url, headers=None, timeout=8, verify=None, roe_guard=None,
     else:
         out["reason"] = "probes did not complete"
     return out
+
+def scan(*args, **kwargs):
+    from .contract import make_result
+    raw = _scan_impl(*args, **kwargs)
+    return make_result(raw, capability="bizlogic", args=args, kwargs=kwargs)

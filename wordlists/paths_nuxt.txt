@@ -1,0 +1,17 @@
+/api/login
+/api/auth/login
+/api/auth/logout
+/api/auth/session
+/api/auth/user
+/api/me
+/api/user
+/api/users
+/api/users/me
+/api/health
+/_nuxt/
+/_nuxt/builds/meta/
+/_nuxt/builds/latest.json
+/__nuxt_error
+/login
+/dashboard
+/admin

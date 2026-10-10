@@ -1,0 +1,19 @@
+id: open-redirect
+name: Open Redirect
+severity: medium
+tags: [open-redirect, wstg-clnt-04, cwe-601]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: open_redirect_scan
+    verdict: VULNERABLE

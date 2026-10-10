@@ -347,7 +347,7 @@ def run_category(endpoint, category, spec, model, headers, timeout, verify, roe_
     return results
 
 
-def scan(base_url, model="gpt-3.5-turbo", headers=None, timeout=30,
+def _scan_impl(base_url, model="gpt-3.5-turbo", headers=None, timeout=30,
          roe_guard=None, verify=None):
     if verify is None:
         verify = _verify_tls()
@@ -370,3 +370,8 @@ def scan(base_url, model="gpt-3.5-turbo", headers=None, timeout=30,
         out.extend(run_category(endpoint, cat, spec, model,
                                 headers, timeout, verify, roe_guard))
     return out
+
+def scan(*args, **kwargs):
+    from .contract import make_result
+    raw = _scan_impl(*args, **kwargs)
+    return make_result(raw, capability="llm_security", args=args, kwargs=kwargs)

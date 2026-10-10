@@ -522,7 +522,7 @@ def _first_sig(body):
     return "unknown"
 
 
-def scan(base_url, timeout=10, verify=None, roe_guard=None, headers=None,
+def _scan_impl(base_url, timeout=10, verify=None, roe_guard=None, headers=None,
          fuzz=True, max_fuzz_per_endpoint=40, max_endpoints=50):
     if verify is None:
         verify = _verify_tls()
@@ -612,3 +612,8 @@ def _count_tags(endpoints):
         for t in e.get("tags") or []:
             counts[t] = counts.get(t, 0) + 1
     return counts
+
+def scan(*args, **kwargs):
+    from .contract import make_result
+    raw = _scan_impl(*args, **kwargs)
+    return make_result(raw, capability="openapi_scanner", args=args, kwargs=kwargs)

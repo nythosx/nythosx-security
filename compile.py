@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 OUT_NAME = "sec-checker_code.txt"
+OUT_NAME_SECRETS = "sec-checker_code_WITH_SECRETS.txt"
 
 CODE_SUFFIXES = {
     ".py", ".yaml", ".yml", ".txt", ".bat", ".sh",
@@ -23,7 +24,17 @@ SKIP_FILES = {
     "credentials.yaml", "targets.yaml", "roe.yaml",
 }
 
+SECRET_GLOBS = (
+    "configs/credentials.yaml",
+    "configs/targets.yaml",
+    "configs/roe.yaml",
+    "configs/sessions/*",
+    "configs/sessions/**/*",
+)
+
 SKIP_PREFIXES = ("build", "diag", "scratch", "tmp")
+
+WITH_SECRETS = False
 
 
 def is_scratch(name: str) -> bool:
@@ -36,6 +47,15 @@ def _skipped_dir(path: Path) -> bool:
         if part in SKIP_DIRS or part.endswith(".bak"):
             return True
     return False
+
+
+def _collect_secrets():
+    found = []
+    for pattern in SECRET_GLOBS:
+        for p in ROOT.glob(pattern):
+            if p.is_file():
+                found.append(p.resolve())
+    return sorted(set(found))
 
 
 def included(path: Path) -> bool:
@@ -89,22 +109,32 @@ def _walk():
 
 
 def collect():
-    return _git_tracked() or _walk()
+    files = _git_tracked() or _walk()
+    if WITH_SECRETS:
+        existing = set(files)
+        for p in _collect_secrets():
+            if p not in existing:
+                files.append(p)
+                existing.add(p)
+    return files
 
 
 def main():
+    global WITH_SECRETS
+    WITH_SECRETS = "--with-secrets" in sys.argv[1:]
+
     out_dir = Path.home() / "Downloads"
     if not out_dir.is_dir():
         out_dir = ROOT
-    out_path = out_dir / OUT_NAME
+    out_path = out_dir / (OUT_NAME_SECRETS if WITH_SECRETS else OUT_NAME)
 
     files = collect()
     if not files:
         print("No code files found.")
         return 1
 
+    secret_set = set(_collect_secrets()) if WITH_SECRETS else set()
     total_bytes = 0
-    skipped_secret = ["credentials.yaml", "targets.yaml", "roe.yaml", "configs/sessions/"]
 
     with out_path.open("w", encoding="utf-8") as out:
         out.write("=" * 70 + "\n")
@@ -112,8 +142,12 @@ def main():
         out.write(f"Generated: {datetime.now().isoformat(timespec='seconds')}\n")
         out.write(f"Root: {ROOT}\n")
         out.write(f"Files: {len(files)}\n")
+        if WITH_SECRETS:
+            out.write("!! WARNING: THIS BUNDLE CONTAINS SECRET FILES "
+                      "(credentials.yaml, targets.yaml, roe.yaml, sessions). "
+                      "KEEP LOCAL ONLY — never paste, upload, push, or share it. !!\n")
         out.write("Excluded: packages, .github, __pycache__, scratch, *.md, "
-                  "scan artifacts, and secret configs\n")
+                  "scan artifacts\n")
         out.write("=" * 70 + "\n\n")
 
         for i, path in enumerate(files, 1):
@@ -123,9 +157,10 @@ def main():
             except UnicodeDecodeError:
                 text = path.read_text(encoding="utf-8", errors="replace")
             total_bytes += len(text.encode("utf-8"))
+            tag = "  [SECRET]" if path.resolve() in secret_set else ""
             out.write("\n")
             out.write("#" * 70 + "\n")
-            out.write(f"# FILE {i}/{len(files)}: {rel}\n")
+            out.write(f"# FILE {i}/{len(files)}: {rel}{tag}\n")
             out.write("#" * 70 + "\n\n")
             out.write(text)
             if not text.endswith("\n"):
@@ -133,9 +168,12 @@ def main():
 
     print(f"Wrote {len(files)} files -> {out_path}")
     print(f"Size: {total_bytes / 1024:.1f} KiB")
-    print("Skipped secret files (not included): " + ", ".join(skipped_secret))
-    for path in files:
-        print("  + " + path.relative_to(ROOT).as_posix())
+    if WITH_SECRETS:
+        print("!! INCLUDED SECRET FILES — keep this bundle LOCAL ONLY, never share:")
+        for p in sorted(secret_set):
+            print("  [SECRET] " + p.relative_to(ROOT).as_posix())
+    else:
+        print("Secrets NOT included. Run with --with-secrets to include them.")
     return 0
 
 

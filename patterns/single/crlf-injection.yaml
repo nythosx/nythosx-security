@@ -1,0 +1,19 @@
+id: crlf-injection
+name: CRLF Injection / HTTP Response Splitting
+severity: high
+tags: [crlf, injection, wstg-inpv-15, cwe-93]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: crlf_scan
+    verdict: VULNERABLE

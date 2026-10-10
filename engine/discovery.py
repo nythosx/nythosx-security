@@ -294,3 +294,26 @@ def find_login_endpoint(base_url, adapter, discovered_paths=None, username="", p
                             "token": tok, "raw": (r.text or "")[:500],
                             "cookies": dict(r.cookies)}
     return best
+
+def extract_websocket_urls(url_or_html):
+    import re as _re
+    text = url_or_html or ""
+    base = ""
+    if isinstance(text, str) and text.startswith(("http://", "https://")):
+        base = text
+        r = fetch(base, follow=True)
+        if r is not None:
+            text = r.text or ""
+    if not isinstance(text, str):
+        text = ""
+    pattern = _re.compile(
+        r'''["'`]((?:ws|wss)://[^"'`\s<>]+)["'`]''',
+        _re.IGNORECASE,
+    )
+    found = set()
+    for m in pattern.finditer(text):
+        found.add(m.group(1).rstrip(".,;)"))
+    if base:
+        from urllib.parse import urljoin as _urljoin
+        return sorted(_urljoin(base, u) if u.startswith("ws") else u for u in found)
+    return sorted(found)

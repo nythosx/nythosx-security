@@ -27,7 +27,7 @@ def _make_client(headers, cookies, engine_cfg, guard):
     )
 
 
-def probe(target_url, oob_server=None, method="GET", params=None, headers=None,
+def _probe_impl(target_url, oob_server=None, method="GET", params=None, headers=None,
           cookies=None, engine_cfg=None, wait_timeout=5.0):
     engine_cfg = engine_cfg if engine_cfg is not None else load_engine()
     guard = ROEGuard(engine_cfg=engine_cfg)
@@ -81,3 +81,8 @@ def _wait_any(oob, tokens, timeout):
             return True
         time.sleep(0.1)
     return False
+
+def probe(*args, **kwargs):
+    from .contract import make_result
+    raw = _probe_impl(*args, **kwargs)
+    return make_result(raw, capability="ssrf", args=args, kwargs=kwargs)

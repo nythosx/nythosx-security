@@ -11,7 +11,7 @@ def _safe(s):
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in s)[:80]
 
 
-def save_evidence(pattern_id, target, context, verdict, oracle_result,
+def _save_evidence_impl(pattern_id, target, context, verdict, oracle_result,
                   engine_cfg=None):
     if engine_cfg is None:
         from .config import load_engine
@@ -52,3 +52,32 @@ def save_evidence(pattern_id, target, context, verdict, oracle_result,
         json.dumps(raw, indent=2, default=str), encoding="utf-8"
     )
     return str(dir_path)
+
+def save_evidence(pattern_id, target, context, verdict, oracle_result,
+                  engine_cfg=None, author=None, confidence=None,
+                  chain_ids=None):
+    import json
+    from pathlib import Path as _Path
+    path = _save_evidence_impl(pattern_id, target, context, verdict,
+                               oracle_result, engine_cfg=engine_cfg)
+    summary_path = _Path(path) / "summary.json"
+    if summary_path.exists():
+        try:
+            data = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        if author is not None:
+            data["author"] = author
+        else:
+            data.setdefault("author", "system")
+        if confidence is not None:
+            data["confidence"] = confidence
+        else:
+            data.setdefault("confidence", 0.5)
+        if chain_ids is not None:
+            data["chain_ids"] = list(chain_ids)
+        else:
+            data.setdefault("chain_ids", [])
+        summary_path.write_text(json.dumps(data, indent=2, default=str),
+                                encoding="utf-8")
+    return path

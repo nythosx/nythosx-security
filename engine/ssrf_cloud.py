@@ -531,7 +531,7 @@ def probe_ip_bypasses(base_url, timeout=8, verify=None, roe_guard=None):
     return out
 
 
-def scan(base_url=None, timeout=8, verify=None, roe_guard=None,
+def _scan_impl(base_url=None, timeout=8, verify=None, roe_guard=None,
          include_protocol_smuggling=False, fuzz_param_url=None):
     if verify is None:
         verify = _verify_tls()
@@ -628,3 +628,8 @@ def scan(base_url=None, timeout=8, verify=None, roe_guard=None,
     else:
         out["reason"] = "probes did not complete (check errors)"
     return out
+
+def scan(*args, **kwargs):
+    from .contract import make_result
+    raw = _scan_impl(*args, **kwargs)
+    return make_result(raw, capability="ssrf_cloud", args=args, kwargs=kwargs)

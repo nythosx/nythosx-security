@@ -464,7 +464,7 @@ def field_suggestion_probe(endpoint, recursive_field, headers, timeout, verify,
             "evidence": {}}
 
 
-def scan(base_url, headers=None, timeout=15, roe_guard=None, verify=None,
+def _scan_impl(base_url, headers=None, timeout=15, roe_guard=None, verify=None,
          max_depth=110, batch_size=50):
     if verify is None:
         verify = _verify_tls()
@@ -531,3 +531,8 @@ def scan(base_url, headers=None, timeout=15, roe_guard=None, verify=None,
             "verdict": overall,
             "reason": f"overall verdict across {len(results)-2} probes",
             "results": results}
+
+def scan(*args, **kwargs):
+    from .contract import make_result
+    raw = _scan_impl(*args, **kwargs)
+    return make_result(raw, capability="graphql_security", args=args, kwargs=kwargs)

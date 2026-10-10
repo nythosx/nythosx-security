@@ -1,0 +1,381 @@
+families:
+  secrets-exposure:
+    title: Secrets Exposure
+    attack: An unauthenticated attacker fetches {artifact} directly and harvests the credentials inside.
+    impact: Full compromise of the application and every downstream system that trusts the leaked credentials ({leaked}).
+    fix: Remove {artifact} from the web root, rotate every credential it contained, and add it to your deploy-exclude list.
+    refs:
+      owasp: A02
+      cwe:
+      - CWE-538
+      - CWE-200
+      wstg: WSTG-CONF-02
+  debug-mode:
+    title: Debug Mode Exposure
+    attack: An attacker triggers an error and reads the framework's debug page, which lists source paths, env vars, and stack frames.
+    impact: Sensitive configuration and internal source are disclosed, accelerating every subsequent attack.
+    fix: Set debug=false in production, disable the debug toolbar, and never expose stack traces to unauthenticated clients.
+    refs:
+      owasp: A02
+      cwe:
+      - CWE-209
+      - CWE-215
+      wstg: WSTG-CONF-02
+  security-misconfiguration:
+    title: Security Misconfiguration
+    attack: An attacker observes the missing hardening headers or over-permissive HTTP methods and pivots accordingly.
+    impact: Missing browser-side defenses magnify the blast radius of any XSS, clickjacking, or downgrade attack.
+    fix: Serve {header} on every response, or restrict dangerous methods at the edge.
+    refs:
+      owasp: A02
+      cwe:
+      - CWE-693
+      - CWE-16
+      wstg: WSTG-CONF-07
+  info-disclosure:
+    title: Information Disclosure
+    attack: An attacker reads {source} from a normal response and maps the backend stack, versions, and internal paths.
+    impact: Reconnaissance shortcut. Attackers no longer need to guess versions or framework quirks.
+    fix: Strip or normalize the leaking response, and log the event for detection.
+    refs:
+      owasp: A02
+      cwe:
+      - CWE-200
+      wstg: WSTG-INFO-02
+  cors-misconfiguration:
+    title: CORS Misconfiguration
+    attack: An attacker's origin is reflected in Access-Control-Allow-Origin, so any website can read the response with the victim's cookies.
+    impact: 'Cross-origin data theft: user profile, CSRF tokens, private API data.'
+    fix: Use an explicit allowlist for CORS origins and never combine wildcard with credentials.
+    refs:
+      owasp: A01
+      cwe:
+      - CWE-942
+      - CWE-346
+      wstg: WSTG-CONF-05
+  auth-weaknesses:
+    title: Authentication Weakness
+    attack: An attacker enumerates users, brute-forces credentials, or reuses a stolen session because the control is missing.
+    impact: "Account takeover with no exploitation of code \u2014 only policy gaps."
+    fix: Add rate limiting, generic error messages, and rotate {artifact} on privilege change.
+    refs:
+      owasp: A07
+      cwe:
+      - CWE-307
+      - CWE-204
+      - CWE-614
+      wstg: WSTG-ATHN-03
+  access-control:
+    title: Broken Access Control
+    attack: An attacker changes an identifier, method, or body field and accesses resources they should not own.
+    impact: "Horizontal or vertical privilege escalation \u2014 the most common critical web-app finding."
+    fix: Enforce ownership and role checks server-side on every request, not just in the UI.
+    refs:
+      owasp: A01
+      cwe:
+      - CWE-639
+      - CWE-284
+      - CWE-918
+      wstg: WSTG-ATHZ-04
+  injection:
+    title: Injection
+    attack: Attacker-controlled input reaches an interpreter (HTML, GraphQL, script engine, template) unchanged.
+    impact: Script execution in the victim's browser, backend code execution, or server-side resource exhaustion.
+    fix: Context-aware encode all output, enforce schema, and cap query complexity.
+    refs:
+      owasp: A03
+      cwe:
+      - CWE-79
+      - CWE-770
+      wstg: WSTG-INPV
+  cryptographic-failures:
+    title: Cryptographic Failure
+    attack: An attacker forges, replays, or downgrades a token because the signature scheme or secret is weak.
+    impact: Full authentication bypass without knowing any password.
+    fix: Use strong algorithms with adequate key entropy and validate signatures with a strict allowlist.
+    refs:
+      owasp: A02
+      cwe:
+      - CWE-347
+      - CWE-916
+      wstg: WSTG-SESS-10
+  business-logic:
+    title: Business Logic Flaw
+    attack: An attacker reorders, skips, or replays a step in a multi-stage flow the server does not enforce.
+    impact: Financial loss, unauthorized state transitions, or free product.
+    fix: Enforce step ordering and idempotency server-side, and re-validate every parameter on the final step.
+    refs:
+      owasp: A04
+      cwe:
+      - CWE-840
+      - CWE-841
+      wstg: WSTG-BUSL-01
+  race-conditions:
+    title: Race Condition
+    attack: An attacker fires {count} identical requests in one burst; the server handles more than one because the guard is not atomic.
+    impact: 'Limit overrun: multiple coupon redemptions, multiple withdrawals, multiple votes.'
+    fix: Use database-level locks, idempotency keys, or serialized transaction boundaries.
+    refs:
+      owasp: A04
+      cwe:
+      - CWE-362
+      - CWE-367
+      wstg: WSTG-BUSL-04
+  supply-chain:
+    title: Supply Chain
+    attack: An attacker leverages a known-vulnerable dependency or build-time artifact the target ships.
+    impact: "Pre-auth RCE, data exfil, or full compromise \u2014 depending on the CVE."
+    fix: Upgrade to a fixed version, pin transitive deps, and monitor advisories continuously.
+    refs:
+      owasp: A06
+      cwe:
+      - CWE-1104
+      - CWE-1035
+      wstg: WSTG-CONF-03
+  llm-security:
+    title: LLM Security
+    attack: An attacker injects text into the model's context or extracts its instructions and tool surface.
+    impact: Data exfil through the model, unauthorized tool invocation, or reputational damage via prompt output.
+    fix: Apply input/output filters, least-privilege tool scopes, and never trust model output as code or markup.
+    refs:
+      owasp_llm: LLM01
+      cwe:
+      - CWE-77
+      - CWE-1426
+  api-schema:
+    title: API Schema Exposure
+    attack: An attacker reads the OpenAPI or Swagger document and enumerates every endpoint, parameter, and auth flow.
+    impact: Complete API map for downstream fuzzing, forced browsing, and parameter tampering.
+    fix: Gate the schema behind authentication in production, or disable it entirely.
+    refs:
+      owasp: A02
+      cwe:
+      - CWE-200
+      - CWE-538
+      wstg: WSTG-CONF-01
+  denial-of-service:
+    title: Denial of Service
+    attack: An attacker sends crafted requests that consume disproportionate server resources (deep queries, oversized payloads, unbounded loops) and degrades availability for legitimate users.
+    impact: Availability loss. Downstream services may cascade-fail; SLA and reputation impact are immediate.
+    fix: Enforce query complexity limits, request size caps, per-IP rate limits, and timeouts on every backend call.
+    refs:
+      owasp: A04
+      cwe:
+      - CWE-400
+      - CWE-770
+      wstg: WSTG-BUSL-05
+patterns:
+  env-file-exposure:
+    family: secrets-exposure
+    gap: The web server serves .env as a static file instead of blocking the dot-file.
+    vars:
+      artifact: .env
+      leaked:
+        path: evidence.matched_keys
+        default: APP_KEY, DB_PASSWORD, and other secrets
+        join: ', '
+  js-bundle-secrets:
+    family: secrets-exposure
+    gap: API keys and tokens are inlined into a JavaScript bundle that any visitor can fetch.
+    vars:
+      artifact: a public JavaScript bundle
+      leaked:
+        path: evidence.matched_keys
+        default: API keys, JWTs, or cloud credentials
+  laravel-debug-mode:
+    family: debug-mode
+    gap: Laravel's Ignition error page is reachable in production.
+  security-headers-missing:
+    family: security-misconfiguration
+    gap: The response omits {header}.
+    vars:
+      header:
+        path: evidence.missing_headers
+        default: one or more security headers
+        join: ', '
+  authed-security-headers:
+    family: security-misconfiguration
+    gap: An authenticated API response drops the browser hardening headers.
+    vars:
+      header: X-Content-Type-Options and X-Frame-Options
+  http-methods-allowed:
+    family: security-misconfiguration
+    gap: The server allows {method}, which is not needed for normal operation.
+    vars:
+      method:
+        path: evidence.method
+        default: TRACE
+  server-disclosure:
+    family: info-disclosure
+    gap: The {header} header reveals the exact backend version.
+    vars:
+      header:
+        path: evidence.header
+        default: Server or X-Powered-By
+      source: the Server and X-Powered-By headers
+  api-exposed-headers:
+    family: info-disclosure
+    gap: The API response includes version banners or debug headers.
+    vars:
+      source: response headers
+  api-info-disclosure:
+    family: info-disclosure
+    gap: An error response includes source paths, class names, or config values.
+    vars:
+      source: the error body
+  api-error-handling:
+    family: info-disclosure
+    gap: The API returns 5xx on a request that should be a clean 4xx.
+    vars:
+      source: internal stack traces
+  graphql-introspection:
+    family: info-disclosure
+    gap: GraphQL introspection is enabled in production.
+    vars:
+      source: the __schema response
+  cors-wildcard:
+    family: cors-misconfiguration
+    gap: The API reflects arbitrary Origin headers or uses a wildcard.
+  api-cors-preflight:
+    family: cors-misconfiguration
+    gap: The preflight response accepts attacker-controlled origins and methods.
+  cookie-flags-missing:
+    family: auth-weaknesses
+    gap: The session cookie is missing {flag}.
+    vars:
+      flag:
+        path: evidence.missing_flags
+        default: Secure, HttpOnly, or SameSite
+        join: ', '
+      artifact: the session cookie
+  rate-limit-absent:
+    family: auth-weaknesses
+    gap: The login endpoint never returns 429, no matter how many requests are sent.
+    vars:
+      artifact: the rate limiter
+  user-enumeration-timing:
+    family: auth-weaknesses
+    gap: Response timing differs for existing vs. non-existing users.
+  auth-bypass-probe:
+    family: access-control
+    gap: The endpoint returns 200 to unauthenticated requests.
+  authed-idor:
+    family: access-control
+    gap: Changing the numeric ID in the URL returns another user's record.
+  idor-sequential:
+    family: access-control
+    gap: Sequential IDs are enumerable and return distinct 200 responses.
+  mass-assignment:
+    family: access-control
+    gap: The server accepts privileged fields (is_admin, role) from the request body.
+  ssrf-cloud-metadata:
+    family: access-control
+    gap: The target fetches attacker-controlled URLs, reaching cloud metadata.
+  dom-xss-advanced:
+    family: injection
+    gap: User-controlled input flows into a dangerous JavaScript sink without sanitization.
+  graphql-deep-security:
+    family: injection
+    gap: The GraphQL endpoint has no depth limit, batch cap, or CSRF control.
+  cache-poisoning-probe:
+    family: injection
+    gap: An unkeyed header is reflected in the cached response.
+  jwt-analysis:
+    family: cryptographic-failures
+    gap: The token is a JWT with a weak or unexpected shape.
+  jwt-weak-secret:
+    family: cryptographic-failures
+    gap: The HMAC secret is a common word or default value.
+  jwt-advanced-analysis:
+    family: cryptographic-failures
+    gap: The token uses alg:none, unsafe kid, or an embedded JWK.
+  timing-vs-baseline:
+    family: cryptographic-failures
+    gap: The response timing differs from the recorded baseline by more than 3 sigma.
+  bizlogic-scan:
+    family: business-logic
+    gap: A multi-step flow accepts reordered or skipped steps.
+  idempotency-violation:
+    family: business-logic
+    gap: The same POST body returns different state across two calls.
+  race-condition-basic:
+    family: race-conditions
+    gap: Concurrent requests produce inconsistent state.
+    vars:
+      count:
+        path: inputs.concurrency
+        default: '20'
+  race-condition-authed:
+    family: race-conditions
+    gap: Concurrent authenticated requests violate a business invariant.
+    vars:
+      count:
+        path: inputs.concurrency
+        default: '30'
+  race-advanced:
+    family: race-conditions
+    gap: A concurrent burst produces more than one success.
+    vars:
+      count:
+        path: inputs.concurrency
+        default: '20'
+  openapi-fuzz:
+    family: api-schema
+    gap: The OpenAPI or Swagger document is publicly readable and drives the fuzz.
+  llm-prompt-injection:
+    family: llm-security
+    gap: The model follows instructions embedded in user input and ignores its system prompt.
+  llm-output-handling:
+    family: llm-security
+    gap: Model output is inserted into HTML without escaping.
+  llm-sensitive-disclosure:
+    family: llm-security
+    gap: The model reveals credentials, tokens, or config values on request.
+  llm-system-prompt-leak:
+    family: llm-security
+    gap: The model echoes its system prompt or tool list.
+  llm-excessive-agency:
+    family: llm-security
+    gap: The model executes dangerous tool calls without approval.
+  ssti-probe:
+    family: injection
+    gap: User-controlled input reaches a template engine that evaluates it as code.
+  xxe-probe:
+    family: injection
+    gap: The XML parser resolves external entities declared in user input.
+  nosql-probe:
+    family: injection
+    gap: JSON operator objects ($ne, $gt, $regex) are passed to the query layer unvalidated.
+  crlf-injection:
+    family: injection
+    gap: CR/LF characters in user input reach an HTTP response header.
+  open-redirect:
+    family: access-control
+    gap: The redirect target is taken from a user-controlled param without an allowlist.
+  host-header-injection:
+    family: injection
+    gap: The Host header (or X-Forwarded-Host) is reflected in a URL, redirect, or password-reset link.
+  websocket-cswsh:
+    family: access-control
+    gap: The WebSocket handshake accepts any Origin and does not require authentication.
+  oauth-redirect-uri:
+    family: access-control
+    gap: The authorization endpoint accepts redirect_uri values outside the client's registered list.
+  oauth-missing-state:
+    family: auth-weaknesses
+    gap: The authorization endpoint accepts requests without a state parameter.
+  upload-probe:
+    family: injection
+    gap: The upload endpoint accepts dangerous file extensions or content types.
+  http2-desync:
+    family: injection
+    gap: The HTTP/2 front-end and back-end disagree on how to interpret CL/TE headers.
+  weak-password-policy:
+    family: auth-weaknesses
+    gap: The account password policy accepts short, common, or dictionary passwords.
+  lockout-probe:
+    family: auth-weaknesses
+    gap: The login endpoint never locks or rate-limits the account after repeated failures.
+  weak-credential-enum:
+    family: auth-weaknesses
+    gap: A small curated list of common credentials is sufficient to authenticate as an admin.

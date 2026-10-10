@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from . import loader
+
+
+OWASP_CATEGORIES = [
+    "A01", "A02", "A03", "A04", "A05",
+    "A06", "A07", "A08", "A09", "A10",
+]
+
+
+OWASP_TO_CAPABILITIES = {
+    "A01": ["auth-bypass-probe", "authed-idor", "idor-sequential",
+            "mass-assignment", "cors-wildcard", "api-cors-preflight",
+            "ssrf-cloud-metadata"],
+    "A02": ["security-headers-missing", "authed-security-headers",
+            "server-disclosure", "api-exposed-headers", "env-file-exposure",
+            "js-bundle-secrets", "laravel-debug-mode", "graphql-introspection",
+            "cache-poisoning-probe", "http-methods-allowed"],
+    "A03": ["sca-scan"],
+    "A04": ["bizlogic-scan", "idempotency-violation", "race-condition-basic",
+            "race-condition-authed", "race-advanced"],
+    "A05": ["dom-xss-advanced", "graphql-deep-security",
+            "llm-prompt-injection", "llm-output-handling"],
+    "A06": ["sca-scan"],
+    "A07": ["jwt-analysis", "jwt-weak-secret", "jwt-advanced-analysis",
+            "rate-limit-absent", "user-enumeration-timing",
+            "cookie-flags-missing", "timing-vs-baseline"],
+    "A08": ["openapi-fuzz"],
+    "A09": [],
+    "A10": ["api-error-handling", "api-info-disclosure"],
+}
+
+
+ATTACK_SURFACES = {
+    "rest": ["openapi-fuzz", "security-headers-missing", "cors-wildcard",
+             "api-cors-preflight", "authed-idor", "idor-sequential",
+             "mass-assignment", "api-error-handling", "api-info-disclosure"],
+    "graphql": ["graphql-deep-security", "graphql-introspection"],
+    "llm": ["llm-prompt-injection", "llm-output-handling",
+            "llm-sensitive-disclosure", "llm-system-prompt-leak",
+            "llm-excessive-agency"],
+    "auth": ["jwt-analysis", "jwt-weak-secret", "jwt-advanced-analysis",
+             "auth-bypass-probe", "rate-limit-absent",
+             "user-enumeration-timing", "cookie-flags-missing"],
+    "infra": ["server-disclosure", "env-file-exposure",
+              "js-bundle-secrets", "laravel-debug-mode",
+              "cache-poisoning-probe", "http-methods-allowed"],
+    "cloud": ["ssrf-cloud-metadata"],
+    "temporal": ["race-condition-basic", "race-condition-authed",
+                 "race-advanced", "idempotency-violation", "timing-vs-baseline"],
+}
+
+
+@dataclass
+class CoverageReport:
+    owasp: dict = field(default_factory=dict)
+    attack_surfaces: dict = field(default_factory=dict)
+    unrun_capabilities: list = field(default_factory=list)
+    untested_categories: list = field(default_factory=list)
+    executed_count: int = 0
+    total_count: int = 0
+
+    def to_dict(self):
+        return {
+            "owasp": self.owasp,
+            "attack_surfaces": self.attack_surfaces,
+            "unrun_capabilities": self.unrun_capabilities,
+            "untested_categories": self.untested_categories,
+            "executed_count": self.executed_count,
+            "total_count": self.total_count,
+        }
+
+
+def _all_pattern_ids():
+    try:
+        return sorted({p["id"] for p in loader.list_patterns()})
+    except Exception:
+        return []
+
+
+def _norm_executed(executed_caps):
+    out = set()
+    for cap in executed_caps or []:
+        if isinstance(cap, str):
+            out.add(cap)
+        else:
+            pid = getattr(cap, "pattern_id", None) or getattr(cap, "capability", None)
+            if pid:
+                out.add(pid)
+    return out
+
+
+def build_coverage_report(target=None, findings=None, executed_caps=None,
+                          profile="standard", duration=None):
+    executed = _norm_executed(executed_caps)
+    if findings:
+        for f in findings:
+            pid = None
+            if isinstance(f, dict):
+                pid = f.get("pattern_id") or f.get("capability")
+            else:
+                pid = getattr(f, "pattern_id", None) or getattr(f, "capability", None)
+            if pid:
+                executed.add(pid)
+
+    all_pids = _all_pattern_ids()
+    total = len(all_pids)
+    unrun = sorted([p for p in all_pids if p not in executed])
+
+    owasp = {}
+    for code in OWASP_CATEGORIES:
+        expected = OWASP_TO_CAPABILITIES.get(code) or []
+        covered = [p for p in expected if p in executed]
+        missing = [p for p in expected if p not in executed]
+        if expected:
+            pct = round(100.0 * len(covered) / len(expected), 1)
+        else:
+            pct = 0.0
+        owasp[code] = {
+            "executed": covered,
+            "missing": missing,
+            "coverage_pct": pct,
+            "covered": len(covered),
+            "total": len(expected),
+        }
+
+    surfaces = {}
+    for name, caps in ATTACK_SURFACES.items():
+        covered = [c for c in caps if c in executed]
+        missing = [c for c in caps if c not in executed]
+        surfaces[name] = {
+            "executed": covered,
+            "missing": missing,
+            "coverage_pct": round(100.0 * len(covered) / len(caps), 1) if caps else 0.0,
+        }
+
+    untested = [code for code in OWASP_CATEGORIES
+                if not owasp[code]["executed"]]
+
+    return CoverageReport(
+        owasp=owasp,
+        attack_surfaces=surfaces,
+        unrun_capabilities=unrun,
+        untested_categories=untested,
+        executed_count=len(executed),
+        total_count=total,
+    ).to_dict()
+
+
+__all__ = [
+    "CoverageReport", "build_coverage_report",
+    "OWASP_TO_CAPABILITIES", "ATTACK_SURFACES", "OWASP_CATEGORIES",
+]

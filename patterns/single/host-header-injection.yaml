@@ -1,0 +1,19 @@
+id: host-header-injection
+name: Host Header Injection
+severity: high
+tags: [host-header, injection, wstg-conf-07, cwe-116]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: host_header_scan
+    verdict: VULNERABLE

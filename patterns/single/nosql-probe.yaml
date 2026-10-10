@@ -1,0 +1,19 @@
+id: nosql-probe
+name: NoSQL Injection
+severity: high
+tags: [nosql, injection, wstg-inpv-05, cwe-943]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: nosql_scan
+    verdict: VULNERABLE

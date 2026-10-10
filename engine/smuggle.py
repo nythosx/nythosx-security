@@ -88,7 +88,7 @@ def analyze(baseline_ms, probes, threshold_ms=3000.0):
             "evidence": {"baseline_ms": baseline_ms}}
 
 
-def probe(target_url, engine_cfg=None, timeout=5.0, threshold_ms=3000.0,
+def _probe_impl(target_url, engine_cfg=None, timeout=5.0, threshold_ms=3000.0,
           roe_guard=None):
     engine_cfg = engine_cfg if engine_cfg is not None else load_engine()
     guard = roe_guard or ROEGuard(engine_cfg=engine_cfg)
@@ -118,3 +118,21 @@ def probe(target_url, engine_cfg=None, timeout=5.0, threshold_ms=3000.0,
            "baseline": base, "probes": probes}
     out["result"] = analyze(baseline_ms, probes, threshold_ms)
     return out
+
+def probe(target_url, engine_cfg=None, timeout=5.0, threshold_ms=3000.0,
+          roe_guard=None, protocol="h1"):
+    from .contract import make_result
+    if protocol == "h2":
+        try:
+            from . import http2_probe as _h2
+        except ImportError as e:
+            raise NotImplementedError(
+                "h2 protocol support requires engine/http2_probe.py"
+            ) from e
+        return _h2.scan(target_url, roe_guard=roe_guard, timeout=timeout)
+    raw = _probe_impl(target_url, engine_cfg=engine_cfg, timeout=timeout,
+                      threshold_ms=threshold_ms, roe_guard=roe_guard)
+    return make_result(raw, capability="smuggle", args=(target_url,),
+                       kwargs={"target_url": target_url})
+
+

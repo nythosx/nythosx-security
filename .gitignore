@@ -27,7 +27,12 @@ diag*.py
 *.bak/
 engine.bak/
 .claude1/
+.claude2/
 domxss_test.html
 
 # xampp
 *.log
+
+# secrets
+.env
+.env.*

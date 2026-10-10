@@ -1,0 +1,19 @@
+id: oauth-redirect-uri
+name: OAuth redirect_uri Bypass
+severity: high
+tags: [oauth, redirect-uri, wstg-athn-05, cwe-601]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: oauth_redirect_uri_scan
+    verdict: VULNERABLE

@@ -44,7 +44,7 @@ ECOSYSTEMS = {
 }
 SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv",
              "venv", "dist", "build", ".next", ".nuxt", "target"}
-SEVERITY_RANK = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
+from .contract import SEVERITY_ORDER as SEVERITY_RANK  # noqa: E402
 
 
 def _verify_tls():
@@ -445,7 +445,7 @@ def _severity_from_vuln(vuln):
     return s if s in SEVERITY_RANK else "medium"
 
 
-def scan_dependencies(root, timeout=30):
+def _scan_dependencies_impl(root, timeout=30):
     deps, degraded = collect_all_dependencies(root)
     if not deps:
         return {"root": str(root), "files": [], "dependencies": [],
@@ -491,3 +491,7 @@ def scan_dependencies(root, timeout=30):
 # --- ROE guard setter (no-op for SCA; osv.dev is not a target) ---
 _ROE_GUARD = None
 
+def scan_dependencies(*args, **kwargs):
+    from .contract import make_result
+    raw = _scan_dependencies_impl(*args, **kwargs)
+    return make_result(raw, capability="sca", args=args, kwargs=kwargs)

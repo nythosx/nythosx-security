@@ -1,0 +1,19 @@
+id: http2-desync
+name: HTTP/2 Desync (H2.CL / H2.TE)
+severity: high
+tags: [http2, smuggling, wstg-inpv-15, cwe-444]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: http2_scan
+    verdict: SUSPICIOUS

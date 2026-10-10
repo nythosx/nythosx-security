@@ -461,7 +461,7 @@ def _collect_csp_headers(url, headers, timeout, verify_tls, roe_guard):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
-def scan(url, headers=None, timeout_ms=15000, roe_guard=None, verify_tls=None,
+def _scan_impl(url, headers=None, timeout_ms=15000, roe_guard=None, verify_tls=None,
          include_mxss=True):
     if verify_tls is None:
         verify_tls = _verify_tls()
@@ -551,3 +551,8 @@ def scan(url, headers=None, timeout_ms=15000, roe_guard=None, verify_tls=None,
             out["reason"] = "no source→sink flow detected"
 
     return out
+
+def scan(*args, **kwargs):
+    from .contract import make_result
+    raw = _scan_impl(*args, **kwargs)
+    return make_result(raw, capability="dom_xss", args=args, kwargs=kwargs)

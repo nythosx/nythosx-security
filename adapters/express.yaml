@@ -56,3 +56,4 @@ api_hints:
   - login
   - me
   - user
+wordlist: paths_express

@@ -17,13 +17,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 console = Console()
-SEVERITY_RANK = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
-VERDICT_COLOR = {
-    "VULNERABLE": "bold red",
-    "SUSPICIOUS": "bold yellow",
-    "PASS": "bold green",
-    "UNKNOWN": "dim",
-}
+from .contract import SEVERITY_ORDER as SEVERITY_RANK, VERDICT_COLOR  # noqa: E402
 EXIT_FINDINGS = 3
 _ACTIONABLE = ("VULNERABLE", "SUSPICIOUS")
 
@@ -403,10 +397,58 @@ def cmd_scan_all(args):
     return _compute_fail_exit(scan_results, fail_on)
 
 
+def _make_brain(name):
+    if name in ("llm", "ai"):
+        try:
+            from .brains.llm import make_llm_client, LLMBrain
+            bcfg = (load_engine() or {}).get("brain") or {}
+            lcfg = bcfg.get("llm") or {}
+            model = lcfg.get("model") or bcfg.get("model") or "gpt-4o-mini"
+            client = make_llm_client(
+                provider=lcfg.get("provider") or bcfg.get("provider") or "openai",
+                model=model, base_url=lcfg.get("base_url"),
+                env_name=lcfg.get("api_key_env"))
+            console.print(f"[dim]LLM brain: provider="
+                          f"{lcfg.get('provider') or bcfg.get('provider')} model={model}[/dim]")
+            return LLMBrain(client=client, model=model)
+        except Exception as e:
+            console.print(f"[yellow]LLM brain unavailable ({e}); using rule-based.[/yellow]")
+    from .brains.rule_based import RuleBasedBrain
+    return RuleBasedBrain()
+
+
+def _run_orchestrated(url, profile, brain_name, fail_on):
+    from .orchestrator import Orchestrator
+    brain = _make_brain(brain_name)
+    console.print(f"[cyan]Orchestrated scan[/cyan] profile=[bold]{profile}[/bold] "
+                  f"brain=[bold]{brain.__class__.__name__}[/bold]")
+    orc = Orchestrator(console=console)
+    state = orc.run(url, profile=profile, brain=brain)
+    counts = {"VULNERABLE": 0, "SUSPICIOUS": 0, "PASS": 0, "UNKNOWN": 0}
+    results = []
+    for f in getattr(state, "findings", []) or []:
+        v = f.verdict.value if hasattr(f.verdict, "value") else str(f.verdict)
+        counts[v] = counts.get(v, 0) + 1
+        sev = f.severity.value if hasattr(f.severity, "value") else str(f.severity)
+        results.append({"verdict": v, "severity": sev})
+    console.print(f"  iterations={getattr(state, 'iterations', 0)} "
+                  f"capabilities={len(getattr(state, 'executed_capabilities', []) or [])} "
+                  f"chains={len(getattr(state, 'chains', []) or [])}")
+    console.print(f"  [bold red]VULNERABLE[/bold red]: {counts['VULNERABLE']}  "
+                  f"[bold yellow]SUSPICIOUS[/bold yellow]: {counts['SUSPICIOUS']}  "
+                  f"[bold green]PASS[/bold green]: {counts['PASS']}  "
+                  f"[dim]UNKNOWN[/dim]: {counts['UNKNOWN']}")
+    console.print(f"[dim]Run 'chains {url}' and 'coverage {url}' for detail.[/dim]")
+    return _compute_fail_exit(results, fail_on)
+
+
 def cmd_auto(args):
-    if not args:
-        console.print("[red]Usage: auto <url> [--min-severity X] [--adapter ID][/red]")
-        return
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: auto <url> [--min-severity X] [--adapter ID] "
+                      "[--profile quick|standard|deep] [--brain rule|llm][/cyan]")
+        console.print("  --profile  orchestrated multi-pass scan with a budget (opt-in)")
+        console.print("  --brain    rule (deterministic, default) or llm (opt-in, needs API key)")
+        return 0
     from . import auto as auto_mod
     url = args[0]
     min_sev = "medium"
@@ -414,6 +456,8 @@ def cmd_auto(args):
     adapter_override = None
     auto_baseline = False
     fail_on = None
+    profile = None
+    brain_name = None
     i = 1
     while i < len(args):
         if args[i] == "--min-severity" and i + 1 < len(args):
@@ -431,8 +475,16 @@ def cmd_auto(args):
         elif args[i] == "--fail-on" and i + 1 < len(args):
             fail_on = args[i + 1]
             i += 2
+        elif args[i] == "--profile" and i + 1 < len(args):
+            profile = args[i + 1]
+            i += 2
+        elif args[i] == "--brain" and i + 1 < len(args):
+            brain_name = args[i + 1]
+            i += 2
         else:
             i += 1
+    if profile or brain_name:
+        return _run_orchestrated(url, profile or "standard", brain_name, fail_on)
     outcome = auto_mod.run_auto(url, min_severity=min_sev, skip_discovery=skip,
                                 adapter_override=adapter_override,
                                 auto_baseline=auto_baseline)
@@ -2624,9 +2676,170 @@ def cmd_help(args):
     console.print()
 
 
+def _target_findings(target):
+    resolved = _resolve_report_target(target)
+    if resolved != target:
+        console.print(f"[dim]Resolved target: {resolved}[/dim]")
+    rows = ledger.findings_for_target(resolved)
+    keys = ["id", "timestamp", "pattern_id", "category", "verdict", "severity",
+            "reason", "wstg_id", "cwe_id", "evidence_path", "duration_ms"]
+    return resolved, [dict(zip(keys, r)) for r in rows]
+
+
+def cmd_chains(args):
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: chains <target>[/cyan]")
+        console.print("  Correlates findings into multi-step attack chains.")
+        return 0
+    from . import report
+    target, findings = _target_findings(args[0])
+    chains = report.build_chains(findings)
+    if not chains:
+        console.print("[dim]No attack chains correlated from current findings.[/dim]")
+        return 0
+    cv = {"CONFIRMED": "bold red", "LIKELY": "red", "THEORETICAL": "yellow",
+          "INCOMPLETE": "dim"}
+    t = Table(title=f"Attack Chains — {target}")
+    t.add_column("Chain", style="cyan")
+    t.add_column("Verdict", style="bold")
+    t.add_column("Conf", justify="right")
+    t.add_column("Prereqs", justify="right")
+    for c in chains:
+        color = cv.get(c.get("verdict"), "white")
+        t.add_row(escape(c.get("name", "")),
+                  f"[{color}]{c.get('verdict')}[/{color}]",
+                  f"{(c.get('confidence') or 0) * 100:.0f}%",
+                  f"{len(c.get('matched') or [])}/{len(c.get('prerequisites') or [])}")
+    console.print(t)
+    for c in chains:
+        if c.get("verdict") in ("CONFIRMED", "LIKELY") and c.get("narrative_text"):
+            console.print()
+            console.print(f"[bold]{escape(c.get('name',''))}[/bold]")
+            console.print(escape(c["narrative_text"]))
+    return 0
+
+
+def cmd_coverage(args):
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: coverage <target>[/cyan]")
+        console.print("  Shows OWASP 2025 and attack-surface coverage: what was tested, what was not.")
+        return 0
+    from . import report
+    target, findings = _target_findings(args[0])
+    cov = report.build_coverage(target, findings)
+    if not cov:
+        console.print("[red]coverage module unavailable[/red]")
+        return 1
+    console.print(f"[bold]Coverage — {target}[/bold]  "
+                  f"({cov['executed_count']}/{cov['total_count']} capabilities executed)")
+    t = Table(title="OWASP Top 10:2025")
+    t.add_column("Category", style="cyan")
+    t.add_column("Coverage", justify="right")
+    t.add_column("Executed/Total", justify="right")
+    for code, c in cov["owasp"].items():
+        pct = c["coverage_pct"]
+        color = "green" if pct >= 50 else ("yellow" if pct > 0 else "red")
+        t.add_row(code, f"[{color}]{pct:.0f}%[/{color}]", f"{c['covered']}/{c['total']}")
+    console.print(t)
+    if cov.get("untested_categories"):
+        console.print(f"[yellow]Untested categories:[/yellow] "
+                      f"{escape(', '.join(cov['untested_categories']))}")
+    return 0
+
+
+def _sr_field(res, name, default=None):
+    try:
+        v = getattr(res, name)
+    except Exception:
+        try:
+            v = res[name]
+        except Exception:
+            return default
+    return v.value if hasattr(v, "value") else v
+
+
+def cmd_weak_password(args):
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: weak-password-check <change_url> "
+                      "[--current-password P] [--change-path PATH] [--auth X] "
+                      "[--lockout-login URL --username U][/cyan]")
+        console.print("  Tests whether a self-service password change accepts a weak password.")
+        console.print("  --lockout-login + --username  also probe for missing account lockout")
+        console.print("    (opt-in: sends several failed logins; state-changing).")
+        return 0
+    from . import weak_password_policy
+    target = args[0]
+    current_password = None
+    change_path = None
+    auth_str = None
+    lockout_login = None
+    username = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--current-password" and i + 1 < len(args):
+            current_password = args[i + 1]; i += 2
+        elif args[i] == "--change-path" and i + 1 < len(args):
+            change_path = args[i + 1]; i += 2
+        elif args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]; i += 2
+        elif args[i] == "--lockout-login" and i + 1 < len(args):
+            lockout_login = args[i + 1]; i += 2
+        elif args[i] == "--username" and i + 1 < len(args):
+            username = args[i + 1]; i += 2
+        else:
+            i += 1
+
+    guard = ROEGuard(engine_cfg=load_engine())
+    headers = _parse_auth(auth_str) or None
+    rows = []
+    res = weak_password_policy.scan(target, headers=headers, roe_guard=guard,
+                                    change_path=change_path,
+                                    current_password=current_password)
+    rows.append(("weak-password-policy", res))
+
+    if lockout_login and username:
+        console.print("[yellow]Lockout probe is state-changing (sends failed logins). "
+                      "Running because you passed --lockout-login + --username.[/yellow]")
+        from . import lockout_probe
+        lres = lockout_probe.scan(lockout_login, username, headers=headers,
+                                  roe_guard=guard)
+        rows.append(("lockout-probe", lres))
+    elif lockout_login or username:
+        console.print("[dim]Lockout probe skipped: needs BOTH --lockout-login and --username.[/dim]")
+
+    t = Table(title="Weak Password Checks")
+    t.add_column("Check", style="cyan")
+    t.add_column("Verdict", style="bold")
+    t.add_column("Severity")
+    t.add_column("Reason")
+    results_for_exit = []
+    for name, res in rows:
+        verdict = _sr_field(res, "verdict", "UNKNOWN")
+        severity = _sr_field(res, "severity", "info")
+        reason = _sr_field(res, "reason", "") or ""
+        color = VERDICT_COLOR.get(verdict, "white")
+        t.add_row(name, f"[{color}]{verdict}[/{color}]", escape(str(severity)),
+                  escape(str(reason)[:80]))
+        results_for_exit.append({"verdict": verdict, "severity": severity})
+        if verdict in ("VULNERABLE", "SUSPICIOUS"):
+            try:
+                ledger.record_finding(
+                    pattern_id=name, target=target, verdict=verdict,
+                    severity=severity, reason=reason, evidence_path="",
+                    evidence_json=_sr_field(res, "evidence", {}) or {},
+                    category="auth", wstg_id="WSTG-ATHN-07", cwe_id="CWE-521")
+            except Exception:
+                pass
+    console.print(t)
+    return 0
+
+
 COMMANDS = {
     "list": cmd_list,
     "show": cmd_show,
+    "chains": cmd_chains,
+    "coverage": cmd_coverage,
+    "weak-password-check": cmd_weak_password,
     "validate": cmd_validate,
     "adapters": cmd_adapters,
     "scan": cmd_scan,

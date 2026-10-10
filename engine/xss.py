@@ -19,7 +19,7 @@ def _with_param(url, param, value):
     return urlunparse(parts._replace(query=new_query))
 
 
-def probe(target_url, param, oob_server=None, headers=None, cookies=None,
+def _probe_impl(target_url, param, oob_server=None, headers=None, cookies=None,
           engine_cfg=None, wait_timeout=4.0):
     own_oob = oob_server is None
     oob = oob_server or OOBServer().start()
@@ -57,3 +57,8 @@ def probe(target_url, param, oob_server=None, headers=None, cookies=None,
                          "reason": "no payload executed in browser",
                          "evidence": {"payloads_tried": len(out["attempts"])}}
     return out
+
+def probe(*args, **kwargs):
+    from .contract import make_result
+    raw = _probe_impl(*args, **kwargs)
+    return make_result(raw, capability="xss", args=args, kwargs=kwargs)

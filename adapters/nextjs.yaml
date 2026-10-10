@@ -56,3 +56,4 @@ api_hints:
   - session
   - me
   - user
+wordlist: paths_nextjs

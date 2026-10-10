@@ -1268,7 +1268,7 @@ def _catch_all_blocks(context):
     return not any(_step_is_jsonish(s) for s in live)
 
 
-def evaluate(oracle, context):
+def _evaluate_impl(oracle, context):
     otype = oracle.get("type")
     handler = _HANDLERS.get(otype)
     if not handler:
@@ -1282,3 +1282,9 @@ def evaluate(oracle, context):
         return handler(oracle, context)
     except Exception as e:
         return {"verdict": "UNKNOWN", "reason": f"oracle error: {e}", "evidence": {}}
+
+def evaluate(oracle, context):
+    from .contract import wrap_evaluate
+    raw = _evaluate_impl(oracle, context)
+    otype = oracle.get("type") if isinstance(oracle, dict) else ""
+    return wrap_evaluate(raw, otype)

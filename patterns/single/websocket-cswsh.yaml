@@ -1,0 +1,19 @@
+id: websocket-cswsh
+name: WebSocket Cross-Site Hijacking
+severity: high
+tags: [websocket, cswsh, wstg-clnt-11, cwe-1385]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: websocket_scan
+    verdict: VULNERABLE

@@ -66,7 +66,7 @@ def analyze(self_probe, neighbor_probes):
             "evidence": {"self_id": self_probe.get("id")}}
 
 
-def run_probe(identity_url, resource_base, headers=None, cookies=None,
+def _run_probe_impl(identity_url, resource_base, headers=None, cookies=None,
               engine_cfg=None, roe_guard=None):
     engine_cfg = engine_cfg if engine_cfg is not None else load_engine()
     guard = roe_guard or ROEGuard(engine_cfg=engine_cfg)
@@ -117,3 +117,8 @@ def run_probe(identity_url, resource_base, headers=None, cookies=None,
     finally:
         client.close()
     return out
+
+def run_probe(*args, **kwargs):
+    from .contract import make_result
+    raw = _run_probe_impl(*args, **kwargs)
+    return make_result(raw, capability="idor", args=args, kwargs=kwargs)

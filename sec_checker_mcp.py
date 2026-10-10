@@ -50,6 +50,11 @@ async def list_tools():
 
 @server.call_tool()
 async def call_tool(name, arguments):
+    if name == "sec_manifest":
+        from engine import registry
+        import json as _json
+        return [TextContent(type="text",
+                             text=_json.dumps(registry.manifest(), indent=2))]
     fn = None
     for t in all_tools():
         if (getattr(t, "_tool_name", None) or t.__name__) == name:

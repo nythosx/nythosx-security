@@ -529,7 +529,7 @@ def state_machine_replay(url, method="POST", body=None, headers=None,
             "evidence": evidence}
 
 
-def race_scan(url, method="POST", body=None, headers=None, count=DEFAULT_COUNT,
+def _race_scan_impl(url, method="POST", body=None, headers=None, count=DEFAULT_COUNT,
               modes=None, timeout=DEFAULT_TIMEOUT, roe_guard=None,
               verify_tls=None):
     if verify_tls is None:
@@ -583,3 +583,8 @@ def race_scan(url, method="POST", body=None, headers=None, count=DEFAULT_COUNT,
 
     return {"url": url, "method": method.upper(), "count": count,
             "overall": overall, "results": results}
+
+def race_scan(*args, **kwargs):
+    from .contract import make_result
+    raw = _race_scan_impl(*args, **kwargs)
+    return make_result(raw, capability="race_advanced", args=args, kwargs=kwargs)

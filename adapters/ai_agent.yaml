@@ -75,3 +75,4 @@ api_hints:
   - models
   - llm
   - ai
+wordlist: paths_graphql

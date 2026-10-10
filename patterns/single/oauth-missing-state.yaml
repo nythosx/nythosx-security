@@ -1,0 +1,19 @@
+id: oauth-missing-state
+name: OAuth Missing State Parameter
+severity: high
+tags: [oauth, csrf, wstg-athn-05, cwe-352]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: oauth_state_scan
+    verdict: VULNERABLE

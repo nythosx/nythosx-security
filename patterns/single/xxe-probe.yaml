@@ -1,0 +1,19 @@
+id: xxe-probe
+name: XML External Entity Injection
+severity: critical
+tags: [xxe, injection, wstg-inpv-07, cwe-611]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: xxe_scan
+    verdict: VULNERABLE
