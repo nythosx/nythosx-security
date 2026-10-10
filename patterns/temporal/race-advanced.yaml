@@ -1,0 +1,26 @@
+id: race-advanced
+name: Advanced Race Condition Testing
+severity: high
+tags: [race-condition, concurrency, wstg-busl-04, cwe-362]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+  concurrency:
+    type: int
+    default: 20
+
+steps:
+  - name: concurrent
+    concurrency: "{{ inputs.concurrency }}"
+    no_rate_limit: true
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        action: "race_probe"
+
+oracles:
+  - type: race_advanced
+    verdict: VULNERABLE

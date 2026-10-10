@@ -13,6 +13,15 @@ rate_limit:
   burst: 20
   on_429_backoff_ms: 5000
 
+discovery:
+  prefer_https: true
+  schemes: ["https", "http"]
+  base_paths: ["", "/api", "/api/v1", "/api/v2", "/api/latest", "/v1", "/v2", "/rest", "/graphql"]
+  confirm_subpaths: ["", "/health", "/healthz", "/status", "/ping", "/version"]
+  reject_redirect_only: true
+  follow_redirects: true
+  probe_timeout_seconds: 6
+
 concurrency:
   max_workers: 50
 

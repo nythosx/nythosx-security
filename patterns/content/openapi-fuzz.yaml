@@ -1,0 +1,19 @@
+id: openapi-fuzz
+name: OpenAPI/Swagger Spec Discovery and Fuzzing
+severity: medium
+tags: [openapi, swagger, api-fuzzing, wstg-apit-01, cwe-20]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: openapi_scan
+    verdict: SUSPICIOUS

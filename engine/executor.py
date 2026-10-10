@@ -66,10 +66,12 @@ def _execute_one(step, inputs, client, loop_index, target, skip_rate_limit=False
     data_body = render(req.get("data"), inputs, loop_index, target) if req.get("data") else None
     params = render(req.get("params"), inputs, loop_index, target) if req.get("params") else None
     no_auth = bool(step.get("no_auth"))
+    follow_redirects = bool(req.get("follow_redirects", False))
     result = client.request(method, url, headers=headers, json=json_body,
                              data=data_body, params=params,
                              skip_default_headers=no_auth,
-                             skip_rate_limit=skip_rate_limit)
+                             skip_rate_limit=skip_rate_limit,
+                             follow_redirects=follow_redirects)
     result["step_name"] = step.get("name", "step")
     result["loop_index"] = loop_index
     result["no_auth"] = no_auth
@@ -77,7 +79,7 @@ def _execute_one(step, inputs, client, loop_index, target, skip_rate_limit=False
 
 
 def execute_pattern(pattern, inputs, target, default_headers=None, engine_config=None,
-                    cookies=None):
+                    cookies=None, negative_baseline=None):
     cfg = engine_config or {}
     http_cfg = cfg.get("http", {})
     # Pass engine config so roe.enforce_scope / enforce_methods flags are
@@ -123,7 +125,8 @@ def execute_pattern(pattern, inputs, target, default_headers=None, engine_config
                 steps_results.append(_execute_one(step, inputs, client, 0, target, skip_rl))
     finally:
         client.close()
-    context = {"steps": steps_results, "inputs": inputs, "target": target}
+    context = {"steps": steps_results, "inputs": inputs, "target": target,
+               "negative_baseline": negative_baseline}
     if any((o.get("type") == "timing_vs_baseline") for o in pattern.get("oracles", [])):
         baseline = _load_baseline_for(target)
         if baseline:

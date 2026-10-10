@@ -1,0 +1,19 @@
+id: dom-xss-advanced
+name: DOM-Based XSS (Source/Sink Taint + mXSS)
+severity: high
+tags: [xss, dom-xss, wstg-clnt-01, cwe-79]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: dom_xss
+    verdict: VULNERABLE

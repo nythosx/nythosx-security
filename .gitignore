@@ -20,7 +20,14 @@ venv/
 # build scripts (dev only)
 build*.py
 a.py
+a2.py
 diag*.py
+
+# backups / scratch / foreign tool config
+*.bak/
+engine.bak/
+.claude1/
+domxss_test.html
 
 # xampp
 *.log

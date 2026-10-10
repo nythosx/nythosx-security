@@ -17,7 +17,6 @@ steps:
         Origin: "https://attacker.example.com"
 
 oracles:
-  - type: header_value_match
-    header: Access-Control-Allow-Origin
-    regex: "\\*|attacker\\.example\\.com"
+  - type: cors_misconfig
+    test_origin: "https://attacker.example.com"
     verdict: VULNERABLE

@@ -1,0 +1,77 @@
+id: ai_agent
+name: AI/LLM Application
+priority: 60
+
+detect:
+  headers_any:
+    X-RateLimit-Limit:
+      - ".+"
+    X-Request-Id:
+      - ".+"
+    Server:
+      - "uvicorn"
+      - "hypercorn"
+      - "gunicorn"
+      - "Werkzeug"
+  cookies_any: []
+  html_contains:
+    - "swagger-ui"
+    - "redoc"
+    - "openapi"
+    - "chat"
+    - "llm"
+    - "completions"
+  meta_generator: ""
+
+runtime_config:
+  html_patterns:
+    - 'apiBase\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'API_URL\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+    - 'baseURL\s*[:=]\s*[\x22\x27]([^\x22\x27]+)[\x22\x27]'
+  json_scripts: []
+
+auth:
+  login_paths:
+    - /v1/chat/completions
+    - /v1/completions
+    - /api/chat
+    - /api/generate
+    - /chat
+    - /api/messages
+  login_fields:
+    - messages
+    - prompt
+    - input
+  token_paths:
+    - choices.0.message.content
+    - content.0.text
+    - message.content
+    - response
+    - output
+  default_header: "Authorization"
+  default_prefix: "Bearer "
+
+endpoints:
+  auth_probe:
+    - /v1/models
+    - /api/tags
+    - /v1/me
+  health:
+    - /health
+    - /healthz
+
+ports:
+  - 8000
+  - 8080
+  - 11434
+  - 3000
+  - 5000
+
+api_hints:
+  - chat
+  - completions
+  - generate
+  - messages
+  - models
+  - llm
+  - ai

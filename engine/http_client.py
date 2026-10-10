@@ -3,6 +3,7 @@ import hashlib
 import random
 import httpx
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 from .roe_guard import ROEGuard, ROEViolation
 from .ratelimit import RateLimiter, get_shared_limiter
 
@@ -55,8 +56,34 @@ class HttpClient:
             headers.setdefault("User-Agent", random.choice(self.user_agents))
         return headers
 
+    def _follow_same_origin(self, r, headers, skip_rate_limit, max_hops=5):
+        hops = 0
+        offsite = False
+        while 300 <= r.status_code < 400 and hops < max_hops:
+            loc = r.headers.get("location") or r.headers.get("Location")
+            if not loc:
+                break
+            nxt = urljoin(str(r.url), loc)
+            if (urlparse(nxt).hostname or "") != (urlparse(str(r.url)).hostname or ""):
+                offsite = True
+                break
+            try:
+                self.roe_guard.check_url(nxt, "GET")
+            except ROEViolation:
+                offsite = True
+                break
+            if not skip_rate_limit:
+                self.limiter.acquire(nxt)
+            try:
+                r = self.client.request("GET", nxt, headers=headers)
+            except Exception:
+                break
+            hops += 1
+        return r, hops, offsite
+
     def request(self, method, url, headers=None, json=None, data=None, params=None,
-                skip_default_headers=False, skip_rate_limit=False):
+                skip_default_headers=False, skip_rate_limit=False,
+                follow_redirects=False):
         try:
             self.roe_guard.check_url(url, method)
         except ROEViolation as e:
@@ -81,6 +108,11 @@ class HttpClient:
                     method=method.upper(), url=url, headers=merged,
                     json=json, data=data, params=params
                 )
+                redirect_hops = 0
+                redirected_offsite = False
+                if follow_redirects and 300 <= r.status_code < 400:
+                    r, redirect_hops, redirected_offsite = self._follow_same_origin(
+                        r, merged, skip_rate_limit)
                 elapsed = (time.perf_counter() - t0) * 1000.0
                 body = r.text
                 if r.status_code == 429:
@@ -95,6 +127,8 @@ class HttpClient:
                     "error": None,
                     "attempts": attempt + 1,
                     "set_cookies": dict(r.cookies),
+                    "redirect_hops": redirect_hops,
+                    "redirected_offsite": redirected_offsite,
                 }
             except (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError) as e:
                 last_error = e

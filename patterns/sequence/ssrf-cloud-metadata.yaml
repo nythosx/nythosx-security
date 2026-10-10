@@ -1,0 +1,19 @@
+id: ssrf-cloud-metadata
+name: SSRF Cloud Metadata Exploitation
+severity: critical
+tags: [ssrf, cloud, metadata, wstg-inpv-19, cwe-918]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: ssrf_cloud
+    verdict: VULNERABLE

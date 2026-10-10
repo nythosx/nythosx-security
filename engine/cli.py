@@ -2,6 +2,7 @@ import base64
 import json
 import time
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from . import (loader, executor, oracle, evidence, ledger, report,
                baseline, auth_flow, route_enum, adapter_loader)
@@ -976,6 +977,1599 @@ def cmd_targets(args):
     console.print(t)
 
 
+def cmd_llm(args):
+    # a2.py-patch:cmd_llm
+    if not args or "--help" in args or "-h" in args:
+        console.print("Usage: llm <url>")
+        console.print("  Runs OWASP LLM Top 10 probes. Target must be in ROE scope.")
+        return 0
+    from . import llm_security as _mod
+    try:
+        from .roe_guard import ROEGuard
+        from .config import load_engine
+    except Exception as _e:
+        console.print(f"[yellow]ROE guard init: {_e}[/yellow]")
+    if not args:
+        console.print("[red]Usage: llm <url> [--model MODEL] [--api-key KEY] "
+                      "[--auth X] [--session NAME] [--fail-on SEV][/red]")
+        return
+    url = args[0]
+    model = "gpt-3.5-turbo"
+    api_key = None
+    auth_str = None
+    session = None
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--model" and i + 1 < len(args):
+            model = args[i + 1]
+            i += 2
+        elif args[i] == "--api-key" and i + 1 < len(args):
+            api_key = args[i + 1]
+            i += 2
+        elif args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    headers["Content-Type"] = "application/json"
+    from . import llm_security
+    console.print(f"[cyan]LLM security scan:[/cyan] {url}")
+    console.print(f"[dim]Model: {model}[/dim]")
+    console.print()
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    _guard = ROEGuard(engine_cfg=_load_engine())
+    results = llm_security.scan(url, model=model, headers=headers, roe_guard=_guard)
+    t = Table(title="LLM Security Results")
+    t.add_column("Category", style="cyan")
+    t.add_column("OWASP", style="magenta")
+    t.add_column("Severity", style="yellow")
+    t.add_column("Verdict", style="bold")
+    t.add_column("Reason", style="white")
+    counts = {"VULNERABLE": 0, "SUSPICIOUS": 0, "PASS": 0, "UNKNOWN": 0}
+    for r in results:
+        verdict = r["verdict"]
+        counts[verdict] = counts.get(verdict, 0) + 1
+        color = VERDICT_COLOR.get(verdict, "white")
+        t.add_row(
+            escape(r["category"]),
+            escape(r.get("owasp", "")),
+            escape(r["severity"]),
+            f"[{color}]{verdict}[/{color}]",
+            escape(r["reason"][:60]),
+        )
+    console.print(t)
+    console.print()
+    console.print(f"  [bold red]VULNERABLE[/bold red]: {counts['VULNERABLE']}")
+    console.print(f"  [bold green]PASS[/bold green]      : {counts['PASS']}")
+    console.print(f"  [dim]UNKNOWN[/dim]   : {counts['UNKNOWN']}")
+    for r in results:
+        ledger.record_finding(
+            pattern_id=f"llm-{r['category']}",
+            target=url,
+            verdict=r["verdict"],
+            severity=r["severity"],
+            reason=r["reason"],
+            evidence_path="",
+            evidence_json=r.get("evidence", {}),
+            category="llm",
+        )
+    return _compute_fail_exit(
+        [{"severity": r["severity"], "verdict": r["verdict"]} for r in results],
+        fail_on,
+    )
+
+
+def cmd_sca(args):
+    # a2.py-patch:cmd_sca
+    if not args or "--help" in args or "-h" in args:
+        console.print("Usage: sca <path> [--sbom cyclonedx|spdx] [--out FILE] [--fail-on SEV]")
+        console.print("  Supply chain / SCA scan via OSV.dev (external DB, not target-gated).")
+        return 0
+    from . import sca as _mod
+    try:
+        from .roe_guard import ROEGuard
+        from .config import load_engine
+    except Exception as _e:
+        console.print(f"[yellow]ROE guard init: {_e}[/yellow]")
+    if not args:
+        console.print("[red]Usage: sca <path> [--sbom cyclonedx|spdx] "
+                      "[--out FILE] [--fail-on SEV][/red]")
+        return
+    path = args[0]
+    sbom_format = None
+    out_file = None
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--sbom" and i + 1 < len(args):
+            sbom_format = args[i + 1].lower()
+            i += 2
+        elif args[i] == "--out" and i + 1 < len(args):
+            out_file = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    from . import sca, sbom
+    console.print(f"[cyan]SCA scan:[/cyan] {path}")
+    result = sca.scan_dependencies(path)
+    files = result.get("files") or []
+    deps = result.get("dependencies") or []
+    findings = result.get("vulnerabilities") or []
+    counts = result.get("summary") or {}
+    console.print(f"[dim]Dependency files: {len(files)}[/dim]")
+    for f in files:
+        console.print(f"  [dim]{f}[/dim]")
+    console.print(f"[dim]Dependencies: {len(deps)}[/dim]")
+    console.print()
+    if findings:
+        t = Table(title="Vulnerable Dependencies")
+        t.add_column("Severity", style="yellow")
+        t.add_column("Package", style="cyan")
+        t.add_column("Version", style="white")
+        t.add_column("Vuln ID", style="magenta")
+        t.add_column("CVE", style="magenta")
+        t.add_column("Source", style="dim")
+        for f in findings[:50]:
+            color = "bold red" if f["severity"] in ("critical", "high") else "yellow"
+            t.add_row(
+                f"[{color}]{f['severity']}[/{color}]",
+                escape(f["dependency"]["name"]),
+                escape(f["dependency"].get("version", "")),
+                escape(f["vuln_id"]),
+                escape(f.get("cve", "")),
+                escape(f.get("source_file", "")[:40]),
+            )
+        console.print(t)
+        console.print()
+    console.print(f"  [bold red]Critical[/bold red]: {counts.get('critical', 0)}")
+    console.print(f"  [bold red]High[/bold red]    : {counts.get('high', 0)}")
+    console.print(f"  [yellow]Medium[/yellow]    : {counts.get('medium', 0)}")
+    console.print(f"  [dim]Low[/dim]       : {counts.get('low', 0)}")
+    if sbom_format:
+        if sbom_format == "spdx":
+            p = sbom.save_spdx(path, out_path=out_file)
+        else:
+            p = sbom.save_cyclonedx(path, out_path=out_file)
+        console.print(f"[green]SBOM:[/green] {p}")
+    for f in findings:
+        ledger.record_finding(
+            pattern_id=f"sca-{f['vuln_id']}",
+            target=path,
+            verdict="VULNERABLE",
+            severity=f["severity"],
+            reason=f"{f['dependency']['name']}@{f['dependency'].get('version','')} — {f['summary'][:200]}",
+            evidence_path="",
+            evidence_json={"cve": f.get("cve", ""), "aliases": f.get("aliases", []),
+                           "source_file": f.get("source_file", "")},
+            category="sca",
+            wstg_id="WSTG-CONF-03",
+            cwe_id="CWE-1104",
+        )
+    return _compute_fail_exit(
+        [{"severity": f["severity"], "verdict": "VULNERABLE"} for f in findings],
+        fail_on,
+    )
+
+
+
+def cmd_jwt(args):
+    # a2.py-patch:cmd_jwt
+    if not args or "--help" in args or "-h" in args:
+        console.print("Usage: jwt <url> <token>")
+        console.print("  JWT attack suite. Target must be in ROE scope.")
+        return 0
+    from . import jwt_attacks as _mod
+    try:
+        from .roe_guard import ROEGuard
+        from .config import load_engine
+    except Exception as _e:
+        console.print(f"[yellow]ROE guard init: {_e}[/yellow]")
+    if not args:
+        console.print("[red]Usage: jwt <target_url> "
+                      "[--token JWT | --token-file FILE] "
+                      "[--login-url URL --username U --password P] "
+                      "[--public-key FILE] [--jwks URL] [--wordlist FILE] "
+                      "[--claim K=V] [--method GET|POST] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/red]")
+        return
+    target = args[0]
+    token = None
+    token_file = None
+    login_url = None
+    username = None
+    password = None
+    public_key_file = None
+    jwks_url = None
+    wordlist_file = None
+    method = "GET"
+    claims = {}
+    auth_str = None
+    session = None
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--token" and i + 1 < len(args):
+            token = args[i + 1]
+            i += 2
+        elif args[i] == "--token-file" and i + 1 < len(args):
+            token_file = args[i + 1]
+            i += 2
+        elif args[i] == "--login-url" and i + 1 < len(args):
+            login_url = args[i + 1]
+            i += 2
+        elif args[i] == "--username" and i + 1 < len(args):
+            username = args[i + 1]
+            i += 2
+        elif args[i] == "--password" and i + 1 < len(args):
+            password = args[i + 1]
+            i += 2
+        elif args[i] == "--public-key" and i + 1 < len(args):
+            public_key_file = args[i + 1]
+            i += 2
+        elif args[i] == "--jwks" and i + 1 < len(args):
+            jwks_url = args[i + 1]
+            i += 2
+        elif args[i] == "--wordlist" and i + 1 < len(args):
+            wordlist_file = args[i + 1]
+            i += 2
+        elif args[i] == "--method" and i + 1 < len(args):
+            method = args[i + 1].upper()
+            i += 2
+        elif args[i] == "--claim" and i + 1 < len(args):
+            kv = args[i + 1]
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                if v.lower() in ("true", "false"):
+                    v = v.lower() == "true"
+                elif v.isdigit():
+                    v = int(v)
+                claims[k] = v
+            i += 2
+        elif args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    from . import jwt_attacks
+
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+
+    if token_file and not token:
+        try:
+            token = Path(token_file).read_text(encoding="utf-8").strip()
+        except Exception as e:
+            console.print(f"[red]Cannot read token file: {e}[/red]")
+            return
+
+    if not token and login_url and username and password:
+        console.print(f"[dim]Logging in at {login_url}...[/dim]")
+        from . import auth_flow
+        r = auth_flow.perform_login(login_url, username, password,
+                                    token_path="token")
+        if r.get("token"):
+            token = r["token"]
+            console.print(f"[green]Token acquired[/green] ({len(token)} chars)")
+
+    if not token:
+        console.print("[red]No token provided. Use --token or --login-url.[/red]")
+        return
+
+    decoded = jwt_attacks.decode_jwt(token)
+    if not decoded:
+        console.print("[red]Invalid JWT format[/red]")
+        return
+
+    console.print(f"[cyan]JWT attack suite:[/cyan] {target}")
+    console.print(f"  alg     : {decoded['header'].get('alg')}")
+    console.print(f"  kid     : {decoded['header'].get('kid', '-')}")
+    console.print(f"  claims  : {list(decoded['payload'].keys())}")
+
+    public_key = None
+    if public_key_file:
+        try:
+            public_key = Path(public_key_file).read_text(encoding="utf-8")
+            console.print(f"  pubkey  : loaded from {public_key_file}")
+        except Exception as e:
+            console.print(f"  [yellow]pubkey load failed: {e}[/yellow]")
+
+    if not public_key:
+        jwks_target = jwks_url or target
+        from .roe_guard import ROEGuard as _ROEGuard
+        from .config import load_engine as _load_engine
+        found = jwt_attacks.fetch_jwks(jwks_target, roe_guard=_ROEGuard(engine_cfg=_load_engine()))
+        if found:
+            console.print(f"  jwks    : {found['url']}")
+            keys = found["jwks"].get("keys") or []
+            for k in keys:
+                pem = jwt_attacks.jwk_to_pem(k)
+                if pem:
+                    public_key = pem
+                    break
+            if not public_key:
+                console.print("  [yellow]no RSA keys convertible to PEM[/yellow]")
+
+    secrets_list = None
+    if wordlist_file:
+        try:
+            secrets_list = [l.strip() for l in Path(wordlist_file).read_text(
+                encoding="utf-8").splitlines() if l.strip()]
+        except Exception as e:
+            console.print(f"  [yellow]wordlist load failed: {e}[/yellow]")
+
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    _guard = ROEGuard(engine_cfg=_load_engine())
+    out = jwt_attacks.run_attack_suite(
+        target, token, method=method, headers=headers,
+        public_key=public_key, secrets=secrets_list,
+        claim_overrides=claims or None, roe_guard=_guard,
+    )
+
+    results = out.get("results") or []
+    counts = out.get("summary") or {}
+    if not results:
+        console.print("[yellow]No attack results[/yellow]")
+        return
+
+    t = Table(title="JWT Attack Results")
+    t.add_column("Vector", style="cyan")
+    t.add_column("Verdict", style="bold")
+    t.add_column("Reason", style="white")
+    for r in results:
+        color = VERDICT_COLOR.get(r["verdict"], "white")
+        t.add_row(escape(r["vector"][:45]),
+                  f"[{color}]{r['verdict']}[/{color}]",
+                  escape((r.get("reason") or "")[:70]))
+    console.print(t)
+    console.print()
+    console.print(f"  [bold red]VULNERABLE[/bold red]: {counts.get('VULNERABLE', 0)}")
+    console.print(f"  [bold yellow]SUSPICIOUS[/bold yellow]: {counts.get('SUSPICIOUS', 0)}")
+    console.print(f"  [bold green]PASS[/bold green]      : {counts.get('PASS', 0)}")
+    console.print(f"  [dim]UNKNOWN[/dim]   : {counts.get('UNKNOWN', 0)}")
+
+    for r in results:
+        if r["verdict"] not in ("VULNERABLE", "SUSPICIOUS"):
+            continue
+        sev = "critical" if r["vector"] in (
+            "alg:none", "algorithm-confusion", "embedded-jwk"
+        ) else "high"
+        ledger.record_finding(
+            pattern_id=f"jwt-{r['vector'].split('[')[0]}",
+            target=target,
+            verdict=r["verdict"],
+            severity=sev,
+            reason=r.get("reason", ""),
+            evidence_path="",
+            evidence_json={"vector": r["vector"], "secret": r.get("secret", "")},
+            category="sequence",
+            wstg_id="WSTG-SESS-10",
+            cwe_id="CWE-347",
+        )
+    return _compute_fail_exit(
+        [{"severity": "critical" if r["vector"] in
+          ("alg:none", "algorithm-confusion", "embedded-jwk") else "high",
+          "verdict": r["verdict"]} for r in results],
+        fail_on,
+    )
+
+
+def cmd_graphql(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage: graphql <url> [--depth N] [--batch N] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/cyan]")
+        console.print("  --depth N         max depth to probe (default 110)")
+        console.print("  --batch N         batch size (default 50)")
+        console.print("  --session NAME    saved session name")
+        console.print("  --auth X          inline auth (bearer:X, cookie:X)")
+        console.print("  --fail-on SEV     exit 3 if finding >= severity")
+        console.print("")
+        console.print("Vectors: depth bypass, array/alias batching, form-CSRF,")
+        console.print("         Apollo Federation interface bypass, field suggestions")
+        return 0
+    if not args:
+        console.print("[red]Usage: graphql <url> [--depth N] [--batch N] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/red]")
+        return
+    url = args[0]
+    max_depth = 110
+    batch_size = 50
+    auth_str = None
+    session = None
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--depth" and i + 1 < len(args):
+            max_depth = int(args[i + 1])
+            i += 2
+        elif args[i] == "--batch" and i + 1 < len(args):
+            batch_size = int(args[i + 1])
+            i += 2
+        elif args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+    from . import graphql_security
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    guard = ROEGuard(engine_cfg=_load_engine())
+    console.print(f"[cyan]GraphQL deep scan:[/cyan] {url}")
+    console.print(f"[dim]Depth probe: {max_depth}  Batch: {batch_size}[/dim]")
+    console.print()
+    out = graphql_security.scan(url, headers=headers, roe_guard=guard,
+                                max_depth=max_depth, batch_size=batch_size)
+    if not out.get("endpoint"):
+        console.print(f"[yellow]{out.get('reason', 'no endpoint')}[/yellow]")
+        return
+    endpoint = out["endpoint"]
+    console.print(f"[green]Endpoint:[/green] {endpoint}")
+    results = out.get("results") or {}
+    intro = results.get("introspection") or {}
+    if intro.get("error"):
+        console.print(f"  [dim]introspection: {intro['error']}[/dim]")
+    else:
+        types_count = len(intro.get("types") or [])
+        console.print(f"  [dim]introspection: {types_count} types visible[/dim]")
+    console.print(f"  [dim]recursive field: "
+                  f"{results.get('recursive_field') or 'none'}[/dim]")
+    console.print()
+
+    t = Table(title="GraphQL Deep Security Results")
+    t.add_column("Vector", style="cyan")
+    t.add_column("Verdict", style="bold")
+    t.add_column("Reason", style="white")
+    order = ["depth_limit", "batch_array", "batch_alias", "csrf_form",
+             "apollo_federation", "field_suggestion"]
+    counts = {"VULNERABLE": 0, "SUSPICIOUS": 0, "PASS": 0, "UNKNOWN": 0}
+    for key in order:
+        r = results.get(key) or {}
+        v = r.get("verdict", "UNKNOWN")
+        counts[v] = counts.get(v, 0) + 1
+        color = VERDICT_COLOR.get(v, "white")
+        t.add_row(escape(key), f"[{color}]{v}[/{color}]",
+                  escape((r.get("reason") or "")[:70]))
+    console.print(t)
+    console.print()
+    console.print(f"  [bold red]VULNERABLE[/bold red]: {counts['VULNERABLE']}")
+    console.print(f"  [bold yellow]SUSPICIOUS[/bold yellow]: {counts['SUSPICIOUS']}")
+    console.print(f"  [bold green]PASS[/bold green]      : {counts['PASS']}")
+    console.print(f"  [dim]UNKNOWN[/dim]   : {counts['UNKNOWN']}")
+    sev_map = {"depth_limit": "high", "batch_array": "medium",
+               "batch_alias": "medium", "csrf_form": "high",
+               "apollo_federation": "high", "field_suggestion": "low"}
+    for key in order:
+        r = results.get(key) or {}
+        if r.get("verdict") not in ("VULNERABLE", "SUSPICIOUS"):
+            continue
+        ledger.record_finding(
+            pattern_id=f"graphql-{key.replace('_', '-')}",
+            target=endpoint,
+            verdict=r["verdict"],
+            severity=sev_map.get(key, "medium"),
+            reason=r.get("reason", ""),
+            evidence_path="",
+            evidence_json=r.get("evidence", {}),
+            category="sequence",
+            wstg_id="WSTG-APIT-99",
+            cwe_id="CWE-770",
+        )
+    return _compute_fail_exit(
+        [{"severity": sev_map.get(k, "medium"),
+          "verdict": (results.get(k) or {}).get("verdict", "UNKNOWN")}
+         for k in order],
+        fail_on,
+    )
+
+
+def cmd_race(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage: race <url> [--method M] [--body JSON] "
+                      "[--count N] [--modes M1,M2] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/cyan]")
+        console.print("  --method M       HTTP method (default POST)")
+        console.print("  --body JSON      request body (JSON string)")
+        console.print("  --count N        concurrent requests (default 20)")
+        console.print("  --modes          barrier,single_packet,timing,replay")
+        console.print("                   (default: all)")
+        console.print("  --session NAME   saved session name")
+        console.print("  --auth X         inline auth (bearer:X, cookie:X)")
+        console.print("  --fail-on SEV    exit 3 if finding >= severity")
+        console.print("")
+        console.print("Techniques:")
+        console.print("  barrier        threading.Barrier-synchronized burst")
+        console.print("  single_packet  HTTP/2 single-packet attack (Kettle 2023)")
+        console.print("  timing         response-timing histogram analysis")
+        console.print("  replay         idempotency / state-machine replay test")
+        return 0
+    if not args:
+        console.print("[red]Usage: race <url> [--method M] [--body JSON] "
+                      "[--count N] [--modes M1,M2] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/red]")
+        return
+    url = args[0]
+    method = "POST"
+    body = None
+    count = 20
+    modes = None
+    auth_str = None
+    session = None
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--method" and i + 1 < len(args):
+            method = args[i + 1].upper()
+            i += 2
+        elif args[i] == "--body" and i + 1 < len(args):
+            try:
+                body = json.loads(args[i + 1])
+            except Exception:
+                body = args[i + 1]
+            i += 2
+        elif args[i] == "--count" and i + 1 < len(args):
+            count = int(args[i + 1])
+            i += 2
+        elif args[i] == "--modes" and i + 1 < len(args):
+            modes = [m.strip() for m in args[i + 1].split(",") if m.strip()]
+            i += 2
+        elif args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+    from . import race_advanced
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    guard = ROEGuard(engine_cfg=_load_engine())
+    console.print(f"[cyan]Race condition scan:[/cyan] {url}")
+    console.print(f"[dim]Method: {method}  Count: {count}  "
+                  f"Modes: {','.join(modes or ['all'])}[/dim]")
+    console.print()
+    if race_advanced.HAS_H2:
+        console.print("[dim]h2 library available — single-packet attack enabled[/dim]")
+    else:
+        console.print("[yellow]h2 library missing — single-packet attack "
+                      "will return UNKNOWN[/yellow]")
+    console.print()
+    out = race_advanced.race_scan(url, method=method, body=body,
+                                   headers=headers, count=count, modes=modes,
+                                   roe_guard=guard)
+    overall = out.get("overall", "UNKNOWN")
+    color = VERDICT_COLOR.get(overall, "white")
+    console.print(f"  Overall: [{color}]{overall}[/{color}]")
+    console.print()
+    t = Table(title="Race Condition Results")
+    t.add_column("Technique", style="cyan")
+    t.add_column("Verdict", style="bold")
+    t.add_column("Reason", style="white")
+    counts = {"VULNERABLE": 0, "SUSPICIOUS": 0, "PASS": 0, "UNKNOWN": 0}
+    for key in ("barrier", "single_packet", "timing", "replay"):
+        r = out["results"].get(key)
+        if not r:
+            continue
+        v = r.get("verdict", "UNKNOWN")
+        counts[v] = counts.get(v, 0) + 1
+        c = VERDICT_COLOR.get(v, "white")
+        t.add_row(escape(key), f"[{c}]{v}[/{c}]", escape((r.get("reason") or "")[:70]))
+    console.print(t)
+    console.print()
+    console.print(f"  [bold red]VULNERABLE[/bold red]: {counts['VULNERABLE']}")
+    console.print(f"  [bold yellow]SUSPICIOUS[/bold yellow]: {counts['SUSPICIOUS']}")
+    console.print(f"  [bold green]PASS[/bold green]      : {counts['PASS']}")
+    console.print(f"  [dim]UNKNOWN[/dim]   : {counts['UNKNOWN']}")
+    sev_map = {"barrier": "high", "single_packet": "high",
+               "timing": "medium", "replay": "medium"}
+    for key in ("barrier", "single_packet", "timing", "replay"):
+        r = out["results"].get(key)
+        if not r:
+            continue
+        if r.get("verdict") not in ("VULNERABLE", "SUSPICIOUS"):
+            continue
+        ledger.record_finding(
+            pattern_id=f"race-{key.replace('_', '-')}",
+            target=url,
+            verdict=r["verdict"],
+            severity=sev_map.get(key, "medium"),
+            reason=r.get("reason", ""),
+            evidence_path="",
+            evidence_json=r.get("evidence", {}),
+            category="temporal",
+            wstg_id="WSTG-BUSL-04",
+            cwe_id="CWE-362",
+        )
+    return _compute_fail_exit(
+        [{"severity": sev_map.get(k, "medium"),
+          "verdict": (out["results"].get(k) or {}).get("verdict", "UNKNOWN")}
+         for k in ("barrier", "single_packet", "timing", "replay")],
+        fail_on,
+    )
+
+
+def cmd_domxss(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage: domxss <url> [--timeout MS] [--no-mxss] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/cyan]")
+        console.print("  --timeout MS     per-navigation timeout (default 15000)")
+        console.print("  --no-mxss        skip mXSS round-trip probes")
+        console.print("  --session NAME   saved session name")
+        console.print("  --auth X         inline auth (bearer:X, cookie:X)")
+        console.print("  --fail-on SEV    exit 3 if finding >= severity")
+        console.print("")
+        console.print("Techniques:")
+        console.print("  source→sink      location.hash/search, referrer, window.name")
+        console.print("  sinks            innerHTML, outerHTML, eval, Function,")
+        console.print("                   document.write, setAttribute(on*),")
+        console.print("                   insertAdjacentHTML, iframe.srcdoc,")
+        console.print("                   setTimeout/setInterval(str), trustedTypes")
+        console.print("  trusted types    CSP require-trusted-types-for 'script'")
+        console.print("  mXSS             browser re-serialization mutations")
+        return 0
+    if not args:
+        console.print("[red]Usage: domxss <url> [--timeout MS] [--no-mxss] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/red]")
+        return
+    url = args[0]
+    timeout_ms = 15000
+    include_mxss = True
+    auth_str = None
+    session = None
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--timeout" and i + 1 < len(args):
+            timeout_ms = int(args[i + 1])
+            i += 2
+        elif args[i] == "--no-mxss":
+            include_mxss = False
+            i += 1
+        elif args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+    from . import dom_xss
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    guard = ROEGuard(engine_cfg=_load_engine())
+    console.print(f"[cyan]DOM XSS scan:[/cyan] {url}")
+    console.print(f"[dim]Timeout: {timeout_ms}ms  mXSS: {include_mxss}[/dim]")
+    console.print()
+    out = dom_xss.scan(url, headers=headers, timeout_ms=timeout_ms,
+                       roe_guard=guard, include_mxss=include_mxss)
+    verdict = out.get("verdict", "UNKNOWN")
+    color = VERDICT_COLOR.get(verdict, "white")
+    console.print(f"  [{color}]{verdict}[/{color}]  {out.get('reason', '')}")
+    console.print()
+    results = out.get("results") or {}
+    source_rows = results.get("sources") or []
+    if source_rows:
+        t = Table(title="Source Probes")
+        t.add_column("Source", style="cyan")
+        t.add_column("Sink hits", style="white")
+        t.add_column("XSS fired", style="yellow")
+        t.add_column("Error", style="dim")
+        for r in source_rows:
+            hit = "[green]yes[/green]" if r.get("xss_hit") else "[dim]no[/dim]"
+            t.add_row(r["source"], str(r.get("sink_hits", 0)), hit,
+                      (r.get("error") or "")[:40])
+        console.print(t)
+        console.print()
+    findings = results.get("flow_findings") or []
+    if findings:
+        t = Table(title="Flow Findings")
+        t.add_column("Source", style="cyan")
+        t.add_column("Kind", style="yellow")
+        t.add_column("Sinks", style="white")
+        for f in findings:
+            t.add_row(f["source"], f["kind"], ", ".join(f.get("sinks") or [])[:60])
+        console.print(t)
+        console.print()
+    csp = results.get("csp") or {}
+    if csp:
+        tt_status = "[green]enforced[/green]" if csp.get("enforced") else "[yellow]not enforced[/yellow]"
+        console.print(f"  [dim]Trusted Types: {tt_status}[/dim]")
+        console.print()
+    mxss = results.get("mxss") or []
+    if mxss:
+        console.print(f"  [bold red]mXSS confirmed:[/bold red] {len(mxss)} payload(s)")
+        for m in mxss[:3]:
+            console.print(f"    [dim]via {m['source']} — {m['payload'][:80]}[/dim]")
+        console.print()
+    severity = "high" if verdict == "VULNERABLE" else "medium"
+    if verdict in ("VULNERABLE", "SUSPICIOUS"):
+        ledger.record_finding(
+            pattern_id="dom-xss-advanced",
+            target=url,
+            verdict=verdict,
+            severity=severity,
+            reason=out.get("reason", ""),
+            evidence_path="",
+            evidence_json={"flow_findings": findings, "mxss": mxss,
+                           "csp": csp},
+            category="single",
+            wstg_id="WSTG-CLNT-01",
+            cwe_id="CWE-79",
+        )
+    return _compute_fail_exit(
+        [{"severity": severity, "verdict": verdict}], fail_on)
+
+
+def cmd_ssrfcloud(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage: ssrf-cloud [<base_url>] [--timeout N] "
+                      "[--fuzz-param URL_WITH_FUZZ] [--protocols] "
+                      "[--fail-on SEV][/cyan]")
+        console.print("  <base_url>              optional SSRF endpoint to test bypasses against")
+        console.print("  --timeout N             per-probe timeout (default 8s)")
+        console.print("  --fuzz-param URL        SSRF endpoint with FUZZ placeholder")
+        console.print("                          (required for --protocols)")
+        console.print("  --protocols             test gopher/dict/file smuggling")
+        console.print("  --fail-on SEV           exit 3 if finding >= severity")
+        console.print("")
+        console.print("Providers probed:")
+        console.print("  AWS IMDSv1, AWS IMDSv2 (PUT token + header forwarding),")
+        console.print("  AWS ECS / Lambda runtime, GCP metadata, Azure IMDS + MI tokens,")
+        console.print("  DigitalOcean, Alibaba, Oracle Cloud, Kubernetes SA token")
+        console.print("")
+        console.print("Bypasses:")
+        console.print("  decimal/hex/octal IP, DNS rebinding (nip.io/sslip.io/xip.io)")
+        console.print("")
+        console.print("ROE: cloud metadata IPs are non-routable. If your target")
+        console.print("     is a local mock, add 127.0.0.1/169.254.169.254 to roe.yaml.")
+        return 0
+    base_url = None
+    timeout = 8
+    fuzz_param = None
+    protocols = False
+    fail_on = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--timeout" and i + 1 < len(args):
+            timeout = int(args[i + 1])
+            i += 2
+        elif args[i] == "--fuzz-param" and i + 1 < len(args):
+            fuzz_param = args[i + 1]
+            i += 2
+        elif args[i] == "--protocols":
+            protocols = True
+            i += 1
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        elif not args[i].startswith("--"):
+            base_url = args[i]
+            i += 1
+        else:
+            i += 1
+    from . import ssrf_cloud
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    guard = ROEGuard(engine_cfg=_load_engine())
+    console.print(f"[cyan]Cloud metadata SSRF scan[/cyan]")
+    if base_url:
+        console.print(f"[dim]Base URL for bypasses: {base_url}[/dim]")
+    console.print(f"[dim]Timeout: {timeout}s  Protocols: {protocols}[/dim]")
+    console.print()
+    out = ssrf_cloud.scan(base_url=base_url, timeout=timeout,
+                           roe_guard=guard,
+                           include_protocol_smuggling=protocols,
+                           fuzz_param_url=fuzz_param)
+    verdict = out.get("overall", "UNKNOWN")
+    color = VERDICT_COLOR.get(verdict, "white")
+    console.print(f"  Overall: [{color}]{verdict}[/{color}]  {out.get('reason', '')}")
+    console.print()
+    t = Table(title="Cloud Provider Probes")
+    t.add_column("Provider", style="cyan")
+    t.add_column("Mode", style="dim")
+    t.add_column("Verdict", style="bold")
+    t.add_column("Reason", style="white")
+    for name, r in (out.get("providers") or {}).items():
+        v = r.get("verdict", "UNKNOWN")
+        c = VERDICT_COLOR.get(v, "white")
+        t.add_row(name, r.get("mode", ""),
+                  f"[{c}]{v}[/{c}]", (r.get("reason") or "")[:70])
+    console.print(t)
+    console.print()
+    if out.get("bypasses"):
+        t2 = Table(title="Bypass Techniques")
+        t2.add_column("Bypass", style="cyan")
+        t2.add_column("Verdict", style="bold")
+        t2.add_column("Reason", style="white")
+        for name, r in out["bypasses"].items():
+            if not isinstance(r, dict):
+                continue
+            v = r.get("verdict", "UNKNOWN")
+            c = VERDICT_COLOR.get(v, "white")
+            t2.add_row(name, f"[{c}]{v}[/{c}]", (r.get("reason") or "")[:70])
+        console.print(t2)
+        console.print()
+    if out.get("protocol_smuggling"):
+        r = out["protocol_smuggling"]
+        v = r.get("verdict", "UNKNOWN")
+        c = VERDICT_COLOR.get(v, "white")
+        console.print(f"  Protocol smuggling: [{c}]{v}[/{c}]  {r.get('reason', '')}")
+        console.print()
+    if verdict in ("VULNERABLE", "SUSPICIOUS"):
+        severity = "critical" if verdict == "VULNERABLE" else "high"
+        ledger.record_finding(
+            pattern_id="ssrf-cloud-metadata",
+            target=base_url or "(local)",
+            verdict=verdict,
+            severity=severity,
+            reason=out.get("reason", ""),
+            evidence_path="",
+            evidence_json={"providers": out.get("providers"),
+                           "bypasses": out.get("bypasses")},
+            category="sequence",
+            wstg_id="WSTG-INPV-19",
+            cwe_id="CWE-918",
+        )
+    else:
+        severity = "info"
+    return _compute_fail_exit(
+        [{"severity": severity, "verdict": verdict}], fail_on)
+
+
+def cmd_openapi(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage: openapi <url> [--no-fuzz] [--max-endpoints N] "
+                      "[--fuzz-per-endpoint N] [--timeout N] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/cyan]")
+        console.print("  --no-fuzz               discover spec only, skip fuzzing")
+        console.print("  --max-endpoints N       cap endpoints to fuzz (default 50)")
+        console.print("  --fuzz-per-endpoint N   cases per endpoint (default 40)")
+        console.print("  --timeout N             per-request timeout (default 10s)")
+        console.print("  --session NAME          saved session name")
+        console.print("  --auth X                inline auth (bearer:X, cookie:X)")
+        console.print("  --fail-on SEV           exit 3 if finding >= severity")
+        console.print("")
+        console.print("Discovery probes 20+ spec paths + Swagger UI pages.")
+        console.print("Fuzzing generates boundary + injection payloads per schema.")
+        console.print("Reports auth schemes and endpoint coverage.")
+        return 0
+    if not args:
+        console.print("[red]Usage: openapi <url> [--no-fuzz] "
+                      "[--max-endpoints N] [--fuzz-per-endpoint N] "
+                      "[--timeout N] [--session NAME] [--auth X] "
+                      "[--fail-on SEV][/red]")
+        return
+    url = args[0]
+    fuzz = True
+    max_endpoints = 50
+    max_fuzz = 40
+    timeout = 10
+    auth_str = None
+    session = None
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--no-fuzz":
+            fuzz = False
+            i += 1
+        elif args[i] == "--max-endpoints" and i + 1 < len(args):
+            max_endpoints = int(args[i + 1])
+            i += 2
+        elif args[i] == "--fuzz-per-endpoint" and i + 1 < len(args):
+            max_fuzz = int(args[i + 1])
+            i += 2
+        elif args[i] == "--timeout" and i + 1 < len(args):
+            timeout = int(args[i + 1])
+            i += 2
+        elif args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+    from . import openapi_scanner
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    guard = ROEGuard(engine_cfg=_load_engine())
+    console.print(f"[cyan]OpenAPI scan:[/cyan] {url}")
+    console.print(f"[dim]Fuzz: {fuzz}  Max endpoints: {max_endpoints}  "
+                  f"Fuzz/endpoint: {max_fuzz}[/dim]")
+    console.print()
+    out = openapi_scanner.scan(url, timeout=timeout, roe_guard=guard,
+                                headers=headers, fuzz=fuzz,
+                                max_endpoints=max_endpoints,
+                                max_fuzz_per_endpoint=max_fuzz)
+    if not out.get("spec"):
+        console.print(f"[yellow]{out.get('reason', 'no spec found')}[/yellow]")
+        return
+    spec = out["spec"]
+    console.print(f"[green]Spec discovered:[/green] {spec['url']}")
+    console.print(f"  [dim]format={spec['format']}  version={spec['version']}[/dim]")
+    if spec.get("discovered_via"):
+        console.print(f"  [dim]via Swagger UI: {spec['discovered_via']}[/dim]")
+    console.print()
+    cov = out.get("coverage") or {}
+    t = Table(title="Endpoint Coverage")
+    t.add_column("Metric", style="cyan")
+    t.add_column("Value", style="white")
+    t.add_row("Total endpoints", str(cov.get("total_endpoints", 0)))
+    for method, count in (cov.get("methods") or {}).items():
+        t.add_row(f"  {method}", str(count))
+    t.add_row("With parameters", str(cov.get("endpoints_with_params", 0)))
+    t.add_row("With request body", str(cov.get("endpoints_with_body", 0)))
+    t.add_row("Missing security", str(len(cov.get("endpoints_without_security") or [])))
+    console.print(t)
+    console.print()
+    auth_schemes = out.get("auth_schemes") or []
+    if auth_schemes:
+        t2 = Table(title="Auth Schemes")
+        t2.add_column("Name", style="cyan")
+        t2.add_column("Type", style="yellow")
+        t2.add_column("Scheme", style="white")
+        t2.add_column("Location", style="dim")
+        for s in auth_schemes:
+            t2.add_row(s["name"], AUTH_TYPE_LABEL.get(s["type"], s["type"]),
+                       s.get("scheme") or "", s.get("in") or s.get("header_name") or "")
+        console.print(t2)
+        console.print()
+    missing_sec = cov.get("endpoints_without_security") or []
+    if missing_sec:
+        console.print(f"[yellow]Endpoints without declared security "
+                      f"({len(missing_sec)}):[/yellow]")
+        for e in missing_sec[:10]:
+            console.print(f"  [dim]{e}[/dim]")
+        console.print()
+    anomalies = out.get("anomalies") or []
+    if anomalies:
+        ta = Table(title=f"Fuzz Anomalies ({len(anomalies)})")
+        ta.add_column("Type", style="yellow")
+        ta.add_column("Endpoint", style="cyan")
+        ta.add_column("Detail", style="white")
+        for a in anomalies[:20]:
+            case = a.get("case") or {}
+            detail = (a.get("signature") or
+                      f"status {a.get('status', '')}")
+            ta.add_row(a.get("type", ""),
+                       f"{case.get('kind','')}:{case.get('param', case.get('value_type',''))}",
+                       detail[:60])
+        console.print(ta)
+        console.print()
+    verdict = out.get("verdict", "UNKNOWN")
+    color = VERDICT_COLOR.get(verdict, "white")
+    console.print(f"  Overall: [{color}]{verdict}[/{color}]  {out.get('reason', '')}")
+    if anomalies:
+        ledger.record_finding(
+            pattern_id="openapi-fuzz-anomalies",
+            target=url,
+            verdict="SUSPICIOUS",
+            severity="medium",
+            reason=out.get("reason", ""),
+            evidence_path="",
+            evidence_json={"spec": spec, "anomalies": anomalies[:20],
+                           "coverage": cov},
+            category="content",
+            wstg_id="WSTG-APIT-01",
+            cwe_id="CWE-20",
+        )
+    return _compute_fail_exit(
+        [{"severity": "medium" if anomalies else "info",
+          "verdict": verdict}], fail_on)
+
+
+def cmd_bizlogic(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage: bizlogic <base_url> "
+                      "[--price-endpoint URL --price-body JSON] "
+                      "[--mass-endpoint URL --mass-body JSON] "
+                      "[--workflow FILE] [--race-endpoint PATH --race-body JSON] "
+                      "[--coupon CODE] [--protected PATH] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/cyan]")
+        console.print("  --price-endpoint URL    checkout/cart endpoint to fuzz price")
+        console.print("  --price-body JSON       baseline JSON body for price test")
+        console.print("  --mass-endpoint URL     endpoint to test mass assignment")
+        console.print("  --mass-body JSON        baseline JSON body for mass assignment")
+        console.print("  --workflow FILE         JSON file with workflow steps")
+        console.print("  --race-endpoint PATH    path to race-test (coupon/transfer)")
+        console.print("  --race-body JSON        JSON body for race test")
+        console.print("  --coupon CODE           coupon code to test for reuse")
+        console.print("  --protected PATH        path to test for verification bypass")
+        console.print("  --session NAME          saved session name")
+        console.print("  --auth X                inline auth (bearer:X, cookie:X)")
+        console.print("  --fail-on SEV           exit 3 if finding >= severity")
+        console.print("")
+        console.print("Business logic flaw classes:")
+        console.print("  BLA1  Action Limit Overrun      coupon/refund abuse")
+        console.print("  BLA2  Concurrent Workflow Bypass  race + skip steps")
+        console.print("  BLA3  Object State Manipulation  mass assignment")
+        console.print("  BLA6  Missing Transition Validation  workflow bypass")
+        return 0
+    if not args:
+        console.print("[red]Usage: bizlogic <base_url> "
+                      "[--price-endpoint URL --price-body JSON] "
+                      "[--mass-endpoint URL --mass-body JSON] "
+                      "[--workflow FILE] [--race-endpoint PATH --race-body JSON] "
+                      "[--coupon CODE] [--protected PATH] "
+                      "[--session NAME] [--auth X] [--fail-on SEV][/red]")
+        return
+    base_url = args[0]
+    price_endpoint = None
+    price_body = None
+    price_method = "POST"
+    mass_endpoint = None
+    mass_body = None
+    workflow_file = None
+    race_endpoint = None
+    race_body = None
+    race_count = 20
+    coupon_code = None
+    protected_path = None
+    auth_str = None
+    session = None
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--price-endpoint" and i + 1 < len(args):
+            price_endpoint = args[i + 1]
+            i += 2
+        elif args[i] == "--price-body" and i + 1 < len(args):
+            try:
+                price_body = json.loads(args[i + 1])
+            except Exception:
+                price_body = None
+            i += 2
+        elif args[i] == "--mass-endpoint" and i + 1 < len(args):
+            mass_endpoint = args[i + 1]
+            i += 2
+        elif args[i] == "--mass-body" and i + 1 < len(args):
+            try:
+                mass_body = json.loads(args[i + 1])
+            except Exception:
+                mass_body = None
+            i += 2
+        elif args[i] == "--workflow" and i + 1 < len(args):
+            workflow_file = args[i + 1]
+            i += 2
+        elif args[i] == "--race-endpoint" and i + 1 < len(args):
+            race_endpoint = args[i + 1]
+            i += 2
+        elif args[i] == "--race-body" and i + 1 < len(args):
+            try:
+                race_body = json.loads(args[i + 1])
+            except Exception:
+                race_body = None
+            i += 2
+        elif args[i] == "--race-count" and i + 1 < len(args):
+            race_count = int(args[i + 1])
+            i += 2
+        elif args[i] == "--coupon" and i + 1 < len(args):
+            coupon_code = args[i + 1]
+            i += 2
+        elif args[i] == "--protected" and i + 1 < len(args):
+            protected_path = args[i + 1]
+            i += 2
+        elif args[i] == "--auth" and i + 1 < len(args):
+            auth_str = args[i + 1]
+            i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    headers, cookies, ok = _resolve_session(session, auth_str)
+    if not ok:
+        return
+    from . import bizlogic
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    guard = ROEGuard(engine_cfg=_load_engine())
+    console.print(f"[cyan]Business logic scan:[/cyan] {base_url}")
+    console.print()
+
+    endpoints = {}
+    if price_endpoint and price_body:
+        endpoints["price_endpoint"] = {"url": price_endpoint,
+                                        "method": price_method,
+                                        "baseline_body": price_body}
+    if mass_endpoint and mass_body:
+        endpoints["mass_assign_endpoint"] = {"url": mass_endpoint,
+                                              "method": "POST",
+                                              "baseline_body": mass_body}
+    if workflow_file:
+        try:
+            wf = json.loads(Path(workflow_file).read_text(encoding="utf-8"))
+            endpoints["workflow"] = wf
+        except Exception as e:
+            console.print(f"[yellow]workflow load failed: {e}[/yellow]")
+    if race_endpoint:
+        endpoints["race_endpoint"] = {"path": race_endpoint, "body": race_body,
+                                       "count": race_count}
+    if coupon_code:
+        endpoints["coupon"] = {"code": coupon_code}
+    if protected_path:
+        endpoints["protected_path"] = protected_path
+
+    if not endpoints:
+        console.print("[yellow]No endpoints configured. Provide at least one "
+                      "of --price-endpoint, --mass-endpoint, --workflow, "
+                      "--race-endpoint, --coupon, --protected.[/yellow]")
+        return
+
+    out = bizlogic.scan(base_url, headers=headers, roe_guard=guard,
+                         endpoints=endpoints)
+    t = Table(title="Business Logic Results")
+    t.add_column("Probe", style="cyan")
+    t.add_column("Verdict", style="bold")
+    t.add_column("Reason", style="white")
+    counts = {"VULNERABLE": 0, "SUSPICIOUS": 0, "PASS": 0, "UNKNOWN": 0}
+    for name, r in (out.get("probes") or {}).items():
+        v = r.get("verdict", "UNKNOWN")
+        counts[v] = counts.get(v, 0) + 1
+        c = VERDICT_COLOR.get(v, "white")
+        t.add_row(name, f"[{c}]{v}[/{c}]", (r.get("reason") or "")[:70])
+    console.print(t)
+    console.print()
+    console.print(f"  [bold red]VULNERABLE[/bold red]: {counts['VULNERABLE']}")
+    console.print(f"  [bold yellow]SUSPICIOUS[/bold yellow]: {counts['SUSPICIOUS']}")
+    console.print(f"  [bold green]PASS[/bold green]      : {counts['PASS']}")
+    console.print(f"  [dim]UNKNOWN[/dim]   : {counts['UNKNOWN']}")
+    for name, r in (out.get("probes") or {}).items():
+        v = r.get("verdict")
+        if v not in ("VULNERABLE", "SUSPICIOUS"):
+            continue
+        ledger.record_finding(
+            pattern_id=f"bizlogic-{name.replace('_', '-')}",
+            target=base_url,
+            verdict=v,
+            severity="high" if v == "VULNERABLE" else "medium",
+            reason=r.get("reason", ""),
+            evidence_path="",
+            evidence_json=r.get("evidence", {}),
+            category="sequence",
+            wstg_id="WSTG-BUSL-01",
+            cwe_id="CWE-840",
+        )
+    return _compute_fail_exit(
+        [{"severity": "high" if v == "VULNERABLE" else "medium",
+          "verdict": v} for name, r in (out.get("probes") or {}).items()
+         for v in [r.get("verdict", "UNKNOWN")]],
+        fail_on,
+    )
+
+
+def cmd_workflow(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage:[/cyan]")
+        console.print("  workflow record <url> --out FILE [--headless] [--auto N]")
+        console.print("  workflow list-params <file>")
+        console.print("  workflow replay <url> --in FILE [--set name=value ...] "
+                      "[--headful] [--fail-on SEV]")
+        console.print("  workflow tamper <url> --in FILE [--auto] [--headful] "
+                      "[--fail-on SEV]")
+        console.print("")
+        console.print("Subcommands:")
+        console.print("  record       Launch headful browser, capture clicks/inputs/submits")
+        console.print("  list-params  Show modifiable parameters + critical flags")
+        console.print("  replay       Replay with optional parameter substitution")
+        console.print("  tamper       Auto-tamper business-critical params and replay")
+        console.print("")
+        console.print("Options:")
+        console.print("  --out FILE   save recording JSON")
+        console.print("  --in FILE    load recording JSON")
+        console.print("  --set k=v    substitute param k with v (repeatable)")
+        console.print("  --auto N     auto-record for N seconds (default: wait for Enter)")
+        console.print("  --headful    show browser during replay")
+        console.print("  --headless   hide browser during record (default: headful)")
+        return 0
+    if not args:
+        console.print("[red]Usage: workflow <record|list-params|replay|tamper> "
+                      "<url|file> [options][/red]")
+        return
+    sub = args[0]
+    rest = args[1:]
+    if sub == "record":
+        return _cmd_workflow_record(rest)
+    if sub == "list-params":
+        return _cmd_workflow_list(rest)
+    if sub == "replay":
+        return _cmd_workflow_replay(rest)
+    if sub == "tamper":
+        return _cmd_workflow_tamper(rest)
+    console.print(f"[red]Unknown subcommand: {sub}[/red]")
+    return 1
+
+
+def _cmd_workflow_record(args):
+    if not args:
+        console.print("[red]Usage: workflow record <url> --out FILE "
+                      "[--auto N] [--headless][/red]")
+        return
+    url = args[0]
+    out_file = None
+    auto_seconds = None
+    headless = False
+    i = 1
+    while i < len(args):
+        if args[i] == "--out" and i + 1 < len(args):
+            out_file = args[i + 1]
+            i += 2
+        elif args[i] == "--auto" and i + 1 < len(args):
+            auto_seconds = int(args[i + 1])
+            i += 2
+        elif args[i] == "--headless":
+            headless = True
+            i += 1
+        else:
+            i += 1
+    if not out_file:
+        ts = time.strftime("%Y%m%dT%H%M%S")
+        out_file = f"workflows/workflow_{ts}.json"
+    from . import workflow_recorder
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    guard = ROEGuard(engine_cfg=_load_engine())
+    console.print(f"[cyan]Recording workflow:[/cyan] {url}")
+    console.print(f"[dim]Output: {out_file}[/dim]")
+    if auto_seconds:
+        console.print(f"[dim]Auto-stop after {auto_seconds}s[/dim]")
+    else:
+        console.print("[dim]Press Enter to stop recording[/dim]")
+    if headless:
+        console.print("[yellow]Headless mode — no interaction possible; "
+                      "only initial page load is captured[/yellow]")
+    console.print()
+    wait_for_enter = not bool(auto_seconds)
+    timeout_ms = (auto_seconds * 1000) if auto_seconds else 600000
+    out = workflow_recorder.record(url, out_file=out_file,
+                                    timeout_ms=timeout_ms,
+                                    roe_guard=guard, headless=headless,
+                                    wait_for_enter=wait_for_enter)
+    if out.get("error"):
+        console.print(f"[red]{out['error']}[/red]")
+        return 1
+    events = out.get("events") or []
+    console.print(f"[green]Recorded {len(events)} event(s)[/green]")
+    for ev in events[:20]:
+        t = ev.get("type")
+        detail = ev.get("name") or ev.get("text") or ev.get("selector", "")[:40]
+        console.print(f"  [dim]{t}[/dim] {detail}")
+    if len(events) > 20:
+        console.print(f"  [dim]... and {len(events) - 20} more[/dim]")
+    if out.get("out_file"):
+        console.print(f"[green]Saved:[/green] {out['out_file']}")
+    return 0
+
+
+def _cmd_workflow_list(args):
+    if not args:
+        console.print("[red]Usage: workflow list-params <file>[/red]")
+        return
+    from . import workflow_recorder
+    wf = workflow_recorder.load_workflow(args[0])
+    if not wf:
+        console.print(f"[red]Cannot load workflow: {args[0]}[/red]")
+        return
+    params = workflow_recorder.list_modifiable_params(wf)
+    if not params:
+        console.print("[yellow]No modifiable parameters recorded[/yellow]")
+        return
+    t = Table(title=f"Parameters ({len(params)})")
+    t.add_column("Name", style="cyan")
+    t.add_column("Original", style="white")
+    t.add_column("Critical", style="yellow")
+    t.add_column("Selector", style="dim")
+    for p in params:
+        crit = "[bold red]YES[/bold red]" if p["critical"] else "no"
+        t.add_row(p["name"], str(p.get("original"))[:40], crit,
+                  (p.get("selector") or "")[:40])
+    console.print(t)
+    return 0
+
+
+def _cmd_workflow_replay(args):
+    if not args:
+        console.print("[red]Usage: workflow replay <url> --in FILE "
+                      "[--set name=value ...] [--headful][/red]")
+        return
+    url = args[0]
+    wf_file = None
+    substitutions = {}
+    headless = True
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--in" and i + 1 < len(args):
+            wf_file = args[i + 1]
+            i += 2
+        elif args[i] == "--set" and i + 1 < len(args):
+            kv = args[i + 1]
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                substitutions[k.strip()] = v.strip()
+            i += 2
+        elif args[i] == "--headful":
+            headless = False
+            i += 1
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    if not wf_file:
+        console.print("[red]--in FILE is required[/red]")
+        return
+    from . import workflow_recorder
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    guard = ROEGuard(engine_cfg=_load_engine())
+    wf = workflow_recorder.load_workflow(wf_file)
+    if not wf:
+        console.print(f"[red]Cannot load workflow: {wf_file}[/red]")
+        return
+    console.print(f"[cyan]Replaying:[/cyan] {url}")
+    if substitutions:
+        for k, v in substitutions.items():
+            console.print(f"  [dim]substitute {k} = {v}[/dim]")
+    console.print()
+    out = workflow_recorder.replay(url, wf, substitutions=substitutions,
+                                    roe_guard=guard, headless=headless)
+    if out.get("error"):
+        console.print(f"[red]{out['error']}[/red]")
+        return 1
+    t = Table(title="Replay Steps")
+    t.add_column("Event", style="cyan")
+    t.add_column("OK", style="yellow")
+    t.add_column("Substituted", style="magenta")
+    t.add_column("Error", style="dim")
+    for s in out.get("steps") or []:
+        sub_str = ""
+        if s.get("substituted_from") is not None:
+            sub_str = f"{s['substituted_from']} → {s['substituted_to']}"
+        t.add_row(s.get("event", ""),
+                  "[green]yes[/green]" if s.get("ok") else "[red]no[/red]",
+                  sub_str[:40], (s.get("error") or "")[:50])
+    console.print(t)
+    console.print()
+    status = "[green]success[/green]" if out.get("success") else "[yellow]incomplete[/yellow]"
+    console.print(f"  Final URL: {out.get('final_url')}")
+    console.print(f"  Status: {status}")
+    if out.get("substituted"):
+        console.print(f"  Substitutions: {len(out['substituted'])}")
+    return _compute_fail_exit(
+        [{"severity": "medium",
+          "verdict": "SUSPICIOUS" if out.get("substituted") and out.get("success") else "PASS"}],
+        fail_on)
+
+
+def _cmd_workflow_tamper(args):
+    if not args:
+        console.print("[red]Usage: workflow tamper <url> --in FILE "
+                      "[--headful] [--fail-on SEV][/red]")
+        return
+    url = args[0]
+    wf_file = None
+    headless = True
+    fail_on = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--in" and i + 1 < len(args):
+            wf_file = args[i + 1]
+            i += 2
+        elif args[i] == "--headful":
+            headless = False
+            i += 1
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    if not wf_file:
+        console.print("[red]--in FILE is required[/red]")
+        return
+    from . import workflow_recorder
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+    guard = ROEGuard(engine_cfg=_load_engine())
+    wf = workflow_recorder.load_workflow(wf_file)
+    if not wf:
+        console.print(f"[red]Cannot load workflow: {wf_file}[/red]")
+        return
+    console.print(f"[cyan]Auto-tampering critical params:[/cyan] {url}")
+    console.print()
+    out = workflow_recorder.replay_with_critical_tampers(
+        url, wf, roe_guard=guard, headless=headless)
+    results = out.get("results") or []
+    if not results:
+        console.print("[yellow]No critical parameters detected in workflow[/yellow]")
+        console.print("[dim]Record a workflow that fills price/quantity/role fields "
+                      "to enable tamper testing[/dim]")
+        return
+    t = Table(title="Tamper Results")
+    t.add_column("Param", style="cyan")
+    t.add_column("Original", style="white")
+    t.add_column("Tampered To", style="yellow")
+    t.add_column("Outcome", style="bold")
+    for r in results:
+        outcome = "[green]completed[/green]" if r.get("success") else "[dim]failed[/dim]"
+        t.add_row(r["param"], str(r.get("original"))[:20],
+                  str(r.get("tampered_to")), outcome)
+    console.print(t)
+    console.print()
+    v = out.get("verdict", "UNKNOWN")
+    c = VERDICT_COLOR.get(v, "white")
+    console.print(f"  [{c}]{v}[/{c}]  {out.get('reason', '')}")
+    for r in results:
+        if not r.get("success"):
+            continue
+        ledger.record_finding(
+            pattern_id="bizlogic-workflow-tamper",
+            target=url,
+            verdict="SUSPICIOUS",
+            severity="high",
+            reason=(f"workflow completed with {r['param']} tampered from "
+                    f"{r.get('original')} to {r.get('tampered_to')}"),
+            evidence_path="",
+            evidence_json=r,
+            category="sequence",
+            wstg_id="WSTG-BUSL-01",
+            cwe_id="CWE-840",
+        )
+    return _compute_fail_exit(
+        [{"severity": "high",
+          "verdict": "SUSPICIOUS" if r.get("success") else "PASS"}
+         for r in results],
+        fail_on)
+
+
+def cmd_compliance(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage: compliance <target> "
+                      "[--format md|html|json] [--out FILE] "
+                      "[--recalibrate] [--fail-on-gap][/cyan]")
+        console.print("  --format md|html|json   output format (default: md to stdout)")
+        console.print("  --out FILE              write report to file")
+        console.print("  --recalibrate           recompute severity using 2025 floors")
+        console.print("  --fail-on-gap           exit 3 if any OWASP 2025 category has zero findings")
+        console.print("")
+        console.print("Maps every finding to OWASP Top 10:2025, shows category coverage,")
+        console.print("highlights gaps, and can recalibrate severity per category baseline.")
+        return 0
+    if not args:
+        console.print("[red]Usage: compliance <target> [--format md|html|json] "
+                      "[--out FILE] [--recalibrate] [--fail-on-gap][/red]")
+        return
+    target = args[0]
+    fmt = "md"
+    out_file = None
+    recalibrate = False
+    fail_on_gap = False
+    i = 1
+    while i < len(args):
+        if args[i] == "--format" and i + 1 < len(args):
+            fmt = args[i + 1].lower()
+            i += 2
+        elif args[i] == "--out" and i + 1 < len(args):
+            out_file = args[i + 1]
+            i += 2
+        elif args[i] == "--recalibrate":
+            recalibrate = True
+            i += 1
+        elif args[i] == "--fail-on-gap":
+            fail_on_gap = True
+            i += 1
+        else:
+            i += 1
+
+    from . import owasp_2025
+    resolved = _resolve_report_target(target)
+    if resolved != target:
+        console.print(f"[dim]Resolved target: {resolved}[/dim]")
+
+    rows = ledger.findings_for_target(resolved)
+    keys = ["id", "timestamp", "pattern_id", "category", "verdict",
+            "severity", "reason", "wstg_id", "cwe_id", "evidence_path",
+            "duration_ms"]
+    findings = [dict(zip(keys, r)) for r in rows]
+
+    if recalibrate:
+        recalibrated = []
+        for f in findings:
+            new_sev, change = owasp_2025.recalibrate_severity(
+                f.get("pattern_id"), f.get("severity", "info"))
+            if change:
+                f = dict(f)
+                f["severity"] = new_sev
+                f["_recalibration"] = change
+                recalibrated.append(change)
+        if recalibrated:
+            console.print(f"[yellow]Recalibrated {len(recalibrated)} "
+                          f"finding(s) to category floors[/yellow]")
+            for c in recalibrated[:5]:
+                console.print(f"  [dim]{c['reason']}[/dim]")
+            console.print()
+
+    report = owasp_2025.build_compliance_report(
+        findings, complete_scan=False)
+
+    if fmt == "json":
+        text = json.dumps(report, indent=2, default=str)
+    elif fmt == "html":
+        text = owasp_2025.render_html(report, resolved)
+    else:
+        text = owasp_2025.render_markdown(report, resolved)
+
+    if out_file:
+        p = Path(out_file)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        console.print(f"[green]Report written:[/green] {p}")
+    else:
+        console.print(text)
+
+    if fail_on_gap:
+        missing = len(report.get("gaps") or [])
+        if missing:
+            console.print(f"[bold red]FAIL:[/bold red] {missing} OWASP 2025 "
+                          f"category(ies) have zero findings")
+            return 3
+    return 0
+
+
 def cmd_help(args):
     console.print("[bold cyan]sec-checker MVP[/bold cyan]")
     console.print()
@@ -1006,6 +2600,7 @@ def cmd_help(args):
     console.print("  xss <target> <param>              Blind/reflected XSS (OOB + browser)")
     console.print("  explore <base> --paths /a,/b       Combination explorer (outliers)")
     console.print("  smuggle <target>                  HTTP smuggling timing probe (safe)")
+    console.print("  llm <url>                         LLM/AI security scan (OWASP LLM Top 10)")
     console.print()
     console.print("[bold]Report[/bold]")
     console.print("  report <target>                   Generate report")
@@ -1041,6 +2636,17 @@ COMMANDS = {
     "xss": cmd_xss,
     "explore": cmd_explore,
     "smuggle": cmd_smuggle,
+    "jwt": cmd_jwt,
+    "graphql": cmd_graphql,
+    "race": cmd_race,
+    "domxss": cmd_domxss,
+    "ssrf-cloud": cmd_ssrfcloud,
+    "openapi": cmd_openapi,
+    "bizlogic": cmd_bizlogic,
+    "workflow": cmd_workflow,
+    "compliance": cmd_compliance,
+    "sca": cmd_sca,
+    "llm": cmd_llm,
     "web": cmd_web,
     "history": cmd_history,
     "targets": cmd_targets,

@@ -7,6 +7,17 @@ ROOT = Path(__file__).parent.parent.absolute()
 CONFIGS = ROOT / "configs"
 SESSIONS = CONFIGS / "sessions"
 
+DISCOVERY_DEFAULTS = {
+    "prefer_https": True,
+    "schemes": ["https", "http"],
+    "base_paths": ["", "/api", "/api/v1", "/api/v2", "/api/latest",
+                   "/v1", "/v2", "/rest", "/graphql"],
+    "confirm_subpaths": ["", "/health", "/healthz", "/status", "/ping", "/version"],
+    "reject_redirect_only": True,
+    "follow_redirects": True,
+    "probe_timeout_seconds": 6,
+}
+
 
 def _load(name, default=None):
     p = CONFIGS / name
@@ -24,9 +35,17 @@ def load_engine():
                  "max_retries": 3, "backoff_base_ms": 500,
                  "default_user_agent": "sec-checker/1.0"},
         "rate_limit": {"global_rps": 10, "per_endpoint_rps": 5, "burst": 20},
+        "discovery": DISCOVERY_DEFAULTS,
         "roe": {"enabled": True, "enforce_scope": True, "enforce_methods": True,
                 "enforce_rate_limit": True},
     })
+
+
+def discovery_config():
+    eng = load_engine()
+    cfg = dict(DISCOVERY_DEFAULTS)
+    cfg.update(eng.get("discovery") or {})
+    return cfg
 
 
 def load_targets():

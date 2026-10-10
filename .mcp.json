@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "sec-checker": {
+      "command": "python",
+      "args": ["sec_checker_mcp.py"],
+      "env": {
+        "PYTHONPATH": "."
+      }
+    }
+  }
+}

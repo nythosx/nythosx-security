@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent.absolute()
 PATTERNS_DIR = ROOT / "patterns"
-CATEGORIES = ["single", "sequence", "temporal", "content", "combination", "meta"]
+CATEGORIES = ["single", "sequence", "temporal", "content", "combination", "meta", "llm"]
 REQUIRED_FIELDS = ["id", "name", "severity", "steps", "oracles"]
 
 

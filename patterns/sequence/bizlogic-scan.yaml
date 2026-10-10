@@ -1,0 +1,21 @@
+id: bizlogic-scan
+name: Business Logic Flaw Detection
+severity: high
+tags: [business-logic, workflow, wstg-busl-01, cwe-840, cwe-841]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: bizlogic
+    verdict: VULNERABLE
+    endpoints:
+      protected_path: /api/admin

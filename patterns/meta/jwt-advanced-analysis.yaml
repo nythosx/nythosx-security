@@ -1,0 +1,19 @@
+id: jwt-advanced-analysis
+name: JWT Advanced Security Analysis
+severity: high
+tags: [jwt, auth, wstg-sess-10, cwe-347]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+
+oracles:
+  - type: jwt_advanced
+    verdict: SUSPICIOUS

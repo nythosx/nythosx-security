@@ -4,6 +4,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 from . import adapter_matcher
+from . import progress
 
 
 def fetch(url, headers=None, timeout=15, method="GET", json_body=None, data=None,
@@ -65,6 +66,8 @@ def get_first_html(base_url):
 
 
 def detect_framework(url):
+    progress.activity("Fingerprinting framework (headers, cookies, markup)",
+                      stage="framework")
     match_result = adapter_matcher.match(url)
     adapter = match_result["adapter"]
     obs = match_result.get("observations")
@@ -194,6 +197,8 @@ def crawl_js_for_paths(base_url, js_urls, adapter, max_bundles=40,
             if u in visited:
                 continue
             visited.add(u)
+            progress.activity(f"Fetching JS bundle {u.rsplit('/', 1)[-1][:48]}",
+                              stage="discovery", i=len(fetched) + 1, n=max_bundles)
             text = fetch_js_text(u)
             if not text:
                 continue
@@ -252,8 +257,10 @@ def find_login_endpoint(base_url, adapter, discovered_paths=None, username="", p
 
     probe_delay_ms = int((auth_cfg.get("probe_delay_ms") or 200))
     best = None
-    for path in candidates:
+    for pidx, path in enumerate(candidates, 1):
         url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+        progress.activity(f"Trying login endpoint {path}",
+                          stage="login", i=pidx, n=len(candidates))
         for field in field_candidates:
             for ptype in ("json", "form"):
                 if probe_delay_ms > 0:

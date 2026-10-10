@@ -13,13 +13,17 @@ steps:
     request:
       method: GET
       url: "{{ inputs.target_url }}"
+      follow_redirects: true
 
 oracles:
   - type: header_absent
-    headers:
+    critical:
       - Strict-Transport-Security
       - X-Content-Type-Options
       - X-Frame-Options
+    recommended:
       - Content-Security-Policy
       - Referrer-Policy
+      - Permissions-Policy
     verdict: VULNERABLE
+    recommended_verdict: SUSPICIOUS

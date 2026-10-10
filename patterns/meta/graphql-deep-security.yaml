@@ -1,0 +1,21 @@
+id: graphql-deep-security
+name: GraphQL Deep Security Testing
+severity: high
+tags: [graphql, wstg-apit-99, cwe-770, cwe-352, cve-2025-64530]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        query: "{ __typename }"
+
+oracles:
+  - type: graphql_deep
+    verdict: SUSPICIOUS

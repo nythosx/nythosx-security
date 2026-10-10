@@ -2,6 +2,7 @@ id: rate-limit-absent
 name: Rate Limiting Absent on Login Endpoint
 severity: high
 tags: [rate-limit, wstg-athn-03, cwe-307]
+target_role: login
 endpoint_suffix: /login
 
 inputs:
