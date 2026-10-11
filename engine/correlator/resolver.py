@@ -64,8 +64,15 @@ def resolve_chains(findings, threshold=0.7):
             if rank.get(f.get("verdict"), 0) > rank.get(prev.get("verdict"), 0):
                 by_pid[pid] = f
 
+    all_chains = list(load_chains())
+    try:
+        from .auto_chain import generate as _auto_gen
+        all_chains.extend(_auto_gen(findings, threshold=threshold))
+    except Exception:
+        pass
+
     out = []
-    for chain in load_chains():
+    for chain in all_chains:
         matched = []
         missing = []
         confs = []

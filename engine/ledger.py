@@ -1,10 +1,15 @@
 import sqlite3
 import json
+import threading
+
+from . import redact
 from pathlib import Path
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).parent.parent.absolute()
 DB_PATH = ROOT / "findings" / "ledger.db"
+
+_write_lock = threading.Lock()
 
 
 def _connect():
@@ -32,6 +37,20 @@ def _connect():
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS chain_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            engagement_id TEXT,
+            chain_id TEXT,
+            step_id TEXT,
+            tool TEXT,
+            verdict TEXT,
+            duration_ms REAL
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT,
@@ -50,40 +69,50 @@ def _connect():
 def record_finding(pattern_id, target, verdict, severity, reason, evidence_path,
                     evidence_json, category="", wstg_id="", cwe_id="",
                     duration_ms=0, engagement_id=""):
-    conn = _connect()
-    conn.execute(
-        """
-        INSERT INTO findings (timestamp, engagement_id, target, pattern_id, category,
-                              verdict, severity, reason, wstg_id, cwe_id,
-                              evidence_path, evidence_json, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            datetime.now(timezone.utc).isoformat(),
-            engagement_id, target, pattern_id, category,
-            verdict, severity, reason, wstg_id, cwe_id,
-            evidence_path, json.dumps(evidence_json, default=str), duration_ms,
-        ),
-    )
-    conn.commit()
-    conn.close()
+    reason = redact.redact_text(reason) if isinstance(reason, str) else reason
+    evidence_json = redact.redact_dict(evidence_json)
+    with _write_lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO findings (timestamp, engagement_id, target, pattern_id, category,
+                                      verdict, severity, reason, wstg_id, cwe_id,
+                                      evidence_path, evidence_json, duration_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    engagement_id, target, pattern_id, category,
+                    verdict, severity, reason, wstg_id, cwe_id,
+                    evidence_path, json.dumps(evidence_json, default=str),
+                    duration_ms,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def record_run(target, pattern_count, vulnerable_count, duration_ms, engagement_id=""):
-    conn = _connect()
-    conn.execute(
-        """
-        INSERT INTO runs (timestamp, engagement_id, target, pattern_count,
-                          vulnerable_count, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            datetime.now(timezone.utc).isoformat(),
-            engagement_id, target, pattern_count, vulnerable_count, duration_ms,
-        ),
-    )
-    conn.commit()
-    conn.close()
+    with _write_lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO runs (timestamp, engagement_id, target, pattern_count,
+                                  vulnerable_count, duration_ms)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    engagement_id, target, pattern_count, vulnerable_count,
+                    duration_ms,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def recent_findings(limit=30, target=None):
@@ -117,6 +146,66 @@ def findings_for_target(target):
     ).fetchall()
     conn.close()
     return rows
+
+
+def record_chain_step(chain_id, step_id, tool, verdict,
+                        duration_ms=0, engagement_id=""):
+    with _write_lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO chain_runs
+                    (timestamp, engagement_id, chain_id, step_id, tool,
+                     verdict, duration_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    engagement_id, chain_id, step_id, tool, verdict,
+                    float(duration_ms or 0),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def chain_stats(limit=0):
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT chain_id, verdict, duration_ms FROM chain_runs"
+    ).fetchall()
+    conn.close()
+    by_chain = {}
+    for cid, verdict, dur in rows:
+        e = by_chain.setdefault(cid, {
+            "chain_id": cid, "runs": 0, "vulnerable": 0,
+            "suspicious": 0, "pass_count": 0, "unknown": 0,
+            "total_duration_ms": 0.0,
+        })
+        e["runs"] += 1
+        v = (verdict or "UNKNOWN").upper()
+        if v == "VULNERABLE":
+            e["vulnerable"] += 1
+        elif v == "SUSPICIOUS":
+            e["suspicious"] += 1
+        elif v == "PASS":
+            e["pass_count"] += 1
+        else:
+            e["unknown"] += 1
+        e["total_duration_ms"] += float(dur or 0)
+    chains = []
+    for e in by_chain.values():
+        runs = e["runs"] or 1
+        e["avg_duration_ms"] = e["total_duration_ms"] / runs
+        del e["total_duration_ms"]
+        chains.append(e)
+    chains.sort(key=lambda x: (-x["vulnerable"], -x["runs"]))
+    if limit:
+        chains = chains[:limit]
+    return {"chains": chains,
+            "total_runs": sum(c["runs"] for c in chains)}
 
 
 def all_targets():

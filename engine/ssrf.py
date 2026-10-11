@@ -31,8 +31,16 @@ def _probe_impl(target_url, oob_server=None, method="GET", params=None, headers=
           cookies=None, engine_cfg=None, wait_timeout=5.0):
     engine_cfg = engine_cfg if engine_cfg is not None else load_engine()
     guard = ROEGuard(engine_cfg=engine_cfg)
-    own_oob = oob_server is None
-    oob = oob_server or OOBServer().start()
+    local_oob = None
+    if oob_server is None:
+        try:
+            from .oob_registry import get_shared_oob
+            oob = get_shared_oob()
+        except Exception:
+            local_oob = OOBServer().start()
+            oob = local_oob
+    else:
+        oob = oob_server
     out = {"target": target_url, "oob_base": oob.base_url, "injected": [],
            "callbacks": [], "result": None}
     client = _make_client(headers, cookies, engine_cfg, guard)
@@ -58,14 +66,21 @@ def _probe_impl(target_url, oob_server=None, method="GET", params=None, headers=
                                          "hits": len(hits)})
     finally:
         client.close()
-        if own_oob:
-            oob.stop()
+        if local_oob is not None:
+            local_oob.stop()
 
     if out["callbacks"]:
         vectors = ", ".join(c["vector"] for c in out["callbacks"])
         out["result"] = {"verdict": "VULNERABLE",
                          "reason": f"out-of-band callback received via {vectors}",
                          "evidence": {"callbacks": out["callbacks"]}}
+    elif getattr(oob, "is_external", False):
+        out["result"] = {"verdict": "UNKNOWN",
+                         "reason": ("external OOB mode: cannot observe callbacks "
+                                    "locally; check the external collaborator "
+                                    "manually for hits"),
+                         "evidence": {"vectors_tried": len(out["injected"]),
+                                      "oob_mode": "external"}}
     else:
         out["result"] = {"verdict": "PASS",
                          "reason": "no out-of-band callback observed",

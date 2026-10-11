@@ -1,6 +1,9 @@
 id: bizlogic-scan
 name: Business Logic Flaw Detection
 severity: high
+destructive: true
+opt_in: true
+destructive_reason: "Exercises checkout, coupon, and transfer flows with tampered values."
 tags: [business-logic, workflow, wstg-busl-01, cwe-840, cwe-841]
 
 inputs:

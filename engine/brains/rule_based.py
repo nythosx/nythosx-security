@@ -151,5 +151,49 @@ class RuleBasedBrain:
     def propose_payload(self, state, capability):
         return None
 
+    def triage_response(self, baseline, candidate, context=None):
+        return _rule_triage(baseline, candidate, context)
+
+
+def _extract_field(obj, name):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _rule_triage(baseline, candidate, context=None):
+    if baseline is None or candidate is None:
+        return TriageDecision(keep=True, reason="missing baseline or candidate")
+
+    b_status = _extract_field(baseline, "status")
+    c_status = _extract_field(candidate, "status")
+    b_len = _extract_field(baseline, "body_len")
+    c_len = _extract_field(candidate, "body_len")
+    b_hash = _extract_field(baseline, "structural_hash")
+    c_hash = _extract_field(candidate, "structural_hash")
+
+    if b_status is not None and c_status is not None and b_status != c_status:
+        return TriageDecision(
+            keep=True, escalate=True,
+            reason="status " + str(b_status) + " -> " + str(c_status))
+
+    if b_len and c_len and b_len > 0:
+        delta_pct = abs(c_len - b_len) / b_len
+        if delta_pct > 0.2:
+            return TriageDecision(
+                keep=True, escalate=True,
+                reason="body_len delta " + str(round(delta_pct, 2)))
+
+    if b_hash and c_hash and b_hash != c_hash:
+        return TriageDecision(
+            keep=True, escalate=False,
+            reason="hash differs but length stable")
+
+    return TriageDecision(
+        keep=True, escalate=False,
+        reason="no significant difference")
+
 
 __all__ = ["RuleBasedBrain"]

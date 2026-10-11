@@ -91,3 +91,19 @@ def test_brains_share_scanbrain_protocol():
     llm = LLMBrain(client=None)
     assert isinstance(rule, ScanBrain)
     assert isinstance(llm, ScanBrain)
+
+
+def test_both_brains_implement_triage_response():
+    rule = RuleBasedBrain()
+    llm = LLMBrain(client=None)
+    assert hasattr(rule, "triage_response")
+    assert hasattr(llm, "triage_response")
+
+
+def test_triage_response_returns_triage_decision():
+    from engine.state import TriageDecision
+    rule = RuleBasedBrain()
+    llm = LLMBrain(client=None)
+    for brain in (rule, llm):
+        r = brain.triage_response(None, None)
+        assert isinstance(r, TriageDecision)

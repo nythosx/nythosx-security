@@ -286,3 +286,44 @@ def test_cors_no_header_passes(step):
          'inputs': {}, 'target': 'x', 'negative_baseline': None}
     o = {'type': 'cors_misconfig', 'test_origin': 'https://attacker.example.com'}
     assert evaluate(o, c)['verdict'] == 'PASS'
+
+
+def test_semantic_diff_requires_two_steps(step):
+    ctx = {'steps': [step('only', status=200)],
+           'inputs': {}, 'target': 'x'}
+    r = evaluate({'type': 'semantic_diff'}, ctx)
+    assert r['verdict'] == 'UNKNOWN'
+    assert 'two' in (r.get('reason') or '').lower() or \
+           '2' in (r.get('reason') or '')
+
+
+def test_semantic_diff_no_baseline_returns_unknown(step):
+    s1 = step('s1', status=200, body='{"a":1}')
+    s1['url'] = 'http://x/y'
+    s2 = step('s2', status=200, body='{"a":2}')
+    s2['url'] = 'http://x/y'
+    ctx = {'steps': [s1, s2], 'inputs': {}, 'target': 'http://nonexistent'}
+    r = evaluate({'type': 'semantic_diff'}, ctx)
+    assert r['verdict'] == 'UNKNOWN'
+    assert 'baseline' in (r.get('reason') or '').lower()
+
+
+def test_annotate_with_signal_preserves_verdict():
+    from engine.oracle import _annotate_with_signal
+    result = {'verdict': 'VULNERABLE', 'reason': 'x', 'evidence': {'k': 1}}
+    out = _annotate_with_signal(result, {'_signal_strength': 0.75})
+    assert out['verdict'] == 'VULNERABLE'
+    assert out['evidence']['signal_strength'] == 0.75
+    assert out['evidence']['k'] == 1
+
+
+def test_annotate_with_signal_no_context_returns_original():
+    from engine.oracle import _annotate_with_signal
+    result = {'verdict': 'PASS', 'evidence': {}}
+    out = _annotate_with_signal(result, {})
+    assert out is result
+
+
+def test_annotate_with_signal_none_result():
+    from engine.oracle import _annotate_with_signal
+    assert _annotate_with_signal(None, {'_signal_strength': 0.5}) is None

@@ -8,3 +8,7 @@ playwright>=1.63,<2
 websockets>=12.0,<13
 h2>=4.1,<5
 cryptography>=42.0,<43
+# --- Added in Phase 1 ---
+mcp>=1.0
+claude-agent-sdk>=0.1
+tomli>=2.0,<3; python_version < "3.11"

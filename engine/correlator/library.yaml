@@ -469,3 +469,80 @@ chains:
   - order: 2
     action: Brute-force with curated weak list
     outcome: credentials recovered
+- id: sqli-to-db-compromise
+  name: SQL Injection to Database Compromise
+  severity: critical
+  prerequisites:
+  - sqli-boolean
+  - sqli-union
+  narrative: 'A boolean-based SQL injection confirms the parameter is injectable.
+    A UNION-based follow-up extracts arbitrary rows from any table the DB user can
+    read.'
+  steps:
+  - order: 1
+    action: Boolean SQLi on login parameter
+    outcome: response differs between true and false conditions
+  - order: 2
+    action: UNION SELECT username, password FROM users
+    outcome: credentials extracted
+- id: csp-bypass-to-xss
+  name: CSP Bypass to XSS
+  severity: high
+  prerequisites:
+  - csp-misconfig
+  - dom-xss-advanced
+  narrative: 'CSP has a JSONP endpoint in script-src or a missing base-uri directive.
+    An injected script tag executes despite the header.'
+  steps:
+  - order: 1
+    action: Enumerate CSP directives
+    outcome: JSONP host identified in allowlist
+  - order: 2
+    action: Inject script tag pointing at JSONP callback
+    outcome: script executes under CSP
+- id: oauth-flow-mismatch-to-ato
+  name: OAuth Flow Mismatch to Account Takeover
+  severity: critical
+  prerequisites:
+  - oauth-redirect-uri
+  - oauth-pkce-downgrade
+  narrative: 'The authorization server accepts redirect_uri values that are a substring
+    of a registered one, and PKCE plain is accepted. An attacker captures the
+    authorization code and exchanges it for a victim session.'
+  steps:
+  - order: 1
+    action: Register attacker redirect_uri matching victim prefix
+    outcome: authorization code sent to attacker
+  - order: 2
+    action: Exchange code with plain PKCE verifier
+    outcome: victim session issued
+- id: proto-pollution-to-dom-xss
+  name: Prototype Pollution to DOM XSS
+  severity: high
+  prerequisites:
+  - proto-pollution
+  - dom-xss-advanced
+  narrative: 'A query-string parameter pollutes Object.prototype. A later DOM sink
+    reads the polluted property and inserts unescaped HTML.'
+  steps:
+  - order: 1
+    action: Query-string prototype pollution
+    outcome: prototype polluted
+  - order: 2
+    action: Trigger DOM sink that reads the polluted property
+    outcome: HTML executes
+- id: http2-desync-to-cache-poison
+  name: HTTP/2 Desync to Cache Poisoning
+  severity: critical
+  prerequisites:
+  - http2-desync
+  - cache-poisoning-probe
+  narrative: 'HTTP/2 front-end and back-end disagree on CL/TE. A smuggled request
+    with a poisoned Host header is cached and served to the next visitor.'
+  steps:
+  - order: 1
+    action: H2.CL desync probe
+    outcome: request split confirmed
+  - order: 2
+    action: Inject Host header in the smuggled request
+    outcome: cache poisoned

@@ -75,3 +75,47 @@ def test_no_data_renders_without_sections():
         chains=[], coverage=None)
     assert "Attack Chains" not in html
     assert "Security Assessment Report" in html
+
+
+def test_html_template_has_confirm_column():
+    from engine import report
+    assert "<th>Confirm</th>" in report.HTML_TEMPLATE
+
+
+def test_md_template_has_confirm_column():
+    from engine import report
+    assert "Confirm" in report.MD_TEMPLATE
+
+
+def test_html_template_has_iteration_section():
+    from engine import report
+    assert "Iteration History" in report.HTML_TEMPLATE
+
+
+def test_md_template_has_iteration_section():
+    from engine import report
+    assert "Iteration History" in report.MD_TEMPLATE
+
+
+def test_iteration_history_renders_in_html():
+    from engine import report
+    html = report._HTML_ENV.from_string(report.HTML_TEMPLATE).render(
+        target="x", timestamp="now", findings=[], counts=report._counts([]),
+        chains=[], coverage=None,
+        iteration_history=[{"sweep": 1, "category": "A09",
+                            "hypotheses": 4, "executed": 3}])
+    assert "Iteration History" in html
+    assert "A09" in html
+
+
+def test_enrich_handles_missing_evidence():
+    from engine import report
+    findings = [{"id": 1, "pattern_id": "env-file-exposure",
+                 "category": "content", "verdict": "VULNERABLE",
+                 "severity": "high", "reason": "test",
+                 "wstg_id": "", "cwe_id": "",
+                 "evidence_path": "", "duration_ms": 1}]
+    out = report.enrich_findings(findings)
+    assert "why" in out[0]
+    assert "signal_strength" not in out[0]
+    assert "confirmation_status" not in out[0]

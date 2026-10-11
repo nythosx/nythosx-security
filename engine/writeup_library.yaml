@@ -1,9 +1,12 @@
 families:
   secrets-exposure:
     title: Secrets Exposure
-    attack: An unauthenticated attacker fetches {artifact} directly and harvests the credentials inside.
-    impact: Full compromise of the application and every downstream system that trusts the leaked credentials ({leaked}).
-    fix: Remove {artifact} from the web root, rotate every credential it contained, and add it to your deploy-exclude list.
+    attack: An unauthenticated attacker fetches {artifact} directly and harvests the
+      credentials inside.
+    impact: Full compromise of the application and every downstream system that trusts
+      the leaked credentials ({leaked}).
+    fix: Remove {artifact} from the web root, rotate every credential it contained,
+      and add it to your deploy-exclude list.
     refs:
       owasp: A02
       cwe:
@@ -12,9 +15,12 @@ families:
       wstg: WSTG-CONF-02
   debug-mode:
     title: Debug Mode Exposure
-    attack: An attacker triggers an error and reads the framework's debug page, which lists source paths, env vars, and stack frames.
-    impact: Sensitive configuration and internal source are disclosed, accelerating every subsequent attack.
-    fix: Set debug=false in production, disable the debug toolbar, and never expose stack traces to unauthenticated clients.
+    attack: An attacker triggers an error and reads the framework's debug page, which
+      lists source paths, env vars, and stack frames.
+    impact: Sensitive configuration and internal source are disclosed, accelerating
+      every subsequent attack.
+    fix: Set debug=false in production, disable the debug toolbar, and never expose
+      stack traces to unauthenticated clients.
     refs:
       owasp: A02
       cwe:
@@ -23,8 +29,10 @@ families:
       wstg: WSTG-CONF-02
   security-misconfiguration:
     title: Security Misconfiguration
-    attack: An attacker observes the missing hardening headers or over-permissive HTTP methods and pivots accordingly.
-    impact: Missing browser-side defenses magnify the blast radius of any XSS, clickjacking, or downgrade attack.
+    attack: An attacker observes the missing hardening headers or over-permissive
+      HTTP methods and pivots accordingly.
+    impact: Missing browser-side defenses magnify the blast radius of any XSS, clickjacking,
+      or downgrade attack.
     fix: Serve {header} on every response, or restrict dangerous methods at the edge.
     refs:
       owasp: A02
@@ -34,8 +42,10 @@ families:
       wstg: WSTG-CONF-07
   info-disclosure:
     title: Information Disclosure
-    attack: An attacker reads {source} from a normal response and maps the backend stack, versions, and internal paths.
-    impact: Reconnaissance shortcut. Attackers no longer need to guess versions or framework quirks.
+    attack: An attacker reads {source} from a normal response and maps the backend
+      stack, versions, and internal paths.
+    impact: Reconnaissance shortcut. Attackers no longer need to guess versions or
+      framework quirks.
     fix: Strip or normalize the leaking response, and log the event for detection.
     refs:
       owasp: A02
@@ -44,9 +54,11 @@ families:
       wstg: WSTG-INFO-02
   cors-misconfiguration:
     title: CORS Misconfiguration
-    attack: An attacker's origin is reflected in Access-Control-Allow-Origin, so any website can read the response with the victim's cookies.
+    attack: An attacker's origin is reflected in Access-Control-Allow-Origin, so any
+      website can read the response with the victim's cookies.
     impact: 'Cross-origin data theft: user profile, CSRF tokens, private API data.'
-    fix: Use an explicit allowlist for CORS origins and never combine wildcard with credentials.
+    fix: Use an explicit allowlist for CORS origins and never combine wildcard with
+      credentials.
     refs:
       owasp: A01
       cwe:
@@ -55,9 +67,11 @@ families:
       wstg: WSTG-CONF-05
   auth-weaknesses:
     title: Authentication Weakness
-    attack: An attacker enumerates users, brute-forces credentials, or reuses a stolen session because the control is missing.
-    impact: "Account takeover with no exploitation of code \u2014 only policy gaps."
-    fix: Add rate limiting, generic error messages, and rotate {artifact} on privilege change.
+    attack: An attacker enumerates users, brute-forces credentials, or reuses a stolen
+      session because the control is missing.
+    impact: Account takeover with no exploitation of code — only policy gaps.
+    fix: Add rate limiting, generic error messages, and rotate {artifact} on privilege
+      change.
     refs:
       owasp: A07
       cwe:
@@ -67,9 +81,12 @@ families:
       wstg: WSTG-ATHN-03
   access-control:
     title: Broken Access Control
-    attack: An attacker changes an identifier, method, or body field and accesses resources they should not own.
-    impact: "Horizontal or vertical privilege escalation \u2014 the most common critical web-app finding."
-    fix: Enforce ownership and role checks server-side on every request, not just in the UI.
+    attack: An attacker changes an identifier, method, or body field and accesses
+      resources they should not own.
+    impact: Horizontal or vertical privilege escalation — the most common critical
+      web-app finding.
+    fix: Enforce ownership and role checks server-side on every request, not just
+      in the UI.
     refs:
       owasp: A01
       cwe:
@@ -79,64 +96,76 @@ families:
       wstg: WSTG-ATHZ-04
   injection:
     title: Injection
-    attack: Attacker-controlled input reaches an interpreter (HTML, GraphQL, script engine, template) unchanged.
-    impact: Script execution in the victim's browser, backend code execution, or server-side resource exhaustion.
+    attack: Attacker-controlled input reaches an interpreter (HTML, GraphQL, script
+      engine, template) unchanged.
+    impact: Script execution in the victim's browser, backend code execution, or server-side
+      resource exhaustion.
     fix: Context-aware encode all output, enforce schema, and cap query complexity.
     refs:
-      owasp: A03
+      owasp: A05
       cwe:
       - CWE-79
       - CWE-770
       wstg: WSTG-INPV
   cryptographic-failures:
     title: Cryptographic Failure
-    attack: An attacker forges, replays, or downgrades a token because the signature scheme or secret is weak.
+    attack: An attacker forges, replays, or downgrades a token because the signature
+      scheme or secret is weak.
     impact: Full authentication bypass without knowing any password.
-    fix: Use strong algorithms with adequate key entropy and validate signatures with a strict allowlist.
+    fix: Use strong algorithms with adequate key entropy and validate signatures with
+      a strict allowlist.
     refs:
-      owasp: A02
+      owasp: A04
       cwe:
       - CWE-347
       - CWE-916
       wstg: WSTG-SESS-10
   business-logic:
     title: Business Logic Flaw
-    attack: An attacker reorders, skips, or replays a step in a multi-stage flow the server does not enforce.
+    attack: An attacker reorders, skips, or replays a step in a multi-stage flow the
+      server does not enforce.
     impact: Financial loss, unauthorized state transitions, or free product.
-    fix: Enforce step ordering and idempotency server-side, and re-validate every parameter on the final step.
+    fix: Enforce step ordering and idempotency server-side, and re-validate every
+      parameter on the final step.
     refs:
-      owasp: A04
+      owasp: A06
       cwe:
       - CWE-840
       - CWE-841
       wstg: WSTG-BUSL-01
   race-conditions:
     title: Race Condition
-    attack: An attacker fires {count} identical requests in one burst; the server handles more than one because the guard is not atomic.
-    impact: 'Limit overrun: multiple coupon redemptions, multiple withdrawals, multiple votes.'
+    attack: An attacker fires {count} identical requests in one burst; the server
+      handles more than one because the guard is not atomic.
+    impact: 'Limit overrun: multiple coupon redemptions, multiple withdrawals, multiple
+      votes.'
     fix: Use database-level locks, idempotency keys, or serialized transaction boundaries.
     refs:
-      owasp: A04
+      owasp: A06
       cwe:
       - CWE-362
       - CWE-367
       wstg: WSTG-BUSL-04
   supply-chain:
     title: Supply Chain
-    attack: An attacker leverages a known-vulnerable dependency or build-time artifact the target ships.
-    impact: "Pre-auth RCE, data exfil, or full compromise \u2014 depending on the CVE."
+    attack: An attacker leverages a known-vulnerable dependency or build-time artifact
+      the target ships.
+    impact: Pre-auth RCE, data exfil, or full compromise — depending on the CVE.
     fix: Upgrade to a fixed version, pin transitive deps, and monitor advisories continuously.
     refs:
-      owasp: A06
+      owasp: A03
       cwe:
       - CWE-1104
       - CWE-1035
       wstg: WSTG-CONF-03
   llm-security:
     title: LLM Security
-    attack: An attacker injects text into the model's context or extracts its instructions and tool surface.
-    impact: Data exfil through the model, unauthorized tool invocation, or reputational damage via prompt output.
-    fix: Apply input/output filters, least-privilege tool scopes, and never trust model output as code or markup.
+    attack: An attacker injects text into the model's context or extracts its instructions
+      and tool surface.
+    impact: Data exfil through the model, unauthorized tool invocation, or reputational
+      damage via prompt output.
+    fix: Apply input/output filters, least-privilege tool scopes, and never trust
+      model output as code or markup.
     refs:
       owasp_llm: LLM01
       cwe:
@@ -144,8 +173,10 @@ families:
       - CWE-1426
   api-schema:
     title: API Schema Exposure
-    attack: An attacker reads the OpenAPI or Swagger document and enumerates every endpoint, parameter, and auth flow.
-    impact: Complete API map for downstream fuzzing, forced browsing, and parameter tampering.
+    attack: An attacker reads the OpenAPI or Swagger document and enumerates every
+      endpoint, parameter, and auth flow.
+    impact: Complete API map for downstream fuzzing, forced browsing, and parameter
+      tampering.
     fix: Gate the schema behind authentication in production, or disable it entirely.
     refs:
       owasp: A02
@@ -155,15 +186,47 @@ families:
       wstg: WSTG-CONF-01
   denial-of-service:
     title: Denial of Service
-    attack: An attacker sends crafted requests that consume disproportionate server resources (deep queries, oversized payloads, unbounded loops) and degrades availability for legitimate users.
-    impact: Availability loss. Downstream services may cascade-fail; SLA and reputation impact are immediate.
-    fix: Enforce query complexity limits, request size caps, per-IP rate limits, and timeouts on every backend call.
+    attack: An attacker sends crafted requests that consume disproportionate server
+      resources (deep queries, oversized payloads, unbounded loops) and degrades availability
+      for legitimate users.
+    impact: Availability loss. Downstream services may cascade-fail; SLA and reputation
+      impact are immediate.
+    fix: Enforce query complexity limits, request size caps, per-IP rate limits, and
+      timeouts on every backend call.
     refs:
-      owasp: A04
+      owasp: A06
       cwe:
       - CWE-400
       - CWE-770
       wstg: WSTG-BUSL-05
+  oauth:
+    title: OAuth / OIDC Flow Weakness
+    attack: An attacker manipulates the authorization request (redirect_uri, state,
+      PKCE, id_token) to hijack the flow or obtain tokens.
+    impact: Account takeover via stolen authorization codes or tokens.
+    fix: Validate redirect_uri against an exact-match allowlist, require state, enforce
+      S256 PKCE, and verify id_token signatures strictly.
+    refs:
+      owasp: A07
+      cwe:
+      - CWE-352
+      - CWE-601
+      wstg: WSTG-ATHN-05
+  blind-injection:
+    title: Blind / Time-Based Injection
+    attack: An attacker infers that injected code executed by measuring the response
+      time, without seeing output.
+    impact: Remote code execution or data extraction through a channel that produces
+      no visible response.
+    fix: Use parameterised queries and sandboxed template contexts. Reject unvalidated
+      input before it reaches any interpreter.
+    refs:
+      owasp: A05
+      cwe:
+      - CWE-89
+      - CWE-1336
+      - CWE-611
+      wstg: WSTG-INPV
 patterns:
   env-file-exposure:
     family: secrets-exposure
@@ -176,7 +239,8 @@ patterns:
         join: ', '
   js-bundle-secrets:
     family: secrets-exposure
-    gap: API keys and tokens are inlined into a JavaScript bundle that any visitor can fetch.
+    gap: API keys and tokens are inlined into a JavaScript bundle that any visitor
+      can fetch.
     vars:
       artifact: a public JavaScript bundle
       leaked:
@@ -324,7 +388,8 @@ patterns:
     gap: The OpenAPI or Swagger document is publicly readable and drives the fuzz.
   llm-prompt-injection:
     family: llm-security
-    gap: The model follows instructions embedded in user input and ignores its system prompt.
+    gap: The model follows instructions embedded in user input and ignores its system
+      prompt.
   llm-output-handling:
     family: llm-security
     gap: Model output is inserted into HTML without escaping.
@@ -354,13 +419,15 @@ patterns:
     gap: The redirect target is taken from a user-controlled param without an allowlist.
   host-header-injection:
     family: injection
-    gap: The Host header (or X-Forwarded-Host) is reflected in a URL, redirect, or password-reset link.
+    gap: The Host header (or X-Forwarded-Host) is reflected in a URL, redirect, or
+      password-reset link.
   websocket-cswsh:
     family: access-control
     gap: The WebSocket handshake accepts any Origin and does not require authentication.
   oauth-redirect-uri:
     family: access-control
-    gap: The authorization endpoint accepts redirect_uri values outside the client's registered list.
+    gap: The authorization endpoint accepts redirect_uri values outside the client's
+      registered list.
   oauth-missing-state:
     family: auth-weaknesses
     gap: The authorization endpoint accepts requests without a state parameter.
@@ -375,7 +442,26 @@ patterns:
     gap: The account password policy accepts short, common, or dictionary passwords.
   lockout-probe:
     family: auth-weaknesses
-    gap: The login endpoint never locks or rate-limits the account after repeated failures.
+    gap: The login endpoint never locks or rate-limits the account after repeated
+      failures.
   weak-credential-enum:
     family: auth-weaknesses
-    gap: A small curated list of common credentials is sufficient to authenticate as an admin.
+    gap: A small curated list of common credentials is sufficient to authenticate
+      as an admin.
+  oauth-pkce-downgrade:
+    family: oauth
+    gap: The authorization endpoint accepts PKCE plain or omits PKCE entirely.
+  timing-sqli:
+    family: blind-injection
+    gap: An injected SLEEP / pg_sleep / WAITFOR DELAY payload extends the response
+      time.
+  timing-ssti:
+    family: blind-injection
+    gap: An injected CPU-heavy template loop extends the response time.
+  timing-xxe:
+    family: blind-injection
+    gap: An external entity pointing at a non-routable host extends the response time.
+  second-order-xss:
+    family: injection
+    gap: A marker submitted to one endpoint appears unescaped on another endpoint
+      that renders user content.

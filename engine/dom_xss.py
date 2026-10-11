@@ -6,6 +6,7 @@ from urllib.parse import urlparse, urlencode, urlunparse, parse_qs
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
 from .browser import _import_playwright, BrowserUnavailable
+from . import http as _http
 
 
 SOURCES = {
@@ -453,7 +454,7 @@ def _collect_csp_headers(url, headers, timeout, verify_tls, roe_guard):
         return {"error": f"ROE_BLOCK: {viol}"}
     try:
         import httpx
-        with httpx.Client(timeout=timeout, verify=verify_tls,
+        with _http.Client(timeout=timeout, verify=verify_tls,
                           follow_redirects=True) as c:
             r = c.get(url, headers=headers or {})
         return dict(r.headers)

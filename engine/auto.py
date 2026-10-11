@@ -8,10 +8,15 @@ console = Console()
 
 def run_auto(url, min_severity="medium", credentials=None, skip_discovery=False,
              api_override=None, adapter_override=None, auto_baseline=False,
-             job_id=None):
+             job_id=None, allow_destructive=False):
     import sys
+    from . import budget as _budget
+    try:
+        _budget.auto_configure_from_configs()
+    except Exception:
+        pass
     this = sys.modules[__name__]
-    orc = Orchestrator(console=this.console)
+    orc = Orchestrator(console=this.console, allow_destructive=allow_destructive)
     return orc.run_auto_compat(
         url=url,
         min_severity=min_severity,
@@ -21,4 +26,5 @@ def run_auto(url, min_severity="medium", credentials=None, skip_discovery=False,
         adapter_override=adapter_override,
         auto_baseline=auto_baseline,
         job_id=job_id,
+        allow_destructive=allow_destructive,
     )

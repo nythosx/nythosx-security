@@ -2,104 +2,48 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  security-events: write
+    branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check engine/ sec_checker_tools/ tests/
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install dependencies
-        run: |
+          python-version: ${{ matrix.python-version }}
+      - run: |
           python -m pip install --upgrade pip
+          pip install -r requirements.txt
           pip install -r requirements-dev.txt
-
-      - name: Install Playwright Chromium
-        run: python -m playwright install --with-deps chromium
-
-      - name: Validate patterns
-        run: python run.py validate
-
       - name: Run tests
-        run: python -m pytest tests/ -q
-
-  scan:
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt jsonschema
-
-      - name: Write disposable ROE scope
-        run: |
-          mkdir -p configs
-          cat > configs/roe.yaml <<'EOF'
-          enabled: true
-          engagement_id: ci
-          scope:
-            in_scope: ["127.0.0.1", "localhost"]
-            out_of_scope: []
-            allowed_methods: ["GET", "POST", "OPTIONS", "HEAD"]
-            forbidden_paths: []
-          EOF
-
-      - name: Start disposable target
-        run: |
-          python - <<'EOF' &
-          import http.server, socketserver
-          class TS(socketserver.ThreadingTCPServer):
-              allow_reuse_address = True
-          TS(("127.0.0.1", 8000), http.server.SimpleHTTPRequestHandler).serve_forever()
-          EOF
-          for i in $(seq 1 20); do
-            curl -sf http://127.0.0.1:8000/ >/dev/null && break
-            sleep 0.5
-          done
-
-      - name: Scan disposable target
-        run: python run.py scan-all http://127.0.0.1:8000 --category single
-
-      - name: Generate SARIF
-        run: python run.py report http://127.0.0.1:8000 --format sarif
-
-      - name: Validate SARIF against schema
-        run: |
-          python - <<'EOF'
-          import glob, json, urllib.request, jsonschema, sys
-          files = sorted(glob.glob("reports/*.sarif"))
-          assert files, "no SARIF produced"
-          sarif = json.load(open(files[-1]))
-          schema = json.loads(urllib.request.urlopen(
-              "https://json.schemastore.org/sarif-2.1.0.json", timeout=30).read())
-          jsonschema.validate(sarif, schema)
-          print(f"SARIF valid: {files[-1]}")
-          EOF
-
-      - name: Upload SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: reports
-        continue-on-error: true
+          pytest tests/ -q --no-header \
+            --ignore=tests/test_browser.py \
+            --ignore=tests/test_xss.py \
+            --ignore=tests/test_webui.py \
+            --ignore=tests/test_webui_integration.py

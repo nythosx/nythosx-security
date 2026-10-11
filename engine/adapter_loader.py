@@ -1,16 +1,21 @@
 import yaml
 from pathlib import Path
 
+from . import schema
+
 ROOT = Path(__file__).parent.parent.absolute()
 ADAPTERS_DIR = ROOT / "adapters"
 
 
 def _load_one(path):
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        from .util import strict_yaml_load
+        data = strict_yaml_load(path.read_text(encoding="utf-8")) or {}
     except Exception:
         return None
-    if "id" not in data:
+    try:
+        schema.validate_adapter(data, where=path.name)
+    except schema.SchemaError:
         return None
     data["_source"] = str(path.relative_to(ROOT))
     data.setdefault("priority", 50)

@@ -9,6 +9,8 @@ try:
     from engine import sca
 except ImportError:
     from . import sca
+from .version import __version__ as SEC_CHECKER_VERSION
+
 
 
 PURL_TYPES = {
@@ -94,7 +96,8 @@ def build_cyclonedx(root, scan_result=None):
         "metadata": {
             "timestamp": timestamp,
             "tools": {"components": [{
-                "type": "application", "name": "sec-checker", "version": "1.2.1",
+                "type": "application", "name": "sec-checker",
+                "version": SEC_CHECKER_VERSION,
             }]},
             "component": {
                 "type": "application",
@@ -171,7 +174,7 @@ def build_spdx(root, scan_result=None):
         "documentNamespace": f"https://sec-checker.local/spdx/{uuid.uuid4()}",
         "creationInfo": {
             "created": timestamp,
-            "creators": ["Tool: sec-checker-1.2.1"],
+            "creators": [f"Tool: sec-checker-{SEC_CHECKER_VERSION}"],
         },
         "packages": packages,
         "relationships": relationships,

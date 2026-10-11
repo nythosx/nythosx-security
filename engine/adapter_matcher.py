@@ -2,11 +2,12 @@ import re
 from urllib.parse import urljoin
 import httpx
 from . import adapter_loader
+from . import http as _http
 
 
 def _fetch(url, timeout=10):
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, verify=False) as c:
+        with _http.Client(timeout=timeout, follow_redirects=True, verify=False) as c:
             return c.get(url)
     except Exception:
         return None

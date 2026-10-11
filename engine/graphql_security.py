@@ -6,6 +6,7 @@ import httpx
 
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
+from . import http as _http
 
 
 GRAPHQL_PATHS = [
@@ -49,7 +50,7 @@ def _post(endpoint, payload, headers, timeout, verify, roe_guard,
     h = dict(headers or {})
     h["Content-Type"] = content_type
     try:
-        with httpx.Client(timeout=timeout, verify=verify,
+        with _http.Client(timeout=timeout, verify=verify,
                           follow_redirects=False) as c:
             if content_type == "application/json":
                 r = c.post(endpoint, json=payload, headers=h)
@@ -112,16 +113,16 @@ def _preflight(url, headers, timeout, verify, roe_guard):
     if viol:
         return {"reachable": False, "blocked": True, "error": f"ROE_BLOCK: {viol}"}
     try:
-        with httpx.Client(timeout=timeout, verify=verify,
+        with _http.Client(timeout=timeout, verify=verify,
                           follow_redirects=False) as c:
             r = c.post(url, json={"query": "{ __typename }"},
                        headers=dict(headers or {}, **{"Content-Type": "application/json"}))
         return {"reachable": True, "status": r.status_code,
                 "content_type": r.headers.get("Content-Type", ""),
                 "body": (r.text or "")[:400]}
-    except httpx.ConnectError as e:
+    except _http.ConnectError as e:
         return {"reachable": False, "error": f"Connection refused: {e}"}
-    except httpx.TimeoutException:
+    except _http.TimeoutException:
         return {"reachable": False, "error": "Connection timed out"}
     except Exception as e:
         return {"reachable": False, "error": f"{type(e).__name__}: {e}"}

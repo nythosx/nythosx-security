@@ -338,6 +338,22 @@ def cmd_scan_all(args):
         patterns = [p for p in patterns if p["category"] == cat_filter]
     threshold = SEVERITY_RANK.get(min_sev, 1)
     patterns = [p for p in patterns if SEVERITY_RANK.get(p["severity"], 0) >= threshold]
+    allow_destructive = bool(RUNTIME.get("allow_destructive"))
+    if not allow_destructive:
+        skipped = []
+        keep = []
+        for p in patterns:
+            full = loader.load_pattern(p["id"]) or {}
+            if full.get("destructive") or full.get("opt_in"):
+                skipped.append(p["id"])
+                continue
+            keep.append(p)
+        patterns = keep
+        if skipped:
+            console.print(f"[yellow]Skipping {len(skipped)} destructive/opt-in "
+                          f"pattern(s): {', '.join(skipped[:5])}"
+                          f"{'...' if len(skipped) > 5 else ''}[/yellow]")
+            console.print("[dim]  pass --allow-destructive to authorize them[/dim]")
     if not patterns:
         console.print("[yellow]No patterns match filter.[/yellow]")
         return
@@ -417,13 +433,17 @@ def _make_brain(name):
     return RuleBasedBrain()
 
 
-def _run_orchestrated(url, profile, brain_name, fail_on):
+def _run_orchestrated(url, profile, brain_name, fail_on, allow_destructive=False):
     from .orchestrator import Orchestrator
     brain = _make_brain(brain_name)
     console.print(f"[cyan]Orchestrated scan[/cyan] profile=[bold]{profile}[/bold] "
                   f"brain=[bold]{brain.__class__.__name__}[/bold]")
-    orc = Orchestrator(console=console)
-    state = orc.run(url, profile=profile, brain=brain)
+    if allow_destructive:
+        console.print("[bold red]--allow-destructive:[/bold red] destructive "
+                      "capabilities are ENABLED for this run")
+    orc = Orchestrator(console=console, allow_destructive=allow_destructive)
+    state = orc.run(url, profile=profile, brain=brain,
+                     allow_destructive=allow_destructive)
     counts = {"VULNERABLE": 0, "SUSPICIOUS": 0, "PASS": 0, "UNKNOWN": 0}
     results = []
     for f in getattr(state, "findings", []) or []:
@@ -483,11 +503,20 @@ def cmd_auto(args):
             i += 2
         else:
             i += 1
+    allow_destructive = bool(RUNTIME.get("allow_destructive"))
+    if RUNTIME.get("dry_run"):
+        console.print(f"[cyan]DRY RUN[/cyan] would scan: {url}")
+        console.print(f"[dim]  min-severity={min_sev} "
+                      f"allow-destructive={allow_destructive} "
+                      f"skip-discovery={skip}[/dim]")
+        return 0
     if profile or brain_name:
-        return _run_orchestrated(url, profile or "standard", brain_name, fail_on)
+        return _run_orchestrated(url, profile or "standard", brain_name, fail_on,
+                                  allow_destructive=allow_destructive)
     outcome = auto_mod.run_auto(url, min_severity=min_sev, skip_discovery=skip,
                                 adapter_override=adapter_override,
-                                auto_baseline=auto_baseline)
+                                auto_baseline=auto_baseline,
+                                allow_destructive=allow_destructive)
     results = (outcome or {}).get("results", [])
     return _compute_fail_exit(results, fail_on)
 
@@ -1091,6 +1120,14 @@ def cmd_llm(args):
     from .config import load_engine as _load_engine
     _guard = ROEGuard(engine_cfg=_load_engine())
     results = llm_security.scan(url, model=model, headers=headers, roe_guard=_guard)
+    raw_results = []
+    if isinstance(results, dict):
+        raw_results = results.get("results") or results.get("items") or []
+    elif hasattr(results, "raw"):
+        raw = results.raw or {}
+        raw_results = raw.get("results") or raw.get("items") or []
+    if not raw_results and hasattr(results, "findings"):
+        raw_results = [f.to_dict() for f in results.findings]
     t = Table(title="LLM Security Results")
     t.add_column("Category", style="cyan")
     t.add_column("OWASP", style="magenta")
@@ -1098,7 +1135,7 @@ def cmd_llm(args):
     t.add_column("Verdict", style="bold")
     t.add_column("Reason", style="white")
     counts = {"VULNERABLE": 0, "SUSPICIOUS": 0, "PASS": 0, "UNKNOWN": 0}
-    for r in results:
+    for r in raw_results:
         verdict = r["verdict"]
         counts[verdict] = counts.get(verdict, 0) + 1
         color = VERDICT_COLOR.get(verdict, "white")
@@ -2629,12 +2666,253 @@ def cmd_compliance(args):
     return 0
 
 
+def cmd_chain(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage: chain <url> [options][/cyan]")
+        console.print("  --budget N         max seconds for entire run (default 900)")
+        console.print("  --verbose          show per-step progress")
+        console.print("  --kill-on-vuln     stop after first confirmed vulnerability")
+        console.print("  --chain ID         run only specific chain (repeatable)")
+        console.print("  --with-sca PATH    enable supply-chain chain on local path")
+        console.print("  --json             output raw JSON report")
+        console.print("  --fail-on SEV      exit 3 if a finding >= severity")
+        console.print("  --export-nuclei ID export a chain to a Nuclei template")
+        console.print("")
+        console.print("Global: --allow-destructive authorizes destructive chain tools.")
+        console.print("")
+        console.print("Recon first, then run attack chains sequentially. Each chain")
+        console.print("has fallback steps: PASS/UNKNOWN continue, VULNERABLE stops")
+        console.print("the chain and records a finding.")
+        console.print("")
+        console.print("Chains: jwt, graphql, ssrf, bizlogic, race, llm, xss, openapi, sca")
+        return 0
+    if not args:
+        console.print("[red]Usage: chain <url> [--budget N] [--verbose] "
+                      "[--chain ID] [--with-sca PATH] [--json] "
+                      "[--fail-on SEV][/red]")
+        return
+    url = args[0]
+    budget = 900
+    verbose = False
+    kill_on_vuln = False
+    only_chains = []
+    sca_path = None
+    as_json = bool(RUNTIME.get("json_output"))
+    fail_on = None
+    export_nuclei = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--budget" and i + 1 < len(args):
+            budget = int(args[i + 1])
+            i += 2
+        elif args[i] == "--verbose":
+            verbose = True
+            i += 1
+        elif args[i] == "--kill-on-vuln":
+            kill_on_vuln = True
+            i += 1
+        elif args[i] == "--chain" and i + 1 < len(args):
+            only_chains.append(args[i + 1])
+            i += 2
+        elif args[i] == "--with-sca" and i + 1 < len(args):
+            sca_path = args[i + 1]
+            i += 2
+        elif args[i] == "--json":
+            as_json = True
+            i += 1
+        elif args[i] == "--export-nuclei" and i + 1 < len(args):
+            export_nuclei = args[i + 1]
+            i += 2
+        elif args[i] == "--fail-on" and i + 1 < len(args):
+            fail_on = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    if export_nuclei:
+        from . import nuclei_export
+        from .chain_registry import get_all_chains as _get_chains
+        _nuc_chain = next(
+            (c for c in _get_chains() if c["id"] == export_nuclei), None)
+        if not _nuc_chain:
+            console.print(f"[red]No chain: {export_nuclei}[/red]")
+            return 1
+        _nuc_path = nuclei_export.save_nuclei(_nuc_chain)
+        console.print(f"[green]Nuclei template:[/green] {_nuc_path}")
+        return 0
+
+    from . import chain_engine
+    from .chain_registry import get_all_chains
+    from .roe_guard import ROEGuard
+    from .config import load_engine as _load_engine
+
+    guard = ROEGuard(engine_cfg=_load_engine())
+    console.print(f"[cyan]Attack chain scan:[/cyan] {url}")
+    console.print(f"[dim]Budget: {budget}s  Verbose: {verbose}[/dim]")
+    if only_chains:
+        console.print(f"[dim]Restricting to chains: {', '.join(only_chains)}[/dim]")
+    console.print()
+
+    allow_destructive = bool(RUNTIME.get("allow_destructive"))
+    if RUNTIME.get("dry_run"):
+        console.print(f"[cyan]DRY RUN[/cyan] would run chains on: {url}")
+        console.print(f"[dim]  budget={budget}s allow-destructive={allow_destructive}[/dim]")
+        return 0
+    if allow_destructive:
+        console.print("[bold red]--allow-destructive:[/bold red] destructive "
+                      "chain tools are ENABLED for this run")
+    try:
+        orch = chain_engine.ChainOrchestrator(
+            url, roe_guard=guard, max_budget_sec=budget, verbose=verbose,
+            kill_on_vuln=kill_on_vuln, allow_destructive=allow_destructive)
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        return 1
+
+    if sca_path:
+        orch.add_fact("sca_requested", True, source="cli")
+        orch.set_context("sca_path", sca_path)
+
+    if only_chains:
+        all_chains = get_all_chains()
+        filtered = [c for c in all_chains if c["id"] in only_chains]
+        if not filtered:
+            console.print(f"[red]No chains match: {only_chains}[/red]")
+            return 1
+
+        try:
+            orch.run_recon()
+        except Exception as e:
+            console.print(f"[red]recon failed: {type(e).__name__}: {e}[/red]")
+            return 1
+
+        recon = orch.recon
+        fw = recon.get("framework") or {}
+        console.print("[bold]Recon summary[/bold]")
+        console.print(f"  framework:  {fw.get('name', '?')}")
+        console.print(f"  api_base:   {recon.get('api_base', '?')}")
+        console.print(f"  js_bundles: {len(recon.get('js_urls') or [])}")
+        console.print(f"  api_paths:  {len(recon.get('api_paths') or [])}")
+        console.print(f"  live_paths: {len(recon.get('live_paths') or [])}")
+        console.print()
+
+        for chain in filtered:
+            if orch._budget_exceeded():
+                console.print("[yellow]budget exceeded, stopping[/yellow]")
+                break
+            orch.execute_chain(chain)
+        report = orch._final_report()
+    else:
+        report = orch.run()
+
+    if as_json:
+        import json as _json
+        console.print(_json.dumps(report, indent=2, default=str))
+    else:
+        _print_chain_report(report)
+
+    findings = report.get("findings") or []
+    if findings:
+        severity = "high"
+        for f in findings:
+            ev = f.get("evidence") or {}
+            sev = ev.get("severity") or "high"
+            if SEVERITY_RANK.get(sev, 0) > SEVERITY_RANK.get(severity, 0):
+                severity = sev
+        return _compute_fail_exit(
+            [{"severity": severity, "verdict": "VULNERABLE"}], fail_on)
+    return _compute_fail_exit([], fail_on)
+
+
+def _print_chain_report(report):
+    v = report.get("verdict", "UNKNOWN")
+    color = VERDICT_COLOR.get(v, "white")
+    console.print()
+    console.print("[bold cyan]Attack Chain Report[/bold cyan]")
+    console.print(f"  Target:   {report.get('target')}")
+    console.print(f"  Duration: {report.get('duration_sec')}s")
+    console.print(f"  Verdict:  [{color}]{v}[/{color}]")
+    console.print()
+
+    recon = report.get("recon") or {}
+    fw = recon.get("framework") or {}
+    if fw:
+        console.print("[bold]Recon[/bold]")
+        console.print(f"  Framework:  {fw.get('name', '?')} ({fw.get('id', '?')})")
+        if recon.get("api_base"):
+            console.print(f"  API base:   {recon['api_base']}")
+        console.print(f"  JS bundles: {len(recon.get('js_urls') or [])}")
+        console.print(f"  API paths:  {len(recon.get('api_paths') or [])}")
+        console.print(f"  Live paths: {len(recon.get('live_paths') or [])}")
+        console.print()
+
+    facts = report.get("facts") or {}
+    if facts:
+        console.print(f"[bold]Facts[/bold] ({len(facts)})")
+        for k, f in list(facts.items())[:20]:
+            val = f.get("value") if isinstance(f, dict) else f
+            if isinstance(val, (list, dict)):
+                val = f"<{type(val).__name__} len={len(val)}>"
+            console.print(f"  [dim]{k}[/dim] = {val}")
+        if len(facts) > 20:
+            console.print(f"  [dim]... and {len(facts) - 20} more[/dim]")
+        console.print()
+
+    plan = report.get("plan") or []
+    if plan:
+        console.print(f"[bold]Plan[/bold] ({len(plan)} chains)")
+        for cid in plan:
+            console.print(f"  \u2192 {cid}")
+        console.print()
+
+    chains = report.get("chain_results") or []
+    if chains:
+        t = Table(title="Chain Results")
+        t.add_column("Chain", style="cyan")
+        t.add_column("Verdict", style="bold")
+        t.add_column("Steps", style="dim")
+        t.add_column("Duration", style="dim")
+        t.add_column("Reason", style="white")
+        for c in chains:
+            cv = c.get("verdict", "UNKNOWN")
+            cc = VERDICT_COLOR.get(cv, "white")
+            steps = ", ".join(
+                f"{s['id']}:{s.get('verdict', '?')[:1]}"
+                for s in (c.get("steps") or []))
+            t.add_row(
+                c.get("id", "?"),
+                f"[{cc}]{cv}[/{cc}]",
+                steps[:40],
+                f"{c.get('duration_ms', 0):.0f}ms",
+                (c.get("reason") or "")[:60],
+            )
+        console.print(t)
+        console.print()
+
+    findings = report.get("findings") or []
+    if findings:
+        console.print(f"[bold red]FINDINGS ({len(findings)})[/bold red]")
+        for f in findings:
+            console.print(
+                f"  [bold red]\u25cf[/bold red] "
+                f"{f['chain']}/{f['step']}: {f['reason'][:100]}")
+        console.print()
+    else:
+        console.print("[dim]No confirmed vulnerabilities.[/dim]")
+        console.print()
+
+
 def cmd_help(args):
     console.print("[bold cyan]sec-checker MVP[/bold cyan]")
     console.print()
     console.print("[bold]Main[/bold]")
     console.print("  web [--port N]                    Launch web UI (single URL input)")
     console.print("  auto <url>                        Full auto-discovery + scan")
+    console.print("  chain <url>                       Adaptive attack chain (recon \u2192 chains \u2192 report)")
+    console.print("  chain-stats [--json]              Aggregated chain run statistics")
+    console.print("  chains <target>                   Correlated attack chains from findings")
+    console.print("  coverage <target>                 OWASP 2025 + surface coverage")
+    console.print("  compliance <target>               OWASP 2025 compliance report")
     console.print("  adapters                          List framework adapters")
     console.print()
     console.print("[bold]Recon[/bold]")
@@ -2656,7 +2934,16 @@ def cmd_help(args):
     console.print("  browser <url>                     Playwright capture (console/JS/screenshot)")
     console.print("  idor <identity_url> <resource>    IDOR live probe")
     console.print("  ssrf <target>                     Blind SSRF (OOB callback)")
+    console.print("  ssrf-cloud [<base_url>]           Cloud metadata SSRF")
     console.print("  xss <target> <param>              Blind/reflected XSS (OOB + browser)")
+    console.print("  domxss <url>                      DOM XSS source\u2192sink taint + mXSS")
+    console.print("  graphql <url>                     GraphQL deep security")
+    console.print("  jwt <url> [--token JWT]           JWT attack suite")
+    console.print("  race <url>                        Advanced race testing")
+    console.print("  openapi <url>                     OpenAPI discovery + schema fuzzing")
+    console.print("  bizlogic <base>                   Business logic probes")
+    console.print("  workflow <record|replay|tamper>   Browser workflow tooling")
+    console.print("  weak-password-check <change_url>  Password policy + lockout probe")
     console.print("  explore <base> --paths /a,/b       Combination explorer (outliers)")
     console.print("  smuggle <target>                  HTTP smuggling timing probe (safe)")
     console.print("  llm <url>                         LLM/AI security scan (OWASP LLM Top 10)")
@@ -2673,6 +2960,21 @@ def cmd_help(args):
     console.print("  --auth user:pass|bearer:X|...     Inline auth")
     console.print("  --auto-baseline                   Profile target before scanning")
     console.print("  --fail-on <level>                 Exit 3 if finding >= level (CI)")
+    console.print()
+    console.print("[bold]Global flags (any command)[/bold]")
+    console.print("  --allow-destructive               Enable destructive/opt-in capabilities")
+    console.print("  --dry-run                         Plan only, do not execute")
+    console.print("  --json                            Machine-readable output")
+    console.print("  --kill-switch FILE                Abort if FILE exists")
+    console.print("  --max-requests-per-host N         Per-host HTTP request cap")
+    console.print("  --authorized-by NAME              Log the authorizer")
+    console.print("  --target-owner ORG                Log the target owner")
+    console.print("  --waf                             Enable WAF-aware payload encoding")
+    console.print("  --no-waf                          Disable WAF encoder")
+    console.print("  --confirm                         Enable exploitation confirmation gate")
+    console.print("  --no-confirm                      Disable confirmation gate")
+    console.print("  --iterate                         Enable coverage-driven iteration loop")
+    console.print("  --iteration-max N                 Max sweeps for iteration loop")
     console.print()
 
 
@@ -2789,7 +3091,8 @@ def cmd_weak_password(args):
         else:
             i += 1
 
-    guard = ROEGuard(engine_cfg=load_engine())
+    from .roe_guard import ROEGuard as _ROEGuard
+    guard = _ROEGuard(engine_cfg=load_engine())
     headers = _parse_auth(auth_str) or None
     rows = []
     res = weak_password_policy.scan(target, headers=headers, roe_guard=guard,
@@ -2834,6 +3137,49 @@ def cmd_weak_password(args):
     return 0
 
 
+def cmd_chain_stats(args):
+    if args and ("--help" in args or "-h" in args):
+        console.print("[cyan]Usage: chain-stats [--limit N] [--json][/cyan]")
+        console.print("  Aggregates chain_runs from the ledger to show which")
+        console.print("  chains/steps produce findings over time.")
+        return 0
+    limit = 0
+    as_json = False
+    i = 0
+    while i < len(args):
+        if args[i] == "--limit" and i + 1 < len(args):
+            limit = int(args[i + 1])
+            i += 2
+        elif args[i] == "--json":
+            as_json = True
+            i += 1
+        else:
+            i += 1
+    stats = ledger.chain_stats(limit=limit)
+    if as_json:
+        import json as _json
+        console.print(_json.dumps(stats, indent=2, default=str))
+        return 0
+    if not stats.get("chains"):
+        console.print("[yellow]No chain runs recorded yet.[/yellow]")
+        return 0
+    t = Table(title="Chain Statistics")
+    t.add_column("Chain", style="cyan")
+    t.add_column("Runs", justify="right")
+    t.add_column("Vuln", justify="right", style="bold red")
+    t.add_column("Susp", justify="right", style="yellow")
+    t.add_column("Pass", justify="right", style="bold green")
+    t.add_column("Avg ms", justify="right", style="dim")
+    for c in stats["chains"]:
+        t.add_row(
+            c["chain_id"], str(c["runs"]),
+            str(c["vulnerable"]), str(c["suspicious"]),
+            str(c["pass_count"]), f"{c['avg_duration_ms']:.0f}",
+        )
+    console.print(t)
+    return 0
+
+
 COMMANDS = {
     "list": cmd_list,
     "show": cmd_show,
@@ -2845,6 +3191,8 @@ COMMANDS = {
     "scan": cmd_scan,
     "scan-all": cmd_scan_all,
     "auto": cmd_auto,
+    "chain": cmd_chain,
+    "chain-stats": cmd_chain_stats,
     "profile": cmd_profile,
     "enumerate": cmd_enumerate,
     "login": cmd_login,
@@ -2876,15 +3224,135 @@ COMMANDS = {
 }
 
 
+_GLOBAL_FLAGS = {
+    "--allow-destructive": ("allow_destructive", "flag"),
+    "--dry-run": ("dry_run", "flag"),
+    "--json": ("json_output", "flag"),
+    "--kill-switch": ("kill_switch", "value"),
+    "--max-requests-per-host": ("max_requests_per_host", "int"),
+    "--authorized-by": ("authorized_by", "value"),
+    "--target-owner": ("target_owner", "value"),
+    "--waf": ("waf_enabled", "flag"),
+    "--no-waf": ("waf_disabled", "flag"),
+    "--confirm": ("confirm_enabled", "flag"),
+    "--no-confirm": ("confirm_disabled", "flag"),
+    "--iterate": ("iterate_enabled", "flag"),
+    "--iteration-max": ("iteration_max", "int"),
+}
+
+RUNTIME = {
+    "allow_destructive": False,
+    "dry_run": False,
+    "json_output": False,
+    "kill_switch": None,
+    "max_requests_per_host": None,
+    "authorized_by": None,
+    "target_owner": None,
+    "waf_enabled": False,
+    "waf_disabled": False,
+    "confirm_enabled": False,
+    "confirm_disabled": False,
+    "iterate_enabled": False,
+    "iteration_max": None,
+}
+
+
+def _parse_global_flags(argv):
+    if not argv:
+        return []
+    rest = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in _GLOBAL_FLAGS:
+            key, kind = _GLOBAL_FLAGS[tok]
+            if kind == "flag":
+                RUNTIME[key] = True
+                i += 1
+                continue
+            if i + 1 >= len(argv):
+                console.print(f"[red]{tok} requires a value[/red]")
+                return None
+            val = argv[i + 1]
+            if kind == "int":
+                try:
+                    RUNTIME[key] = int(val)
+                except ValueError:
+                    console.print(f"[red]{tok} must be an integer[/red]")
+                    return None
+            else:
+                RUNTIME[key] = val
+            i += 2
+            continue
+        rest.append(tok)
+        i += 1
+    return rest
+
+
+def _check_kill_switch():
+    path = RUNTIME.get("kill_switch")
+    if not path:
+        return False
+    from pathlib import Path as _P
+    if _P(path).exists():
+        console.print(f"[bold red]KILL SWITCH ACTIVE:[/bold red] {path} exists; "
+                      f"aborting.")
+        return True
+    return False
+
+
+def _apply_runtime():
+    if RUNTIME.get("authorized_by"):
+        console.print(f"[dim]authorized_by: {RUNTIME['authorized_by']}[/dim]")
+    if RUNTIME.get("target_owner"):
+        console.print(f"[dim]target_owner: {RUNTIME['target_owner']}[/dim]")
+    _active = []
+    if RUNTIME.get("waf_enabled"):
+        _active.append("--waf")
+    if RUNTIME.get("waf_disabled"):
+        _active.append("--no-waf")
+    if RUNTIME.get("confirm_enabled"):
+        _active.append("--confirm")
+    if RUNTIME.get("confirm_disabled"):
+        _active.append("--no-confirm")
+    if RUNTIME.get("iterate_enabled"):
+        _active.append("--iterate")
+    if RUNTIME.get("iteration_max") is not None:
+        _active.append(f"--iteration-max {RUNTIME['iteration_max']}")
+    if _active:
+        console.print(f"[dim]runtime: {' '.join(_active)}[/dim]")
+    try:
+        from . import budget as _budget
+        _budget.auto_configure_from_configs()
+        if RUNTIME.get("max_requests_per_host"):
+            snap = _budget.snapshot()
+            _budget.configure(
+                max_requests=snap.get("max_requests"),
+                max_per_host=int(RUNTIME["max_requests_per_host"]),
+                max_duration_seconds=snap.get("max_duration_seconds"),
+            )
+    except Exception:
+        pass
+
+
 def main(argv):
     if not argv:
         cmd_help([])
         return 0
-    cmd = argv[0]
+    rest = _parse_global_flags(list(argv))
+    if rest is None:
+        return 2
+    if not rest:
+        cmd_help([])
+        return 0
+    cmd = rest[0]
     handler = COMMANDS.get(cmd)
     if not handler:
         console.print(f"[red]Unknown command: {cmd}[/red]")
         cmd_help([])
         return 1
-    code = handler(argv[1:])
+    if _check_kill_switch():
+        return 4
+    _apply_runtime()
+    code = handler(rest[1:])
     return code or 0

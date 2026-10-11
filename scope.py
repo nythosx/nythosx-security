@@ -287,3 +287,42 @@ def main(argv):
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
+
+
+# --- Phase 2: broad-wildcard confirmation ---
+_ORIG_DANGEROUS_PATTERNS = DANGEROUS_PATTERNS
+_BROAD_TLDS = {"com", "net", "org", "io", "dev", "co", "ai",
+               "gov", "mil", "edu", "info", "biz", "us", "uk"}
+_BROAD_RANGES = {"10.*", "192.168.*", "172.16.*", "172.17.*",
+                 "172.18.*", "172.19.*"}
+
+
+def _broadness(host):
+    if host in _ORIG_DANGEROUS_PATTERNS:
+        return True, "matches EVERY host on the internet"
+    if host.startswith("*.") and host[2:].lower() in _BROAD_TLDS:
+        return True, f"matches every .{host[2:]} domain on the internet"
+    if host.endswith("/0"):
+        return True, "matches an entire /0 netblock"
+    if host in _BROAD_RANGES:
+        return True, f"matches every host in {host}"
+    return False, ""
+
+
+_ORIG_confirm_dangerous = confirm_dangerous
+
+
+def confirm_dangerous(host):
+    is_broad, why = _broadness(host)
+    if not is_broad:
+        return True
+    print(f"  [WARN] '{host}' {why}.")
+    print(f"  [WARN] You will be able to scan anything, including systems you")
+    print(f"  [WARN] do not own. This is illegal in most jurisdictions.")
+    try:
+        ans = input(f"  Type YES to confirm: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return ans == "YES"

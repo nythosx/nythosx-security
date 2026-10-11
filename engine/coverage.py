@@ -20,13 +20,12 @@ OWASP_TO_CAPABILITIES = {
             "js-bundle-secrets", "laravel-debug-mode", "graphql-introspection",
             "cache-poisoning-probe", "http-methods-allowed"],
     "A03": ["sca-scan"],
-    "A04": ["bizlogic-scan", "idempotency-violation", "race-condition-basic",
-            "race-condition-authed", "race-advanced"],
+    "A04": ["jwt-weak-secret", "jwt-advanced-analysis"],
     "A05": ["dom-xss-advanced", "graphql-deep-security",
             "llm-prompt-injection", "llm-output-handling"],
-    "A06": ["sca-scan"],
-    "A07": ["jwt-analysis", "jwt-weak-secret", "jwt-advanced-analysis",
-            "rate-limit-absent", "user-enumeration-timing",
+    "A06": ["bizlogic-scan", "idempotency-violation", "race-condition-basic",
+            "race-condition-authed", "race-advanced"],
+    "A07": ["jwt-analysis", "rate-limit-absent", "user-enumeration-timing",
             "cookie-flags-missing", "timing-vs-baseline"],
     "A08": ["openapi-fuzz"],
     "A09": [],
@@ -150,7 +149,75 @@ def build_coverage_report(target=None, findings=None, executed_caps=None,
     ).to_dict()
 
 
+def as_hypotheses(coverage_dict, target="", limit=20):
+    from .state import Hypothesis
+    untested = (coverage_dict or {}).get("untested_categories") or []
+    out = []
+    seen = set()
+    for code in untested:
+        for cap in (OWASP_TO_CAPABILITIES.get(code) or []):
+            if cap in seen:
+                continue
+            seen.add(cap)
+            out.append(Hypothesis(
+                capability=cap, target=target,
+                reason="coverage gap in " + str(code),
+                priority=5, source="coverage_gap",
+            ))
+            if len(out) >= limit:
+                return out
+    return out
+
+
 __all__ = [
     "CoverageReport", "build_coverage_report",
     "OWASP_TO_CAPABILITIES", "ATTACK_SURFACES", "OWASP_CATEGORIES",
+    "as_hypotheses",
 ]
+
+
+
+# ===========================================================================
+# Phase 3 — add new capabilities to the OWASP and attack-surface maps.
+# ===========================================================================
+_PHASE3_COVERAGE_INSTALLED = True
+
+_PHASE3_OWASP_CAPS = {
+    "A01": ["open-redirect", "oauth-redirect-uri", "websocket-cswsh",
+            "host-header-injection"],
+    "A02": ["http2-desync", "crlf-injection", "host-header-injection"],
+    "A05": ["ssti-probe", "xxe-probe", "nosql-probe",
+            "second-order-xss", "timing-sqli", "timing-ssti", "timing-xxe",
+            "open-redirect", "crlf-injection"],
+    "A06": ["second-order-xss", "timing-sqli", "timing-ssti"],
+    "A07": ["weak-password-policy", "lockout-probe",
+            "weak-credential-enum", "oauth-missing-state",
+            "oauth-redirect-uri"],
+    "A08": ["upload-probe"],
+    "A10": ["http2-desync", "host-header-injection"],
+}
+
+for _code, _caps in _PHASE3_OWASP_CAPS.items():
+    _existing = OWASP_TO_CAPABILITIES.setdefault(_code, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+
+_PHASE3_SURFACES = {
+    "auth": ["oauth-missing-state", "oauth-redirect-uri",
+             "weak-password-policy", "lockout-probe",
+             "weak-credential-enum"],
+    "injection": ["ssti-probe", "xxe-probe", "nosql-probe",
+                  "crlf-injection", "host-header-injection",
+                  "second-order-xss", "timing-sqli", "timing-ssti",
+                  "timing-xxe"],
+    "infra": ["http2-desync", "crlf-injection"],
+    "rest": ["open-redirect", "upload-probe"],
+}
+
+for _name, _caps in _PHASE3_SURFACES.items():
+    _existing = ATTACK_SURFACES.setdefault(_name, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)

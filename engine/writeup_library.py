@@ -44,10 +44,20 @@ def _load():
     if not _LIB_PATH.exists():
         _DATA = {"families": {}, "patterns": {}}
         return _DATA
-    raw = yaml.safe_load(_LIB_PATH.read_text(encoding="utf-8")) or {}
+    from .util import strict_yaml_load
+    from . import schema
+    raw = strict_yaml_load(_LIB_PATH.read_text(encoding="utf-8")) or {}
+    families = raw.get("families") or {}
+    patterns = raw.get("patterns") or {}
+    for name, fam in families.items():
+        schema.validate_writeup_family(
+            fam, where=f"writeup-family:{name}")
+    for pid, pat in patterns.items():
+        schema.validate_writeup_pattern(
+            pat, where=f"writeup-pattern:{pid}")
     _DATA = {
-        "families": raw.get("families") or {},
-        "patterns": raw.get("patterns") or {},
+        "families": families,
+        "patterns": patterns,
     }
     return _DATA
 

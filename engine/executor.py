@@ -70,6 +70,7 @@ def _execute_one(step, inputs, client, loop_index, target, skip_rate_limit=False
     result = client.request(method, url, headers=headers, json=json_body,
                              data=data_body, params=params,
                              skip_default_headers=no_auth,
+                             skip_cookies=no_auth,
                              skip_rate_limit=skip_rate_limit,
                              follow_redirects=follow_redirects)
     result["step_name"] = step.get("name", "step")

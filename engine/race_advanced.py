@@ -11,6 +11,7 @@ import httpx
 
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
+from . import http as _http
 
 try:
     import h2.connection
@@ -131,7 +132,7 @@ def barrier_race(url, method="POST", body=None, headers=None, count=DEFAULT_COUN
     lock = threading.Lock()
 
     def fire():
-        client = httpx.Client(timeout=timeout, verify=verify_tls,
+        client = _http.Client(timeout=timeout, verify=verify_tls,
                               follow_redirects=False)
         try:
             try:
@@ -140,7 +141,7 @@ def barrier_race(url, method="POST", body=None, headers=None, count=DEFAULT_COUN
                 pass
             barrier.wait()
             t0 = time.perf_counter()
-            kwargs = {"headers": headers or {}}
+            kwargs = {"headers": headers or {}, "skip_rate_limit": True}
             if body is not None:
                 if isinstance(body, dict):
                     kwargs["json"] = body
@@ -364,7 +365,7 @@ def timing_histogram(url, method="POST", body=None, headers=None,
         lock = threading.Lock()
 
         def fire():
-            client = httpx.Client(timeout=timeout, verify=verify_tls,
+            client = _http.Client(timeout=timeout, verify=verify_tls,
                                   follow_redirects=False)
             try:
                 try:
@@ -373,7 +374,7 @@ def timing_histogram(url, method="POST", body=None, headers=None,
                     pass
                 barrier.wait()
                 t0 = time.perf_counter()
-                kwargs = {"headers": headers or {}}
+                kwargs = {"headers": headers or {}, "skip_rate_limit": True}
                 if body is not None:
                     if isinstance(body, dict):
                         kwargs["json"] = body
@@ -467,7 +468,7 @@ def state_machine_replay(url, method="POST", body=None, headers=None,
         return {"verdict": "UNKNOWN", "reason": f"ROE_BLOCK: {viol}", "evidence": {}}
 
     def do_request():
-        client = httpx.Client(timeout=timeout, verify=verify_tls,
+        client = _http.Client(timeout=timeout, verify=verify_tls,
                               follow_redirects=False)
         try:
             kwargs = {"headers": headers or {}}

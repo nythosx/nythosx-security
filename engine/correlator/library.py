@@ -32,11 +32,15 @@ def load_chains():
     if not _LIB_PATH.exists():
         _CACHE = []
         return []
-    raw = yaml.safe_load(_LIB_PATH.read_text(encoding="utf-8")) or {}
+    from ..util import strict_yaml_load
+    from .. import schema
+    raw = strict_yaml_load(_LIB_PATH.read_text(encoding="utf-8")) or {}
     chains = []
     for entry in raw.get("chains") or []:
         if not isinstance(entry, dict):
             continue
+        schema.validate_correlator_chain(
+            entry, where=f"correlator:{entry.get('id', '?')}")
         chains.append(AttackChain(
             id=str(entry.get("id", "")),
             name=str(entry.get("name", "")),

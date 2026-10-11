@@ -1,6 +1,8 @@
 import yaml
 from pathlib import Path
 
+from . import schema
+
 ROOT = Path(__file__).parent.parent.absolute()
 PATTERNS_DIR = ROOT / "patterns"
 CATEGORIES = ["single", "sequence", "temporal", "content", "combination", "meta", "llm"]
@@ -8,16 +10,24 @@ REQUIRED_FIELDS = ["id", "name", "severity", "steps", "oracles"]
 
 
 def validate_pattern(data):
+    """Return a list of validation errors (empty list means valid)."""
     errors = []
     for field in REQUIRED_FIELDS:
         if field not in data:
             errors.append(f"missing field: {field}")
-    if "severity" in data and data["severity"] not in ("critical", "high", "medium", "low", "info"):
+    if "severity" in data and data["severity"] not in (
+            "critical", "high", "medium", "low", "info"):
         errors.append(f"invalid severity: {data['severity']}")
     if "steps" in data and not isinstance(data["steps"], list):
         errors.append("steps must be a list")
     if "oracles" in data and not isinstance(data["oracles"], list):
         errors.append("oracles must be a list")
+    if errors:
+        return errors
+    try:
+        schema.validate_pattern(data, where=data.get("id") or "pattern")
+    except schema.SchemaError as e:
+        errors.append(str(e))
     return errors
 
 

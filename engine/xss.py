@@ -21,8 +21,16 @@ def _with_param(url, param, value):
 
 def _probe_impl(target_url, param, oob_server=None, headers=None, cookies=None,
           engine_cfg=None, wait_timeout=4.0):
-    own_oob = oob_server is None
-    oob = oob_server or OOBServer().start()
+    local_oob = None
+    if oob_server is None:
+        try:
+            from .oob_registry import get_shared_oob
+            oob = get_shared_oob()
+        except Exception:
+            local_oob = OOBServer().start()
+            oob = local_oob
+    else:
+        oob = oob_server
     out = {"target": target_url, "param": param, "oob_base": oob.base_url,
            "attempts": [], "callbacks": [], "result": None}
     try:
@@ -42,8 +50,8 @@ def _probe_impl(target_url, param, oob_server=None, headers=None, cookies=None,
             if oob.wait_for_hit(token, timeout=wait_timeout):
                 out["callbacks"].append({"token": token, "payload": tmpl})
     finally:
-        if own_oob:
-            oob.stop()
+        if local_oob is not None:
+            local_oob.stop()
 
     if out["callbacks"]:
         payloads = ", ".join(c["payload"] for c in out["callbacks"])
@@ -52,6 +60,13 @@ def _probe_impl(target_url, param, oob_server=None, headers=None, cookies=None,
                                    f"(out-of-band callback) via: {payloads}",
                          "evidence": {"callbacks": out["callbacks"],
                                       "param": param}}
+    elif getattr(oob, "is_external", False):
+        out["result"] = {"verdict": "UNKNOWN",
+                         "reason": ("external OOB mode: cannot observe browser "
+                                    "callbacks locally; check the external "
+                                    "collaborator manually for hits"),
+                         "evidence": {"payloads_tried": len(out["attempts"]),
+                                      "oob_mode": "external"}}
     else:
         out["result"] = {"verdict": "PASS",
                          "reason": "no payload executed in browser",

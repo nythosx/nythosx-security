@@ -68,6 +68,7 @@ tr:hover { background: #161b22; }
 .chain h3 { margin: 0 0 6px; color: #f0f6fc; font-size: 16px; }
 .chain .cverdict { font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 2px 8px; border-radius: 12px; background: #30363d; color: #c9d1d9; }
 .chain pre { white-space: pre-wrap; color: #8b949e; font-size: 13px; margin: 8px 0 0; }
+.chain-graph { margin: 16px 0 24px; overflow-x: auto; }
 .why { background: #0d1117; border: 1px dashed #30363d; border-radius: 6px; padding: 10px 14px; margin: 6px 0; font-size: 13px; }
 .why b { color: #79c0ff; }
 .why .part { margin: 4px 0; }
@@ -92,9 +93,21 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 <div class="card low"><div class="count">{{ counts.low }}</div><div class="label">Low</div></div>
 <div class="card info"><div class="count">{{ counts.info }}</div><div class="label">Info</div></div>
 </div>
+{% if iteration_history %}
+<h2>Iteration History</h2>
+<table>
+<thead><tr><th>Sweep</th><th>Category</th><th>Hypotheses</th><th>Executed</th></tr></thead>
+<tbody>
+{% for it in iteration_history %}
+<tr><td>{{ it.sweep }}</td><td>{{ it.category or '-' }}</td><td>{{ it.hypotheses or 0 }}</td><td>{{ it.executed or 0 }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
 {% if chains %}
 <h2>Attack Chains</h2>
 <p class="meta">Correlated multi-step attacks built from individual findings.</p>
+{% if graph_svg %}<div class="chain-graph">{{ graph_svg|safe }}</div>{% endif %}
 {% for c in chains %}
 <div class="chain {{ c.verdict }}">
 <h3>{{ c.name }} <span class="cverdict">{{ c.verdict }}</span></h3>
@@ -106,7 +119,7 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 <h2>Findings</h2>
 <table>
 <thead>
-<tr><th>ID</th><th>Pattern</th><th>Severity</th><th>Verdict</th><th>Reason</th><th>WSTG</th><th>CWE</th></tr>
+<tr><th>ID</th><th>Pattern</th><th>Severity</th><th>Verdict</th><th>Confirm</th><th>Reason</th><th>WSTG</th><th>CWE</th></tr>
 </thead>
 <tbody>
 {% for f in findings %}
@@ -115,6 +128,7 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 <td>{{ f.pattern_id }}</td>
 <td class="sev-{{ f.severity }}">{{ f.severity }}</td>
 <td><span class="badge {{ f.verdict }}">{{ f.verdict }}</span></td>
+<td>{{ f.confirmation_status or '-' }}</td>
 <td>{{ f.reason }}
 {% if f.why and f.verdict in ['VULNERABLE', 'SUSPICIOUS'] %}
 <details class="why-wrap"><summary>Why this matters</summary>
@@ -182,16 +196,25 @@ Severity: {{ c.severity }} · Confidence: {{ '%.0f'|format((c.confidence or 0) *
 
 {% if c.narrative_text %}```
 {{ c.narrative_text }}
-```
 {% endif %}
 {% endfor %}
 {% endif %}
+{% if iteration_history %}
+## Iteration History
+
+| Sweep | Category | Hypotheses | Executed |
+|-------|----------|-----------|----------|
+{% for it in iteration_history -%}
+| {{ it.sweep }} | {{ it.category or '-' }} | {{ it.hypotheses or 0 }} | {{ it.executed or 0 }} |
+{% endfor %}
+
+{% endif %}
 ## Findings
 
-| ID | Pattern | Severity | Verdict | Reason | WSTG | CWE |
-|----|---------|----------|---------|--------|------|-----|
+| ID | Pattern | Severity | Verdict | Confirm | Reason | WSTG | CWE |
+|----|---------|----------|---------|---------|--------|------|-----|
 {% for f in findings -%}
-| {{ f.id }} | {{ f.pattern_id }} | {{ f.severity }} | {{ f.verdict }} | {{ f.reason }} | {{ f.wstg_id or '-' }} | {{ f.cwe_id or '-' }} |
+| {{ f.id }} | {{ f.pattern_id }} | {{ f.severity }} | {{ f.verdict }} | {{ f.confirmation_status or '-' }} | {{ f.reason }} | {{ f.wstg_id or '-' }} | {{ f.cwe_id or '-' }} |
 {% endfor %}
 {% set whys = findings | selectattr('why', 'defined') | selectattr('verdict', 'in', ['VULNERABLE', 'SUSPICIOUS']) | list %}
 {% if whys %}
@@ -272,22 +295,39 @@ def _strip_unresolved(text):
     return re.sub(r"\{[a-zA-Z0-9_]+\}", "", text or "").strip()
 
 
+def _enrich_evidence_fields(f):
+    try:
+        ev = _load_evidence(f.get("evidence_path"))
+    except Exception:
+        return
+    if not isinstance(ev, dict):
+        return
+    if "signal_strength" in ev and "signal_strength" not in f:
+        f["signal_strength"] = ev["signal_strength"]
+    if "confirmation_status" in ev:
+        f.setdefault("confirmation_status", ev["confirmation_status"])
+    elif "confirmed" in ev:
+        f["confirmation_status"] = ("confirmed" if ev["confirmed"]
+                                    else "unconfirmed")
+
+
 def enrich_findings(findings):
-    if writeup_library is None:
-        return findings
-    for f in findings:
-        pid = f.get("pattern_id")
-        if not pid:
-            continue
-        try:
-            entry = writeup_library.resolve(pid)
-            if entry is None:
-                continue
-            rendered = writeup_library.render(entry, _load_evidence(f.get("evidence_path")))
-            f["why"] = {k: _strip_unresolved(v) if isinstance(v, str) else v
-                        for k, v in rendered.items()}
-        except Exception:
-            continue
+    for f in findings or []:
+        if writeup_library is not None:
+            pid = f.get("pattern_id")
+            if pid:
+                try:
+                    entry = writeup_library.resolve(pid)
+                    if entry is not None:
+                        rendered = writeup_library.render(
+                            entry, _load_evidence(f.get("evidence_path")))
+                        f["why"] = {
+                            k: (_strip_unresolved(v)
+                                if isinstance(v, str) else v)
+                            for k, v in rendered.items()}
+                except Exception:
+                    pass
+        _enrich_evidence_fields(f)
     return findings
 
 
@@ -333,7 +373,7 @@ def build_coverage(target, findings):
         return None
 
 
-SEC_CHECKER_VERSION = "1.2.0"
+from .version import __version__ as SEC_CHECKER_VERSION
 SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
 SARIF_VERSION = "2.1.0"
 from .contract import SEVERITY_ORDER as _SEVERITY_RANK  # noqa: E402
@@ -352,6 +392,8 @@ _SARIF_LEVEL = {"critical": "error", "high": "error",
 def generate_sarif(target):
     rows = ledger.findings_for_target(target)
     findings = _dedupe(_findings_to_dicts(rows))
+    from . import redact as _redact
+    findings = _redact.redact_dict(findings)
     sarif = {
         "$schema": SARIF_SCHEMA,
         "version": SARIF_VERSION,
@@ -417,9 +459,16 @@ def generate(target, fmt="html", engine_cfg=None):
     rows = ledger.findings_for_target(target)
     findings = _apply_severity_threshold(
         _dedupe(_findings_to_dicts(rows)), threshold)
+    from . import redact as _redact
+    findings = _redact.redact_dict(findings)
     enrich_findings(findings)
     chains = build_chains(findings)
     coverage = build_coverage(target, findings)
+    try:
+        from . import report_graph
+        graph_svg = report_graph.render_chain_svg(chains) if chains else ""
+    except Exception:
+        graph_svg = ""
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in target)[:80]
@@ -431,6 +480,7 @@ def generate(target, fmt="html", engine_cfg=None):
         "counts": _counts(findings),
         "chains": chains,
         "coverage": coverage,
+        "graph_svg": graph_svg,
     }
     if fmt == "md":
         path = REPORTS_DIR / f"{stamp}_{safe}.md"

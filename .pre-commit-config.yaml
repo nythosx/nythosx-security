@@ -1,0 +1,36 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.0
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: sec-checker-deny-configs
+        name: refuse to commit real configs/secrets
+        entry: bash -c '
+          for f in "$@"; do
+            case "$f" in
+              configs/credentials.yaml|configs/roe.yaml|configs/targets.yaml|configs/sessions/*)
+                echo "REFUSING to commit $f (real config, not example)" >&2
+                exit 1 ;;
+            esac
+          done' --
+        language: system
+        files: ^configs/

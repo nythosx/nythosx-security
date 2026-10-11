@@ -5,12 +5,13 @@ import httpx
 from bs4 import BeautifulSoup
 from . import adapter_matcher
 from . import progress
+from . import http as _http
 
 
 def fetch(url, headers=None, timeout=15, method="GET", json_body=None, data=None,
           follow=True):
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=follow, verify=False) as c:
+        with _http.Client(timeout=timeout, follow_redirects=follow, verify=False) as c:
             return c.request(method, url, headers=headers or {}, json=json_body, data=data)
     except Exception:
         return None
@@ -158,6 +159,87 @@ def extract_api_paths_from_js(js_text, adapter):
         if len(p) < 200 and " " not in p and "{" not in p:
             cleaned.append(p)
     return sorted(set(cleaned))
+
+
+
+_PARAM_OBJ_RE = re.compile(
+    r"""(?:axios|client|api|http|\$fetch|useFetch)\s*
+        (?:\.\s*\w+\s*)?\(\s*
+        ["'`]([^"'`]+)["'`]\s*,\s*\{[^}]*?params\s*:\s*\{([^}]*)\}""",
+    re.S | re.X,
+)
+
+_PARAM_QUERY_RE = re.compile(r"""["'`]([^"'`\s?]+)\?([^"'`\s]+)["'`]""")
+
+_PARAM_PATH_RE = re.compile(
+    r"""["'`]([^"'`\s]*\{([a-zA-Z_][a-zA-Z0-9_]*)\}[^"'`\s]*)["'`]"""
+)
+
+_PARAM_NAME_RE = re.compile(r"""([a-zA-Z_][a-zA-Z0-9_]*)\s*[:=]""")
+
+
+def _split_query_params(qs):
+    names = []
+    for part in qs.split("&"):
+        if not part:
+            continue
+        name = part.split("=", 1)[0].strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def extract_api_params_from_js(js_text):
+    """Return {path: {"query": [...], "path": [...]}} parsed from JS."""
+    out = {}
+
+    def _add(path, kind, names):
+        if not path or not path.startswith("/"):
+            return
+        if "${" in path or "`" in path:
+            return
+        entry = out.setdefault(path, {"query": [], "path": []})
+        for n in names:
+            if n and n not in entry[kind]:
+                entry[kind].append(n)
+
+    for m in _PARAM_OBJ_RE.finditer(js_text):
+        path = m.group(1).split("?")[0]
+        names = _PARAM_NAME_RE.findall(m.group(2) or "")
+        _add(path, "query", names)
+
+    for m in _PARAM_QUERY_RE.finditer(js_text):
+        path = m.group(1)
+        _add(path, "query", _split_query_params(m.group(2)))
+
+    for m in _PARAM_PATH_RE.finditer(js_text):
+        _add(m.group(1), "path", [m.group(2)])
+
+    return out
+
+
+def crawl_js_for_paths_and_params(base_url, js_urls, adapter,
+                                  max_bundles=40, recursive=True,
+                                  max_rounds=3):
+    """Like crawl_js_for_paths but also returns a {path: {query, path}} map."""
+    paths, fetched = crawl_js_for_paths(
+        base_url, js_urls, adapter,
+        max_bundles=max_bundles, recursive=recursive, max_rounds=max_rounds,
+    )
+    params = {}
+    for entry in fetched:
+        text = fetch_js_text(entry["url"])
+        if not text:
+            continue
+        for path, spec in extract_api_params_from_js(text).items():
+            cur = params.setdefault(path, {"query": [], "path": []})
+            for n in spec["query"]:
+                if n not in cur["query"]:
+                    cur["query"].append(n)
+            for n in spec["path"]:
+                if n not in cur["path"]:
+                    cur["path"].append(n)
+    return paths, params, fetched
 
 
 _CHUNK_RE = re.compile(r"""["'`]([\w\-./]+?\.m?js)(?:\?[\w=&.]*)?["'`]""")

@@ -3,6 +3,7 @@ import json
 import time
 import threading
 import uuid
+from urllib.parse import urlparse as _urlparse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from queue import Empty
 from rich.console import Console
@@ -12,6 +13,8 @@ from . import ledger
 from . import progress
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
+from . import redact
+
 
 _jobs = {}
 _jobs_lock = threading.Lock()
@@ -60,7 +63,14 @@ def _build_result(url, outcome, log_text):
         coverage = _report.build_coverage(scan_target, findings)
     except Exception:
         pass
-    return {
+    confirmed_count = sum(
+        1 for f in findings
+        if (f.get("confirmation_status") or "") == "confirmed")
+    signal_findings = [f for f in findings if f.get("signal_strength")]
+    avg_signal = (round(sum(f["signal_strength"] for f in signal_findings)
+                        / len(signal_findings), 3)
+                  if signal_findings else None)
+    return redact.redact_dict({
         "target": scan_target,
         "entered_url": url,
         "framework": {"name": adapter.get("name", framework.get("name", "Generic")),
@@ -73,9 +83,11 @@ def _build_result(url, outcome, log_text):
         "findings": findings,
         "chains": chains,
         "coverage": coverage,
+        "confirmed_count": confirmed_count,
+        "avg_signal_strength": avg_signal,
         "report": (outcome or {}).get("report"),
         "log": log_text,
-    }
+    })
 
 
 def _run_job(job_id, url, min_severity):
@@ -123,6 +135,10 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        if not _check_origin(self):
+            return self._send(403, {"error": "cross-origin request rejected"})
+        if not _check_token(self):
+            return self._send(401, {"error": "missing or invalid token"})
         if self.path == "/" or self.path.startswith("/?"):
             return self._send(200, PAGE, "text/html; charset=utf-8")
         if self.path.startswith("/api/scan/") and self.path.endswith("/stream"):
@@ -170,6 +186,10 @@ class _Handler(BaseHTTPRequestHandler):
             progress.unsubscribe(job_id, q)
 
     def do_POST(self):
+        if not _check_origin(self):
+            return self._send(403, {"error": "cross-origin request rejected"})
+        if not _check_token(self):
+            return self._send(401, {"error": "missing or invalid token"})
         if self.path != "/api/scan":
             return self._send(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length", 0))
@@ -201,7 +221,42 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-def serve(host="127.0.0.1", port=8900):
+WEBUI_TOKEN = None
+
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+def _check_origin(handler):
+    origin = handler.headers.get("Origin")
+    if not origin:
+        return True
+    host = handler.headers.get("Host", "")
+    try:
+        o = _urlparse(origin)
+    except Exception:
+        return False
+    return not o.netloc or o.netloc == host
+
+
+def _check_token(handler):
+    if not WEBUI_TOKEN:
+        return True
+    auth = handler.headers.get("Authorization", "")
+    return auth == f"Bearer {WEBUI_TOKEN}"
+
+
+def serve(host="127.0.0.1", port=8900, require_token=None):
+    global WEBUI_TOKEN
+    WEBUI_TOKEN = None
+    import os as _os
+    import secrets as _secrets
+    if require_token is None:
+        env_token = _os.environ.get("SEC_CHECKER_WEBUI_TOKEN")
+        require_token = bool(env_token) or host not in _LOOPBACK
+    if require_token:
+        WEBUI_TOKEN = (_os.environ.get("SEC_CHECKER_WEBUI_TOKEN")
+                       or _secrets.token_urlsafe(32))
+        print(f"[sec-checker webui] bearer token: {WEBUI_TOKEN}")
     httpd = ThreadingHTTPServer((host, port), _Handler)
     return httpd
 

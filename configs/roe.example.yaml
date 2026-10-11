@@ -1,0 +1,41 @@
+# ROE example. Copy to configs/roe.yaml and edit for your engagement.
+# configs/roe.yaml is gitignored — do not commit your real scope.
+enabled: true
+engagement_id: my-engagement
+authorized_by: my-name
+target_owner: my-org
+scope:
+  in_scope:
+  - localhost
+  - 127.0.0.1
+  out_of_scope:
+  - 169.254.169.254
+  - metadata.google.internal
+  - 100.100.100.200
+  - '*.gov'
+  - '*.mil'
+  allowed_methods:
+  - GET
+  - POST
+  - PUT
+  - PATCH
+  - DELETE
+  - OPTIONS
+  - HEAD
+  forbidden_paths:
+  - /admin/delete
+  - /api/drop
+  - /api/truncate
+rate_limits:
+  global_rps: 10
+  per_endpoint_rps: 5
+  burst: 20
+time_window:
+  enabled: false
+  start: ''
+  end: ''
+safety:
+  confirm_before_active: false
+  max_requests_per_scan: 1000
+  max_scan_duration_seconds: 300
+  block_on_scope_violation: true

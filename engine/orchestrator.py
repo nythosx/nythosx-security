@@ -42,20 +42,28 @@ def _sstr(v):
 
 class Orchestrator:
     def __init__(self, runner=None, brain=None, on_event=None,
-                 engine_cfg=None, console=None):
+                 engine_cfg=None, console=None, allow_destructive=False):
         self.runner = runner or self._default_runner
         self.brain = brain
         self.on_event = on_event
         self.cfg = engine_cfg if engine_cfg is not None else load_engine()
         self.console = console or Console()
+        self.allow_destructive = bool(allow_destructive)
         self._default_headers = {}
         self._default_cookies = {}
         self._negative_baseline = None
         self._scan_target = ""
 
     def run(self, target, profile="standard", brain=None, job_id=None,
-            initial_state=None):
+            initial_state=None, allow_destructive=None):
         from .brains.rule_based import RuleBasedBrain
+        from . import budget as _budget
+        try:
+            _budget.auto_configure_from_configs()
+        except Exception:
+            pass
+        if allow_destructive is not None:
+            self.allow_destructive = bool(allow_destructive)
         brain = brain or self.brain or RuleBasedBrain()
         if initial_state is not None:
             state = initial_state
@@ -122,7 +130,44 @@ class Orchestrator:
             )
         except Exception:
             state.coverage = CoverageReport().to_dict()
+
+        try:
+            from . import iteration as _iter
+            sweep_count = 0
+            while _iter.should_iterate(state, sweep_count):
+                gaps = _iter.generate_hypotheses(state, limit=5)
+                if not gaps:
+                    break
+                self._sweep_gaps(state, gaps, job_id, max_workers)
+                try:
+                    state.coverage = coverage_mod.build_coverage_report(
+                        target=target,
+                        findings=state.findings,
+                        executed_caps=state.executed_capabilities,
+                        profile=profile,
+                        duration=state.elapsed_seconds,
+                    )
+                except Exception:
+                    pass
+                sweep_count += 1
+        except Exception:
+            pass
+
         return state
+
+    def _sweep_gaps(self, state, hypotheses, job_id, max_workers):
+        results = self._fan_out(hypotheses, state, job_id, max_workers)
+        state.add_findings(results)
+        for r in results:
+            cap = getattr(r, "capability", None)
+            if cap:
+                state.executed_capabilities.add(cap)
+                state.mark_visited(cap, state.target)
+        try:
+            from .correlator import resolve_chains
+            state.chains = resolve_chains(state.findings)
+        except Exception:
+            pass
 
     def _budget_for(self, profile):
         defaults = {
@@ -150,6 +195,14 @@ class Orchestrator:
         )
 
     def _used_http(self, state):
+        try:
+            from . import budget as _budget
+            snap = _budget.snapshot()
+            recorded = int(snap.get("requests") or 0)
+            if recorded:
+                return recorded
+        except Exception:
+            pass
         used = 0
         for f in state.findings:
             cu = getattr(f, "cost_used", None) or {}
@@ -237,6 +290,12 @@ class Orchestrator:
         except Exception:
             pass
 
+    @staticmethod
+    def _is_destructive_pattern(pattern):
+        if not isinstance(pattern, dict):
+            return False
+        return bool(pattern.get("destructive") or pattern.get("opt_in"))
+
     def _default_runner(self, capability, target, params):
         pattern = loader.load_pattern(capability)
         if pattern is None:
@@ -245,6 +304,15 @@ class Orchestrator:
                 target=target,
                 verdict="UNKNOWN",
                 reason=f"unknown capability '{capability}'",
+            )
+        if self._is_destructive_pattern(pattern) and not self.allow_destructive:
+            return ScanResult(
+                capability=capability,
+                target=target,
+                verdict="UNKNOWN",
+                reason=(f"skipped: capability '{capability}' is destructive/opt-in; "
+                        f"re-run with --allow-destructive to authorize"),
+                evidence={"skipped": True, "reason": "destructive_gate"},
             )
         return self._run_pattern(capability, target, params or {}, pattern)
 
@@ -324,6 +392,9 @@ class Orchestrator:
         return rv, reason, ev
 
     def _recon(self, state, job_id=None):
+        from . import api_discovery
+        from .config import discovery_config
+
         self._emit(job_id, "phase", {"name": "framework", "status": "running"})
         try:
             fw = discovery.detect_framework(state.target)
@@ -337,6 +408,47 @@ class Orchestrator:
             "score": fw.get("score", 0),
         })
         self._emit(job_id, "phase", {"name": "framework", "status": "done"})
+
+        self._emit(job_id, "phase", {"name": "discovery", "status": "running"})
+        api_base = state.target
+        try:
+            disc = api_discovery.discover(
+                state.target, adapter=adapter, config=discovery_config())
+            api_base = disc.get("candidate_api_base") or state.target
+            state.api_base = api_base
+            state.api_source = disc.get("source", "unknown")
+            state.catch_all = bool(disc.get("catch_all"))
+            state.soft_404 = disc.get("soft_404")
+            state.port_scan = disc.get("port_scan") or []
+        except Exception:
+            state.api_base = state.target
+            state.api_source = "fallback"
+            state.catch_all = False
+            state.port_scan = []
+
+        js_urls = []
+        api_paths = []
+        try:
+            js_urls = discovery.extract_js_urls(state.target)
+            if js_urls:
+                api_paths, _bundles = discovery.crawl_js_for_paths(
+                    state.target, js_urls, adapter)
+        except Exception:
+            pass
+        state.js_urls = list(js_urls or [])
+        state.api_paths = list(api_paths or [])
+        seen = set(state.discovered_endpoints or [])
+        for p in api_paths or []:
+            if p not in seen:
+                state.discovered_endpoints.append(p)
+                seen.add(p)
+
+        self._emit(job_id, "api_base", {
+            "url": api_base,
+            "source": getattr(state, "api_source", "unknown"),
+            "ports": getattr(state, "port_scan", []),
+        })
+        self._emit(job_id, "phase", {"name": "discovery", "status": "done"})
 
     def _emit(self, job_id, event_type, data=None):
         if job_id:
@@ -353,7 +465,9 @@ class Orchestrator:
     def run_auto_compat(self, url, min_severity="medium", credentials=None,
                         skip_discovery=False, api_override=None,
                         adapter_override=None, auto_baseline=False,
-                        job_id=None):
+                        job_id=None, allow_destructive=None):
+        if allow_destructive is not None:
+            self.allow_destructive = bool(allow_destructive)
         return _run_auto_compat(
             self, url=url, min_severity=min_severity, credentials=credentials,
             skip_discovery=skip_discovery, api_override=api_override,
@@ -545,6 +659,22 @@ def _run_auto_compat(orc, url, min_severity, credentials, skip_discovery,
     threshold = SEVERITY_RANK.get(min_severity, 1)
     patterns = [p for p in patterns
                 if SEVERITY_RANK.get(p["severity"], 0) >= threshold]
+    skipped_destructive = []
+    if not orc.allow_destructive:
+        keep = []
+        for p in patterns:
+            full = loader.load_pattern(p["id"]) or {}
+            if full.get("destructive") or full.get("opt_in"):
+                skipped_destructive.append(p["id"])
+                continue
+            keep.append(p)
+        patterns = keep
+        if skipped_destructive:
+            console.print(
+                f"[yellow]Skipping {len(skipped_destructive)} destructive/opt-in "
+                f"pattern(s): {', '.join(skipped_destructive[:5])}"
+                f"{'...' if len(skipped_destructive) > 5 else ''}[/yellow]")
+            console.print("[dim]  pass --allow-destructive to authorize them[/dim]")
     patterns.sort(key=lambda p: -SEVERITY_RANK.get(p["severity"], 0))
 
     console.print(f"[bold]Running {len(patterns)} patterns on {scan_target}[/bold]")
@@ -681,15 +811,21 @@ def _run_auto_compat(orc, url, min_severity, credentials, skip_discovery,
 
 
 def _preflight_check(url, timeout=5):
-    import httpx
+    from . import http as _http
+    from . import budget as _budget
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=False,
-                          verify=False) as c:
+        _budget.auto_configure_from_configs()
+    except Exception:
+        pass
+    try:
+        with _http.Client(timeout=timeout, follow_redirects=False) as c:
             r = c.get(url)
             return True, r.status_code, None
-    except httpx.ConnectError as e:
+    except _http.ROEBlock as e:
+        return False, None, f"ROE_BLOCK: {e}"
+    except _http.ConnectError as e:
         return False, None, f"ConnectError: {e}"
-    except httpx.TimeoutException:
+    except _http.TimeoutException:
         return False, None, "Timeout"
     except Exception as e:
         return False, None, f"{type(e).__name__}: {e}"

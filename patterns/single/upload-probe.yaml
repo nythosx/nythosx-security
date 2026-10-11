@@ -1,6 +1,9 @@
 id: upload-probe
 name: File Upload Restriction Bypass
 severity: critical
+destructive: true
+opt_in: true
+destructive_reason: "Writes files to the target via upload endpoints."
 tags: [upload, rce, wstg-busl-09, cwe-434]
 
 inputs:

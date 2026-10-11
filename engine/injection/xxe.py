@@ -7,6 +7,7 @@ from ..contract import Capability, ScanResult
 from ..roe_guard import ROEGuard, ROEViolation
 from .payloads import (XXE_FILE_PAYLOADS, XXE_TEMPLATE_BASIC,
                         XXE_TEMPLATE_OOB)
+from .. import http as _http
 
 
 CAPABILITY = Capability(
@@ -48,7 +49,7 @@ def _post_xml(url, xml, headers, timeout, verify, roe_guard,
     h = dict(headers or {})
     h["Content-Type"] = content_type
     try:
-        with httpx.Client(timeout=timeout, verify=verify,
+        with _http.Client(timeout=timeout, verify=verify,
                           follow_redirects=False) as c:
             r = c.post(url, content=xml.encode("utf-8"), headers=h)
         return {"status": r.status_code, "body": (r.text or "")[:8000]}

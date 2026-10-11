@@ -1,6 +1,9 @@
 id: lockout-probe
 name: Missing Account Lockout
 severity: high
+destructive: true
+opt_in: true
+destructive_reason: "Sends repeated failed logins that can lock out real accounts."
 tags: [lockout, auth, wstg-athn-03, cwe-307]
 
 inputs:

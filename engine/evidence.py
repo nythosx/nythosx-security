@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+
+from . import redact
 from datetime import datetime, timezone
 from .util import safe_name
 
@@ -31,6 +33,7 @@ def _save_evidence_impl(pattern_id, target, context, verdict, oracle_result,
         "evidence": oracle_result.get("evidence", {}),
         "total_steps": len(context.get("steps", [])),
     }
+    summary = redact.redact_dict(summary)
     (dir_path / "summary.json").write_text(
         json.dumps(summary, indent=2, default=str), encoding="utf-8"
     )
@@ -48,6 +51,7 @@ def _save_evidence_impl(pattern_id, target, context, verdict, oracle_result,
             "headers": s.get("headers"),
             "body_preview": body[:max_bytes] if save_raw_bodies else "",
         })
+    raw = redact.redact_dict(raw)
     (dir_path / "raw.json").write_text(
         json.dumps(raw, indent=2, default=str), encoding="utf-8"
     )

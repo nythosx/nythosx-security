@@ -7,6 +7,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from . import progress
+from . import http as _http
 
 
 COMMON_API_PORTS = [
@@ -35,7 +36,7 @@ def _cfg(config):
 
 def _fetch(url, timeout=10, follow=True):
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=follow, verify=False) as c:
+        with _http.Client(timeout=timeout, follow_redirects=follow, verify=False) as c:
             return c.get(url)
     except Exception:
         return None

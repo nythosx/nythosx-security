@@ -2,7 +2,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.absolute()
-__version__ = "1.2.0"
+sys.path.insert(0, str(ROOT))
+try:
+    from engine.version import __version__  # noqa: E402
+except Exception:
+    __version__ = "unknown"
 
 
 def main():

@@ -1,0 +1,17 @@
+# Target example. Copy to configs/targets.yaml and edit.
+# configs/targets.yaml is gitignored — do not commit real credentials.
+targets:
+  example-target:
+    url: http://localhost:3000
+    auth:
+      type: login
+      login_url: http://localhost:8000/api/login
+      login_type: json
+      username: user@example.com
+      password: change-me
+      username_field: email
+      password_field: password
+      token_path: token
+      token_header: Authorization
+      token_prefix: 'Bearer '
+    notes: Example target — replace with your own, one target per entry.

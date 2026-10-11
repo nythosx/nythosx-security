@@ -36,3 +36,18 @@ domxss_test.html
 # secrets
 .env
 .env.*
+# --- Secrets (never commit) ---
+# --- Scan artifacts ---
+workflows/
+# --- Python ---
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+# --- Per-phase scripts and bundles ---
+a_resume.py
+=*.txt
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store

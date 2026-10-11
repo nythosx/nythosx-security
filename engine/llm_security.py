@@ -6,6 +6,7 @@ import httpx
 
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
+from . import http as _http
 
 
 LLM_ENDPOINTS = [
@@ -200,7 +201,7 @@ def detect_endpoint(base_url, headers=None, timeout=10, roe_guard=None, verify=N
         if viol:
             return {"error": f"ROE_BLOCK: {viol}"}
         try:
-            with httpx.Client(timeout=timeout, verify=verify,
+            with _http.Client(timeout=timeout, verify=verify,
                               follow_redirects=True) as c:
                 r = c.post(url, json=probe, headers=headers or {})
             if r.status_code in (200, 400, 401, 403, 405, 422):
@@ -317,7 +318,7 @@ def run_category(endpoint, category, spec, model, headers, timeout, verify, roe_
             continue
         body = build_request(payload, model)
         try:
-            with httpx.Client(timeout=timeout, verify=verify,
+            with _http.Client(timeout=timeout, verify=verify,
                               follow_redirects=True) as c:
                 r = c.post(endpoint, json=body, headers=headers or {})
             output = extract_output(r.text or "")

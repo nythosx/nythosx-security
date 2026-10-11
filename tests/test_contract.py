@@ -204,3 +204,37 @@ def test_evidence_supports_new_fields(tmp_path, monkeypatch):
     assert data["author"] == "template"
     assert data["confidence"] == 0.9
     assert data["chain_ids"] == ["chain-1"]
+
+def test_scanresult_v2_defaults():
+    from engine.contract import ScanResult
+    r = ScanResult(capability="x", target="http://t")
+    assert r.signal_strength == 0.0
+    assert r.confirmation_status == "unconfirmed"
+    assert r.confidence_breakdown == {}
+    assert r.iteration_id == 0
+
+def test_scanresult_v2_in_to_dict():
+    from engine.contract import ScanResult
+    r = ScanResult(capability="x", target="http://t")
+    d = r.to_dict()
+    assert d["signal_strength"] == 0.0
+    assert d["confirmation_status"] == "unconfirmed"
+    assert d["confidence_breakdown"] == {}
+    assert d["iteration_id"] == 0
+
+def test_scanresult_v2_custom_values():
+    from engine.contract import ScanResult
+    r = ScanResult(
+        capability="x", target="http://t",
+        signal_strength=0.75, confirmation_status="confirmed",
+        confidence_breakdown={"status": 0.3, "timing": 0.2},
+        iteration_id=2,
+    )
+    assert r["signal_strength"] == 0.75
+    assert r["confirmation_status"] == "confirmed"
+    assert r["confidence_breakdown"] == {"status": 0.3, "timing": 0.2}
+    assert r["iteration_id"] == 2
+    assert "signal_strength" in r
+    assert "confirmation_status" in r
+    assert "confidence_breakdown" in r
+    assert "iteration_id" in r

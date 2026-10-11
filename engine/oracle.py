@@ -8,6 +8,37 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
+_BASELINE_CACHE = {}
+
+
+def _load_baseline_cached(target, url, method="GET"):
+    key = (target, url, method)
+    if key in _BASELINE_CACHE:
+        return _BASELINE_CACHE[key]
+    snap = None
+    try:
+        from .baseline import BaselineEngine
+        be = BaselineEngine()
+        snap = be.load(target, url, method)
+    except Exception:
+        snap = None
+    _BASELINE_CACHE[key] = snap
+    return snap
+
+
+def _annotate_with_signal(result, context):
+    if not isinstance(result, dict):
+        return result
+    strength = context.get("_signal_strength")
+    if strength is None:
+        return result
+    ev = dict(result.get("evidence") or {})
+    ev.setdefault("signal_strength", strength)
+    result = dict(result)
+    result["evidence"] = ev
+    return result
+
+
 def _is_redirect(status):
     return status is not None and 300 <= status < 400
 
@@ -1213,9 +1244,60 @@ def _bizlogic(oracle, context):
             "evidence": out.get("probes", {})}
 
 
+def _semantic_diff(oracle, context):
+    steps = context.get("steps", [])
+    if len(steps) < 2:
+        return {"verdict": "UNKNOWN",
+                "reason": "need >= 2 responses for semantic diff",
+                "evidence": {}}
+    baseline_step = steps[0]
+    candidate_step = steps[-1]
+    target = context.get("target", "")
+    url = baseline_step.get("url", "")
+    method = "GET"
+    baseline = _load_baseline_cached(target, url, method)
+    if baseline is None:
+        return {"verdict": "UNKNOWN",
+                "reason": "no baseline available for semantic diff",
+                "evidence": {}}
+    try:
+        from .diff import SemanticDiff
+        diff = SemanticDiff()
+        result = diff.compare(baseline, candidate_step,
+                              marker=oracle.get("marker"))
+    except Exception as e:
+        return {"verdict": "UNKNOWN",
+                "reason": "semantic diff error: " + type(e).__name__,
+                "evidence": {}}
+    strength = result.signal_strength
+    ev = {"signal_strength": strength, "notes": list(result.notes),
+          "breakdown": {
+              "status_shift": result.status_shift,
+              "timing_zscore": result.timing_zscore,
+              "length_delta_pct": result.length_delta_pct,
+              "structural_delta": result.structural_delta,
+              "marker_reflected": result.marker_reflected,
+              "header_delta": result.header_delta,
+          }}
+    v_high = oracle.get("vulnerable_threshold", 0.8)
+    v_low = oracle.get("pass_threshold", 0.3)
+    if strength >= v_high:
+        return {"verdict": oracle.get("verdict", "VULNERABLE"),
+                "reason": "signal_strength=" + format(strength, ".2f"),
+                "evidence": ev}
+    if strength <= v_low:
+        return {"verdict": "PASS",
+                "reason": "signal_strength=" + format(strength, ".2f"),
+                "evidence": ev}
+    return {"verdict": "SUSPICIOUS",
+            "reason": "signal_strength=" + format(strength, ".2f"),
+            "evidence": ev}
+
+
 _HANDLERS = {
 
     "header_absent": _header_absent,
+    "semantic_diff": _semantic_diff,
     "header_value_match": _header_value_match,
     "cors_misconfig": _cors_misconfig,
     "cookie_flags_check": _cookie_flags_check,
@@ -1279,12 +1361,209 @@ def _evaluate_impl(oracle, context):
                           "surface); behavioral probe is inconclusive",
                 "evidence": {}}
     try:
-        return handler(oracle, context)
+        result = handler(oracle, context)
     except Exception as e:
         return {"verdict": "UNKNOWN", "reason": f"oracle error: {e}", "evidence": {}}
+    result = _annotate_with_signal(result, context)
+    return result
 
 def evaluate(oracle, context):
     from .contract import wrap_evaluate
     raw = _evaluate_impl(oracle, context)
     otype = oracle.get("type") if isinstance(oracle, dict) else ""
     return wrap_evaluate(raw, otype)
+
+
+
+# ===========================================================================
+# Phase 3 — oracle handlers for previously-missing types.
+#
+# Each handler lazily imports its scanner module, runs a scan against the
+# target found in the evaluation context, and normalises the result to
+# {verdict, reason, evidence}. Handlers that dispatch to potentially
+# state-changing scanners are noted below; destructive gating is a
+# Phase 4 concern.
+# ===========================================================================
+_PHASE3_HANDLERS_INSTALLED = True
+
+
+def _extract_context_headers(context):
+    headers = {}
+    for s in context.get("steps", []):
+        for k, v in (s.get("headers") or {}).items():
+            if k.lower() in ("content-length", "host", "connection"):
+                continue
+            headers.setdefault(k, v)
+    return headers
+
+
+def _context_target(context):
+    t = context.get("target") or ""
+    if t:
+        return t
+    steps = context.get("steps") or []
+    if steps:
+        url = steps[0].get("url") or ""
+        if url:
+            return url
+    return ""
+
+
+def _make_scanner_handler(module_path, func_name,
+                          extra_kwargs=None, destructive_note=None):
+    def _handler(oracle, context):
+        target = _context_target(context)
+        if not target:
+            return {"verdict": "UNKNOWN", "reason": "no target in context",
+                    "evidence": {}}
+        headers = _extract_context_headers(context)
+        guard = context.get("roe_guard")
+        if guard is None:
+            try:
+                from .roe_guard import ROEGuard
+                from .config import load_engine
+                guard = ROEGuard(engine_cfg=load_engine())
+            except Exception:
+                guard = None
+        kwargs = {"roe_guard": guard}
+        if headers:
+            kwargs["headers"] = headers
+        if extra_kwargs:
+            try:
+                extra = extra_kwargs(oracle, context) or {}
+                kwargs.update(extra)
+            except Exception:
+                pass
+        try:
+            from importlib import import_module
+            mod = import_module(module_path)
+            func = getattr(mod, func_name)
+            r = func(target, **kwargs)
+        except Exception as e:
+            return {
+                "verdict": "UNKNOWN",
+                "reason": f"{func_name} dispatch error: "
+                          f"{type(e).__name__}: {e}",
+                "evidence": {"destructive_note": destructive_note}
+                if destructive_note else {},
+            }
+        if hasattr(r, "to_dict"):
+            d = r.to_dict()
+        elif isinstance(r, dict):
+            d = r
+        else:
+            return {"verdict": "UNKNOWN",
+                    "reason": "unexpected scanner result type",
+                    "evidence": {}}
+        out = {
+            "verdict": d.get("verdict", "UNKNOWN"),
+            "reason": d.get("reason", "") or "",
+            "evidence": d.get("evidence", {}) or {},
+        }
+        if destructive_note:
+            out["evidence"] = dict(out["evidence"])
+            out["evidence"]["note"] = destructive_note
+        return out
+    return _handler
+
+
+def _nosql_kwargs(oracle, context):
+    cfg = oracle if isinstance(oracle, dict) else {}
+    return {
+        "username_field": cfg.get("username_field", "username"),
+        "password_field": cfg.get("password_field", "password"),
+    }
+
+
+def _lockout_kwargs(oracle, context):
+    cfg = oracle if isinstance(oracle, dict) else {}
+    return {"username": cfg.get("username", "admin")}
+
+
+_ssti_scan = _make_scanner_handler("engine.injection.ssti", "scan")
+_xxe_scan = _make_scanner_handler("engine.injection.xxe", "scan")
+_nosql_scan = _make_scanner_handler("engine.injection.nosql", "scan",
+                                     extra_kwargs=_nosql_kwargs)
+_crlf_scan = _make_scanner_handler("engine.injection.crlf", "scan")
+_open_redirect_scan = _make_scanner_handler(
+    "engine.injection.open_redirect", "scan")
+_host_header_scan = _make_scanner_handler(
+    "engine.injection.host_header", "scan")
+_upload_scan = _make_scanner_handler(
+    "engine.upload_probe", "scan",
+    destructive_note="upload probe writes files; gated by upload.opt_in "
+                     "(Phase 4 will add a central destructive gate)")
+_websocket_scan = _make_scanner_handler("engine.websocket_probe", "scan")
+_weak_password_scan = _make_scanner_handler(
+    "engine.weak_password_policy", "scan",
+    destructive_note="weak-password probe attempts password changes; "
+                     "gated by weak_password.enabled "
+                     "(Phase 4 will add a central destructive gate)")
+_lockout_scan = _make_scanner_handler(
+    "engine.lockout_probe", "scan",
+    extra_kwargs=_lockout_kwargs,
+    destructive_note="lockout probe sends repeated bad logins; "
+                     "idempotent=False (Phase 4 gate pending)")
+_weak_credential_scan = _make_scanner_handler(
+    "engine.weak_credential_enum", "scan",
+    destructive_note="weak-credential probe sends credential attempts; "
+                     "gated by weak_password.opt_in_destructive")
+_oauth_state_scan = _make_scanner_handler(
+    "engine.oauth.state_probe", "scan")
+_oauth_redirect_uri_scan = _make_scanner_handler(
+    "engine.oauth.redirect_uri", "scan")
+_oauth_pkce_scan = _make_scanner_handler(
+    "engine.oauth.pkce_probe", "scan")
+_http2_scan = _make_scanner_handler("engine.http2_probe", "scan")
+
+
+def _oauth_id_token_scan(oracle, context):
+    """Needs an explicit id_token — cannot discover one from context."""
+    cfg = oracle if isinstance(oracle, dict) else {}
+    token = cfg.get("id_token")
+    if not token:
+        return {
+            "verdict": "UNKNOWN",
+            "reason": "oauth_id_token_scan requires an id_token "
+                      "(pass via oracle config)",
+            "evidence": {},
+        }
+    target = _context_target(context)
+    if not target:
+        return {"verdict": "UNKNOWN", "reason": "no target in context",
+                "evidence": {}}
+    try:
+        from .oauth import id_token as idt
+        r = idt.scan(target, token)
+    except Exception as e:
+        return {"verdict": "UNKNOWN",
+                "reason": f"oauth_id_token_scan error: "
+                          f"{type(e).__name__}: {e}",
+                "evidence": {}}
+    if hasattr(r, "to_dict"):
+        d = r.to_dict()
+    else:
+        d = r
+    return {"verdict": d.get("verdict", "UNKNOWN"),
+            "reason": d.get("reason", "") or "",
+            "evidence": d.get("evidence", {}) or {}}
+
+
+_HANDLERS.update({
+    "ssti_scan": _ssti_scan,
+    "xxe_scan": _xxe_scan,
+    "nosql_scan": _nosql_scan,
+    "crlf_scan": _crlf_scan,
+    "open_redirect_scan": _open_redirect_scan,
+    "host_header_scan": _host_header_scan,
+    "upload_scan": _upload_scan,
+    "websocket_scan": _websocket_scan,
+    "weak_password_scan": _weak_password_scan,
+    "lockout_scan": _lockout_scan,
+    "weak_credential_scan": _weak_credential_scan,
+    "oauth_state_scan": _oauth_state_scan,
+    "oauth_redirect_uri_scan": _oauth_redirect_uri_scan,
+    "oauth_pkce_scan": _oauth_pkce_scan,
+    "oauth_id_token_scan": _oauth_id_token_scan,
+    "http2_scan": _http2_scan,
+})

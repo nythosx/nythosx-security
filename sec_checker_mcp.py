@@ -11,25 +11,11 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from sec_checker_tools import all_tools
+from sec_checker_tools.schemas import schema_for as _schema_for
+from engine import redact
+
 
 server = Server("sec-checker")
-
-
-def _schema_for(tool_fn):
-    schema = getattr(tool_fn, "_tool_schema", None) or {}
-    props = {}
-    required = []
-    for name, typ in schema.items():
-        t = "string"
-        if typ is int:
-            t = "integer"
-        elif typ is float:
-            t = "number"
-        elif typ is bool:
-            t = "boolean"
-        props[name] = {"type": t}
-        required.append(name)
-    return {"type": "object", "properties": props, "required": required}
 
 
 @server.list_tools()
@@ -63,6 +49,7 @@ async def call_tool(name, arguments):
     if fn is None:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
     result = await fn(arguments)
+    result = redact.redact_dict(result)
     blocks = result.get("content") or []
     out = []
     for b in blocks:

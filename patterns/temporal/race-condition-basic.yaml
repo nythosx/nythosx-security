@@ -1,6 +1,9 @@
 id: race-condition-basic
 name: Race Condition Detection
 severity: high
+destructive: true
+opt_in: true
+destructive_reason: "Sends real concurrent state-changing requests."
 tags: [race-condition, wstg-busl-04, cwe-362]
 
 inputs:

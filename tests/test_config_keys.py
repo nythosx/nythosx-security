@@ -58,3 +58,24 @@ def test_report_threshold_info_keeps_all(tmp_path, monkeypatch):
     text = (tmp_path / "reports" / __import__("os").path.basename(path)).read_text(encoding="utf-8")
     assert "cors-wildcard" in text
     assert "server-disclosure" in text
+
+def test_new_v2_config_keys_present(monkeypatch, tmp_path):
+    from engine import config as cfg
+    monkeypatch.setattr(cfg, "CONFIGS", tmp_path)
+    (tmp_path / "engine.yaml").write_text("http:\n  timeout_seconds: 5\n")
+    data = cfg.load_engine()
+    for key in ("baseline", "diff", "scoring", "triage", "waf",
+                "iteration", "confirm"):
+        assert key in data, "missing default key: " + key
+        assert isinstance(data[key], dict), key
+
+def test_new_v2_config_keys_custom(monkeypatch, tmp_path):
+    from engine import config as cfg
+    monkeypatch.setattr(cfg, "CONFIGS", tmp_path)
+    (tmp_path / "engine.yaml").write_text(
+        "baseline:\n  enabled: false\n"
+        "iteration:\n  max_sweeps: 7\n"
+    )
+    data = cfg.load_engine()
+    assert data["baseline"]["enabled"] is False
+    assert data["iteration"]["max_sweeps"] == 7

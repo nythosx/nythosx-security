@@ -8,6 +8,7 @@ import httpx
 
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
+from . import http as _http
 
 try:
     from cryptography.hazmat.primitives import hashes, serialization
@@ -248,7 +249,7 @@ def fetch_jwks(base_url, timeout=10, roe_guard=None, verify=None):
         if _roe_block(roe_guard, url, "GET"):
             continue
         try:
-            with httpx.Client(timeout=timeout, verify=verify,
+            with _http.Client(timeout=timeout, verify=verify,
                               follow_redirects=True) as c:
                 r = c.get(url)
             if r.status_code == 200:
@@ -262,14 +263,14 @@ def fetch_jwks(base_url, timeout=10, roe_guard=None, verify=None):
         if _roe_block(roe_guard, url, "GET"):
             continue
         try:
-            with httpx.Client(timeout=timeout, verify=verify,
+            with _http.Client(timeout=timeout, verify=verify,
                               follow_redirects=True) as c:
                 r = c.get(url)
             if r.status_code == 200:
                 data = r.json()
                 jwks_uri = data.get("jwks_uri")
                 if jwks_uri and not _roe_block(roe_guard, jwks_uri, "GET"):
-                    with httpx.Client(timeout=timeout, verify=verify,
+                    with _http.Client(timeout=timeout, verify=verify,
                                       follow_redirects=True) as c:
                         r2 = c.get(jwks_uri)
                     if r2.status_code == 200 and "keys" in (r2.json() or {}):
@@ -305,7 +306,7 @@ def _request(url, method, token, headers, timeout, roe_guard=None, verify=None):
     h = dict(headers or {})
     h["Authorization"] = f"Bearer {token}"
     try:
-        with httpx.Client(timeout=timeout, verify=verify, follow_redirects=False) as c:
+        with _http.Client(timeout=timeout, verify=verify, follow_redirects=False) as c:
             r = c.request(method.upper(), url, headers=h)
         return {"status": r.status_code, "body": (r.text or "")[:2000],
                 "headers": dict(r.headers)}

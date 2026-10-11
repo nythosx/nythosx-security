@@ -1,6 +1,9 @@
 id: race-advanced
 name: Advanced Race Condition Testing
 severity: high
+destructive: true
+opt_in: true
+destructive_reason: "Sends real concurrent state-changing requests."
 tags: [race-condition, concurrency, wstg-busl-04, cwe-362]
 
 inputs:

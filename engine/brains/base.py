@@ -21,5 +21,8 @@ class ScanBrain(Protocol):
                         capability: str) -> Optional[str]:
         ...
 
+    def triage_response(self, baseline, candidate, context=None) -> TriageDecision:
+        ...
+
 
 __all__ = ["ScanBrain"]

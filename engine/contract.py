@@ -190,6 +190,8 @@ class Capability:
     category: str = "general"
     default_on: bool = True
     examples: list = field(default_factory=list)
+    opt_in: bool = False
+    destructive_reason: str = ""
 
     def to_dict(self):
         return {
@@ -205,6 +207,8 @@ class Capability:
             "category": self.category,
             "default_on": self.default_on,
             "examples": self.examples,
+            "opt_in": self.opt_in,
+            "destructive_reason": self.destructive_reason,
         }
 
 
@@ -224,6 +228,10 @@ class ScanResult:
     cost_used: dict = field(default_factory=dict)
     author: str = "system"
     raw: dict = field(default_factory=dict)
+    signal_strength: float = 0.0
+    confirmation_status: str = "unconfirmed"
+    confidence_breakdown: dict = field(default_factory=dict)
+    iteration_id: int = 0
 
     def __post_init__(self):
         self.verdict = coerce_verdict(self.verdict)
@@ -262,6 +270,14 @@ class ScanResult:
             return self.author
         if key == "raw":
             return self.raw
+        if key == "signal_strength":
+            return self.signal_strength
+        if key == "confirmation_status":
+            return self.confirmation_status
+        if key == "confidence_breakdown":
+            return self.confidence_breakdown
+        if key == "iteration_id":
+            return self.iteration_id
         return self.raw.get(key)
 
     def get(self, key, default=None):
@@ -274,7 +290,9 @@ class ScanResult:
     def __contains__(self, key):
         if key in ("capability", "target", "verdict", "severity", "confidence",
                    "confidence_reason", "reason", "evidence", "findings",
-                   "next_hints", "duration_ms", "cost_used", "author", "raw"):
+                   "next_hints", "duration_ms", "cost_used", "author", "raw",
+                   "signal_strength", "confirmation_status",
+                   "confidence_breakdown", "iteration_id"):
             return True
         return key in self.raw
 
@@ -293,6 +311,10 @@ class ScanResult:
             "duration_ms": self.duration_ms,
             "cost_used": self.cost_used,
             "author": self.author,
+            "signal_strength": self.signal_strength,
+            "confirmation_status": self.confirmation_status,
+            "confidence_breakdown": self.confidence_breakdown,
+            "iteration_id": self.iteration_id,
         }
 
 
@@ -431,9 +453,12 @@ def make_result(raw, capability, args=(), kwargs=None):
         ev = raw.get("evidence")
         evidence = ev if isinstance(ev, dict) else {}
         raw_dict = raw
+    elif isinstance(raw, list):
+        evidence = {}
+        raw_dict = {"items": raw, "results": raw}
     else:
         evidence = {}
-        raw_dict = {"items": raw}
+        raw_dict = {"items": raw, "results": raw}
     return ScanResult(
         capability=capability,
         target=target,

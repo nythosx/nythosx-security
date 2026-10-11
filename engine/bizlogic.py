@@ -8,6 +8,7 @@ import httpx
 
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
+from . import http as _http
 
 
 CRITICAL_PARAM_NAMES = [
@@ -188,7 +189,7 @@ def _request(url, method="GET", headers=None, json_body=None, data=None,
     if viol:
         return {"url": url, "blocked": True, "error": f"ROE_BLOCK: {viol}"}
     try:
-        with httpx.Client(timeout=timeout, verify=verify,
+        with _http.Client(timeout=timeout, verify=verify,
                           follow_redirects=False) as c:
             r = c.request(method.upper(), url, headers=headers or {},
                           json=json_body, data=data, params=params)
@@ -196,9 +197,9 @@ def _request(url, method="GET", headers=None, json_body=None, data=None,
                 "body": (r.text or "")[:4000],
                 "headers": {k.lower(): v for k, v in r.headers.items()},
                 "body_hash": _body_hash(r.text)}
-    except httpx.ConnectError as e:
+    except _http.ConnectError as e:
         return {"url": url, "status": None, "error": f"connection error: {e}"}
-    except httpx.TimeoutException:
+    except _http.TimeoutException:
         return {"url": url, "status": None, "error": "timeout"}
     except Exception as e:
         return {"url": url, "status": None,
@@ -504,7 +505,7 @@ def probe_race_business(base_url, endpoint_path, body=None, headers=None,
     lock = threading.Lock()
 
     def fire():
-        client = httpx.Client(timeout=timeout, verify=verify,
+        client = _http.Client(timeout=timeout, verify=verify,
                               follow_redirects=False)
         try:
             try:
@@ -512,7 +513,7 @@ def probe_race_business(base_url, endpoint_path, body=None, headers=None,
             except Exception:
                 pass
             barrier.wait()
-            kwargs = {"headers": headers or {}}
+            kwargs = {"headers": headers or {}, "skip_rate_limit": True}
             if body is not None:
                 if isinstance(body, dict):
                     kwargs["json"] = body

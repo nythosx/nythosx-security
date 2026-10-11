@@ -5,6 +5,7 @@ import httpx
 from ..config import load_engine
 from ..contract import Capability, ScanResult
 from ..roe_guard import ROEGuard, ROEViolation
+from .. import http as _http
 
 
 CAPABILITY = Capability(
@@ -56,7 +57,7 @@ def fetch(base_url, headers=None, roe_guard=None, timeout=8):
         if viol:
             return {"error": f"ROE_BLOCK: {viol}"}
         try:
-            with httpx.Client(timeout=timeout, verify=verify,
+            with _http.Client(timeout=timeout, verify=verify,
                               follow_redirects=True) as c:
                 r = c.get(url, headers=headers or {})
             if r.status_code == 200:

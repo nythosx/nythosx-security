@@ -6,6 +6,7 @@ from ..config import load_engine
 from ..contract import Capability, ScanResult
 from ..roe_guard import ROEGuard, ROEViolation
 from .payloads import OPEN_REDIRECT_PAYLOADS
+from .. import http as _http
 
 
 CAPABILITY = Capability(
@@ -69,7 +70,7 @@ def scan(target_url, param=None, headers=None, roe_guard=None, timeout=8):
                     verdict="UNKNOWN", reason=f"ROE_BLOCK: {viol}",
                 )
             try:
-                with httpx.Client(timeout=timeout, verify=verify,
+                with _http.Client(timeout=timeout, verify=verify,
                                   follow_redirects=False) as c:
                     r = c.get(target_url, params={pname: payload},
                               headers=headers or {})

@@ -42,3 +42,13 @@ def test_build_result_safe_when_no_findings(monkeypatch):
     result = webui._build_result("https://example.com", {"targets": {}}, "log")
     assert result["chains"] == []
     assert "coverage" in result
+
+
+def test_build_result_has_phase6_fields(monkeypatch):
+    from engine import webui
+    monkeypatch.setattr(webui, "_findings_for", lambda target: [])
+    result = webui._build_result("https://example.com", {"targets": {}}, "log")
+    assert "confirmed_count" in result
+    assert "avg_signal_strength" in result
+    assert result["confirmed_count"] == 0
+    assert result["avg_signal_strength"] is None

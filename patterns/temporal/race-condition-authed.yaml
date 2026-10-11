@@ -1,6 +1,9 @@
 id: race-condition-authed
 name: Race Condition on Authenticated Endpoint
 severity: high
+destructive: true
+opt_in: true
+destructive_reason: "Sends real concurrent authenticated requests."
 tags: [race-condition, auth, wstg-busl-04, cwe-362]
 
 inputs:

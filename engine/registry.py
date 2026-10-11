@@ -15,7 +15,7 @@ _DISCOVERED = False
 
 def _cap(name, description, category, cost="low", destructive=False,
          idempotent=True, prerequisites=None, default_on=True, params=None,
-         required=None, examples=None):
+         required=None, examples=None, opt_in=False, destructive_reason=""):
     return Capability(
         name=name,
         description=description,
@@ -28,6 +28,8 @@ def _cap(name, description, category, cost="low", destructive=False,
         params=params or {},
         required=list(required or []),
         examples=list(examples or []),
+        opt_in=opt_in,
+        destructive_reason=destructive_reason,
     )
 
 
@@ -260,12 +262,40 @@ def _discover():
             _absorb_module(_safe_import(info.name, "sec_checker_tools"), "mcp")
 
 
+_DESTRUCTIVE_OVERRIDES = {
+    "weak_password_scan": "Attempts to change the authenticated user's password to weak values.",
+    "lockout_probe": "Sends repeated failed logins that can lock out real accounts.",
+    "weak_credential_enum": "Attempts real credentials against the login endpoint.",
+    "upload_scan": "Writes files to the target via upload endpoints.",
+    "race_scan": "Sends real concurrent state-changing requests.",
+    "bizlogic_scan": "Exercises checkout, coupon, and transfer flows with tampered values.",
+    "workflow_tamper": "Replays recorded workflows with tampered business values.",
+    "timing_sqli": "Sends time-delay SQL payloads that consume server CPU.",
+    "timing_ssti": "Sends CPU-heavy template payloads.",
+    "timing_xxe": "Sends external-entity XML payloads.",
+    "second_order_xss": "Stores probe markers on the target for cross-endpoint checks.",
+}
+
+
+def _apply_destructive_overrides(caps):
+    for name, reason in _DESTRUCTIVE_OVERRIDES.items():
+        cap = caps.get(name)
+        if cap is None:
+            continue
+        cap.destructive = True
+        cap.default_on = False
+        cap.opt_in = True
+        if not cap.destructive_reason:
+            cap.destructive_reason = reason
+    return caps
+
+
 def all_capabilities():
     _discover()
     with _LOCK:
         caps = dict(_STATIC)
         caps.update(_REGISTRY)
-    return caps
+    return _apply_destructive_overrides(caps)
 
 
 def get(name):
