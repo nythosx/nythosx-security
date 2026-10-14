@@ -287,6 +287,44 @@ class _Handler(BaseHTTPRequestHandler):
                     else row.rows,
         })
 
+    def _recon(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            return self._send(400, {"error": "invalid JSON"})
+        url = (payload.get("url") or "").strip()
+        if not url:
+            return self._send(400, {"error": "url is required"})
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        ok, reason = _roe_ok(url)
+        if not ok:
+            return self._send(403, {
+                "error": "URL not in ROE scope",
+                "detail": reason,
+                "hint": ("Add the host to configs/roe.yaml -> scope.in_scope, "
+                         "then retry. sec-checker is fail-closed by design.")})
+        session = payload.get("session")
+        auth_str = payload.get("auth")
+        rows = int(payload.get("rows") or 3)
+        headers, _cookies, _ok = _resolve_session_headers(session, auth_str)
+        token = None
+        for k, v in headers.items():
+            if k.lower() == "authorization":
+                token = v.split(" ", 1)[1] if " " in v else v
+                break
+        try:
+            from . import recon_sweep
+            result = recon_sweep.deep_recon(
+                url, token=token,
+                do_extract=payload.get("extract", True) is not False,
+                do_idor=payload.get("idor", True) is not False,
+                rows=rows)
+        except Exception as e:
+            return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+        return self._send(200, redact.redact_dict(result))
+
     def _export(self):
         from urllib.parse import parse_qs
         parsed = _urlparse(self.path)
@@ -375,6 +413,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "missing or invalid token"})
         if self.path == "/api/extract":
             return self._extract()
+        if self.path == "/api/recon":
+            return self._recon()
         if self.path != "/api/scan":
             return self._send(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length", 0))
@@ -1617,6 +1657,14 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
         <div class="findings-empty">nothing found yet</div>
       </div>
     </div>
+    <div class="findings-pane" id="reconPane" style="display:none">
+      <div class="findings-hd">
+        <span class="dot" style="background:var(--accent,#39f)"></span>
+        <span>recon &amp; data</span>
+        <span class="count" id="reconCount">0</span>
+      </div>
+      <div class="findings-body" id="reconBody"></div>
+    </div>
   </aside>
 </div>
 <div class="log-ribbon" id="logRibbon"></div>
@@ -1855,6 +1903,7 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
   var findingsBody = document.getElementById('findingsBody');
   var findingsCount = document.getElementById('findingsCount');
   var findings = [];
+  var reconTarget = '';
   function addFinding(f) {
     if (findings.find(function (x) { return x.id === f.id; })) return;
     findings.push(f);
@@ -1895,6 +1944,69 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
         triageLine(f);
       findingsBody.appendChild(card);
     });
+  }
+  var catColor = { sensitive: 'var(--red)', content: 'var(--accent,#39f)',
+    telemetry: 'var(--ph-dim)', form: '#a06bd6', unknown: 'var(--amber,#e0a030)' };
+  function dataTable(d) {
+    if (!d || !d.rows || !d.rows.length) return '';
+    var first = d.rows[0];
+    if (typeof first !== 'object' || first === null) return '';
+    var keys = Object.keys(first).slice(0, 8);
+    var head = keys.map(function (k) { return '<th style="text-align:left;padding:2px 6px;opacity:.6">' + esc(k) + '</th>'; }).join('');
+    var body = d.rows.slice(0, 5).map(function (r) {
+      return '<tr>' + keys.map(function (k) {
+        var v = r[k]; if (v && typeof v === 'object') v = JSON.stringify(v);
+        return '<td style="padding:2px 6px;word-break:break-all">' + esc(String(v).slice(0, 60)) + '</td>';
+      }).join('') + '</tr>';
+    }).join('');
+    return '<table style="width:100%;border-collapse:collapse;font-size:9.5px;margin-top:5px">' +
+      '<thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>' +
+      '<div style="opacity:.55;font-size:9px;margin-top:3px">' + (d.extracted || 0) + ' of ' + (d.total_rows || 0) + ' rows · ' + esc(d.auth_used || 'unauth') + ' · masked</div>';
+  }
+  function renderRecon(data) {
+    if (!data || data.error) return;
+    var body = document.getElementById('reconBody');
+    var pane = document.getElementById('reconPane');
+    var cnt = document.getElementById('reconCount');
+    if (!body || !pane) return;
+    var inv = (data.inventory || []).filter(function (i) { return i.real; });
+    var s = data.summary || {};
+    var idorCands = (data.idor && data.idor.idor_candidates) || [];
+    cnt.textContent = String(inv.length);
+    cnt.classList.toggle('has', inv.length > 0);
+    var sum = '<div class="fcard" style="border-left-color:var(--accent,#39f)">' +
+      '<div class="fn">' + (s.live || 0) + ' live endpoints · ' + (s.with_data || 0) +
+      ' returning data · ' + (s.idor_candidates || 0) + ' IDOR candidate(s)</div>';
+    if (data.soft_404) sum += '<div class="fp" style="opacity:.7">soft-404 baseline: status ' +
+      esc(data.soft_404.status) + ' len ' + esc(data.soft_404.len) + '</div>';
+    sum += '</div>';
+    var cards = inv.map(function (i) {
+      var col = catColor[i.category] || 'var(--ph-dim)';
+      var badge = '<span class="tag" style="background:' + col + ';color:#fff">' + esc(i.category) +
+        (i.by_design ? ' · pub' : '') + '</span>';
+      return '<div class="fcard" style="border-left-color:' + col + '">' +
+        '<div class="fh"><span>' + esc(i.path) + '</span>' + badge + '</div>' +
+        '<div class="fp">HTTP ' + esc(i.status) + ' · conf ' + esc(i.confidence || '?') +
+        (i.data ? '' : ' · no data') + '</div>' +
+        dataTable(i.data) + '</div>';
+    }).join('');
+    var idorBlock = '';
+    if (idorCands.length) {
+      idorBlock = '<div class="fcard vuln"><div class="fh"><span>IDOR candidates</span>' +
+        '<span class="tag" style="background:var(--red);color:#fff">CHECK</span></div>' +
+        '<div class="fp">' + idorCands.map(esc).join('<br>') + '</div></div>';
+    }
+    body.innerHTML = sum + idorBlock + cards;
+    pane.style.display = 'flex';
+  }
+  function fetchRecon(url) {
+    if (!url) return;
+    fetch('/api/recon', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) { renderRecon(d); })
+      .catch(function () {});
   }
   function endpointBadgeClass(status, verdict) {
     if (verdict === 'blocked' || verdict === 'unreachable') return 'ep-dim';
@@ -2030,6 +2142,7 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
             .then(function (job) {
               if (job && job.narrator_summary) narrateSummary(job.narrator_summary);
               if (job && job.result) renderFinalFindings(job.result);
+              fetchRecon(reconTarget);
             })
             .catch(function () {});
         }
@@ -2065,6 +2178,8 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
     findingsCount.textContent = '0';
     findingsCount.classList.remove('has');
     findingsBody.innerHTML = '<div class="findings-empty">nothing found yet</div>';
+    var rp = document.getElementById('reconPane');
+    if (rp) { rp.style.display = 'none'; document.getElementById('reconBody').innerHTML = ''; }
     for (var id in nodeEls) {
       var kind = 'phase';
       for (var k = 0; k < MAIN.length; k++) if (MAIN[k].id === id) kind = MAIN[k].kind;
@@ -2080,6 +2195,7 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
   function run() {
     var url = (inputEl.value || '').trim();
     if (!url) { inputEl.focus(); return; }
+    reconTarget = url;
     resetAll();
     overlay.classList.add('hidden');
     hTarget.textContent = url;
