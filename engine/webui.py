@@ -32,6 +32,17 @@ def _get(job_id):
         return dict(j) if j else None
 
 
+def _collect_data_rows(outcome):
+    chain_report = (outcome or {}).get("chain_report") or {}
+    rows = []
+    for chain in (chain_report.get("chain_results") or []):
+        for step in (chain.get("steps") or []):
+            for dr in (step.get("data_rows") or []):
+                if isinstance(dr, dict) and dr.get("rows"):
+                    rows.append(dr)
+    return rows
+
+
 def _findings_for(target):
     rows = ledger.findings_for_target(target)
     keys = ["id", "timestamp", "pattern_id", "category", "verdict", "severity",
@@ -85,30 +96,68 @@ def _build_result(url, outcome, log_text):
         "coverage": coverage,
         "confirmed_count": confirmed_count,
         "avg_signal_strength": avg_signal,
-        "report": (outcome or {}).get("report"),
+        "report_target": scan_target,
+        "endpoint_probes": (outcome or {}).get("endpoint_probes") or [],
+        "data_rows": _collect_data_rows(outcome),
         "log": log_text,
     })
 
 
-def _run_job(job_id, url, min_severity):
+def _run_job(job_id, url, min_severity, credentials=None, ai_key=None, use_brain=True):
     buf = io.StringIO()
-    with _run_lock:
+    # sec-checker runs one scan at a time (auto_mod.console is a shared
+    # global swapped per job). If another scan is already running, say so
+    # instead of sitting silently on the lock — the client would otherwise
+    # see no events at all and look hung.
+    if not _run_lock.acquire(blocking=False):
+        _set(job_id, status="queued", phase="queued")
+        progress.emit(job_id, "activity", {
+            "message": "Queued: another scan is already running "
+                       "(sec-checker runs one scan at a time). Waiting for "
+                       "it to finish..."})
+        _run_lock.acquire()
+    try:
         old_console = auto_mod.console
         auto_mod.console = Console(file=buf, force_terminal=False, width=100)
         try:
             _set(job_id, status="running", phase="starting")
-            outcome = auto_mod.run_auto(url, min_severity=min_severity, job_id=job_id)
+            outcome = auto_mod.run_auto(url, min_severity=min_severity,
+                                          job_id=job_id,
+                                          credentials=credentials,
+                                          ai_key=ai_key,
+                                          use_brain=use_brain)
             result = _build_result(url, outcome, buf.getvalue())
             _set(job_id, status="done", phase="done", result=result)
             if not progress.is_done(job_id):
                 progress.emit(job_id, "done", {"counts": result.get("counts") or {},
-                                                 "report": result.get("report")})
+                                                 "report_target": result.get("report_target")})
         except Exception as e:
             _set(job_id, status="error", phase="error",
                  error=f"{type(e).__name__}: {e}", log=buf.getvalue())
             progress.emit(job_id, "error", {"message": f"{type(e).__name__}: {e}"})
         finally:
             auto_mod.console = old_console
+    finally:
+        _run_lock.release()
+
+
+def _resolve_session_headers(session_name, auth_str):
+    headers = {}
+    if auth_str:
+        if auth_str.startswith("bearer:"):
+            headers["Authorization"] = f"Bearer {auth_str[7:]}"
+        elif auth_str.startswith("apikey:"):
+            headers["X-API-Key"] = auth_str[7:]
+    if session_name:
+        try:
+            from .config import load_session
+            from . import auth_flow
+            sess = load_session(session_name)
+            if sess:
+                headers.update(auth_flow.build_headers_from_session(sess))
+        except Exception:
+            pass
+    return headers, {}, True
 
 
 def _roe_ok(url):
@@ -140,7 +189,13 @@ class _Handler(BaseHTTPRequestHandler):
         if not _check_token(self):
             return self._send(401, {"error": "missing or invalid token"})
         if self.path == "/" or self.path.startswith("/?"):
-            return self._send(200, PAGE, "text/html; charset=utf-8")
+            import os as _os
+            classic = (
+                "ui=classic" in self.path
+                or _os.environ.get("SEC_CHECKER_UI", "").lower() == "classic"
+            )
+            page = PAGE_CLASSIC if classic else PAGE
+            return self._send(200, page, "text/html; charset=utf-8")
         if self.path.startswith("/api/scan/") and self.path.endswith("/stream"):
             parts = self.path.split("/")
             job_id = parts[3] if len(parts) >= 4 else ""
@@ -152,14 +207,126 @@ class _Handler(BaseHTTPRequestHandler):
             job = _get(job_id)
             if not job:
                 return self._send(404, {"error": "unknown job"})
+            if job.get("status") == "done" and job.get("result"):
+                from . import narrator
+                try:
+                    job = dict(job)
+                    job["narrator_summary"] = narrator.summarize(job["result"])
+                except Exception:
+                    pass
             return self._send(200, {k: v for k, v in job.items()})
+        if self.path.startswith("/api/export"):
+            return self._export()
+        if self.path == "/api/ai_status":
+            return self._ai_status()
         return self._send(404, {"error": "not found"})
+
+    def _ai_status(self):
+        try:
+            from engine.config import load_engine
+            import os
+            cfg = (load_engine() or {}).get("brain") or {}
+            llm = cfg.get("llm") or {}
+            provider = llm.get("provider") or cfg.get("provider") or ""
+            model = llm.get("model") or cfg.get("model") or ""
+            env_name = llm.get("api_key_env") or "SECCHECKER_LLM_API_KEY"
+            key_envs = [env_name, "SECCHECKER_LLM_API_KEY", "LLM_API_KEY",
+                        "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+                        "GEMINI_API_KEY", "GOOGLE_API_KEY"]
+            configured = any(os.environ.get(e) for e in key_envs)
+            return self._send(200, {
+                "configured": configured,
+                "provider": provider,
+                "model": model,
+                "env_names": key_envs,
+            })
+        except Exception as e:
+            return self._send(200, {"configured": False,
+                                     "error": f"{type(e).__name__}: {e}"})
+
+    def _extract(self):
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            return self._send(400, {"error": "invalid JSON"})
+        url = (payload.get("url") or "").strip()
+        if not url:
+            return self._send(400, {"error": "url is required"})
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        ok, reason = _roe_ok(url)
+        if not ok:
+            return self._send(403, {
+                "error": "URL not in ROE scope",
+                "detail": reason,
+                "hint": ("Add the host to configs/roe.yaml -> scope.in_scope, "
+                         "then retry. sec-checker is fail-closed by design."),
+            })
+        session = payload.get("session")
+        auth_str = payload.get("auth")
+        rows = int(payload.get("rows") or 5)
+        headers, _cookies, ok = _resolve_session_headers(session, auth_str)
+        token = None
+        for k, v in headers.items():
+            if k.lower() == "authorization":
+                token = v.split(" ", 1)[1] if " " in v else v
+                break
+        from engine.data_extractor import extract_endpoint
+        row, err, kind = extract_endpoint(url, token=token, max_rows=rows)
+        if row is None:
+            return self._send(200, {"verdict": "PASS", "reason": err,
+                                     "kind": kind, "rows": []})
+        return self._send(200, {
+            "verdict": "VULNERABLE",
+            "endpoint": row.endpoint,
+            "auth_used": row.auth_used,
+            "total_rows": row.total_rows,
+            "extracted": row.extracted,
+            "rows": row.masked_json_rows() if hasattr(row, "masked_json_rows")
+                    else row.rows,
+        })
+
+    def _export(self):
+        from urllib.parse import parse_qs
+        parsed = _urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        target = (qs.get("target") or [""])[0].strip()
+        fmt = (qs.get("fmt") or ["pdf"])[0].strip().lower()
+        if fmt not in ("pdf", "html", "md", "sarif"):
+            return self._send(400, {"error": "fmt must be pdf, html, md, or sarif"})
+        if not target or target not in ledger.all_targets():
+            return self._send(404, {"error": "unknown scan target"})
+        from . import report as _report
+        try:
+            path = _report.generate(target, fmt=fmt)
+        except Exception as e:
+            return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+        import os as _os
+        ctypes = {"pdf": "application/pdf", "html": "text/html; charset=utf-8",
+                  "md": "text/markdown; charset=utf-8",
+                  "sarif": "application/json"}
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except Exception as e:
+            return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+        self.send_response(200)
+        self.send_header("Content-Type", ctypes.get(fmt, "application/octet-stream"))
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition",
+                          f'attachment; filename="{_os.path.basename(path)}"')
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except Exception:
+            pass
 
     def _stream(self, job_id):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache, no-transform")
-        self.send_header("Connection", "keep-alive")
+        self.send_header("Connection", "close")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
         q = progress.subscribe(job_id)
@@ -177,6 +344,22 @@ class _Handler(BaseHTTPRequestHandler):
                 payload = json.dumps(event, default=str)
                 try:
                     self.wfile.write(("data: " + payload + "\n\n").encode("utf-8"))
+                except Exception:
+                    break
+                from . import narrator
+                try:
+                    narration = narrator.narrate(
+                        event.get("type"), event.get("data") or {})
+                except Exception:
+                    narration = None
+                if narration:
+                    n_event = {"type": "narrator", "data": narration}
+                    np = json.dumps(n_event, default=str)
+                    try:
+                        self.wfile.write(("data: " + np + "\n\n").encode("utf-8"))
+                    except Exception:
+                        break
+                try:
                     self.wfile.flush()
                 except Exception:
                     break
@@ -190,6 +373,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "cross-origin request rejected"})
         if not _check_token(self):
             return self._send(401, {"error": "missing or invalid token"})
+        if self.path == "/api/extract":
+            return self._extract()
         if self.path != "/api/scan":
             return self._send(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length", 0))
@@ -199,6 +384,13 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "invalid JSON"})
         url = (payload.get("url") or "").strip()
         min_severity = payload.get("min_severity", "medium")
+        credentials = payload.get("credentials")
+        if not isinstance(credentials, dict):
+            credentials = None
+        ai_key = payload.get("ai_key")
+        if not isinstance(ai_key, str) or not ai_key.strip():
+            ai_key = None
+        use_brain = payload.get("use_brain", True) is not False
         if not url:
             return self._send(400, {"error": "url is required"})
         if not url.startswith(("http://", "https://")):
@@ -213,7 +405,8 @@ class _Handler(BaseHTTPRequestHandler):
         job_id = uuid.uuid4().hex[:12]
         progress.clear(job_id)
         _set(job_id, status="queued", phase="queued", url=url)
-        threading.Thread(target=_run_job, args=(job_id, url, min_severity),
+        threading.Thread(target=_run_job,
+                         args=(job_id, url, min_severity, credentials, ai_key, use_brain),
                          daemon=True).start()
         return self._send(200, {"job_id": job_id})
 
@@ -261,7 +454,7 @@ def serve(host="127.0.0.1", port=8900, require_token=None):
     return httpd
 
 
-PAGE = r"""<!doctype html>
+PAGE_CLASSIC = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -635,10 +828,15 @@ padding:16px 18px;border-radius:10px;font-size:14px}
       <div class="section-title">Live findings</div>
       <div class="findings">
         <table>
-          <thead><tr><th style="width:36%">Pattern</th><th style="width:10%">Severity</th><th style="width:12%">Verdict</th><th>Reason</th></tr></thead>
-          <tbody id="findings-body"><tr><td colspan="4" style="color:var(--muted);padding:16px 14px">Waiting for results&hellip;</td></tr></tbody>
+          <thead><tr><th style="width:30%">Pattern</th><th style="width:9%">Severity</th><th style="width:15%">Triage</th><th style="width:11%">Verdict</th><th>Reason</th></tr></thead>
+          <tbody id="findings-body"><tr><td colspan="5" style="color:var(--muted);padding:16px 14px">Waiting for results&hellip;</td></tr></tbody>
         </table>
       </div>
+    </div>
+
+    <div class="section" id="data-rows-section" style="display:none">
+      <div class="section-title">Extracted rows <span class="hint">&mdash; masked, first character visible</span></div>
+      <div id="data-rows-body"></div>
     </div>
 
     <div class="section" id="chains-section" style="display:none">
@@ -827,7 +1025,7 @@ function capDone(id, verdict, ms){
   var c = caps[id];
   if(!c){ capStart(id); c = caps[id]; }
   c.el.className = "cap " + esc(verdict || "UNKNOWN");
-  c.el.querySelector(".ct").textContent = (verdict || "") + (ms !== undefined ? " \u00b7 " + fmtMs(ms) : "");
+  c.el.querySelector(".ct").textContent = (verdict || "") + (ms !== undefined ? " · " + fmtMs(ms) : "");
 }
 
 /* ---------- data exchange feed ---------- */
@@ -850,21 +1048,29 @@ function setFramework(id, name, score){
 function setApi(url, source, ports){
   $("v-api").textContent = url;
   var sub = source || "";
-  if(ports && ports.length){ sub += "  \u00b7  " + ports.length + " port(s) live"; }
+  if(ports && ports.length){ sub += "  ·  " + ports.length + " port(s) live"; }
   $("s-api").textContent = sub;
   $("card-api").classList.add("accent");
 }
 function setJs(count, sizeKb, paths){
   $("v-js").textContent = count + " bundles";
-  $("s-js").textContent = sizeKb + " KB  \u00b7  " + paths + " paths found";
+  $("s-js").textContent = sizeKb + " KB  ·  " + paths + " paths found";
   $("card-js").classList.add("accent");
 }
 function setLogin(ok, url, tokenPreview){
   $("v-login").textContent = ok ? "OK" : "not authenticated";
   var sub = url || "";
-  if(tokenPreview) sub += "  \u00b7  " + tokenPreview;
+  if(tokenPreview) sub += "  ·  " + tokenPreview;
   $("s-login").textContent = sub;
   $("card-login").classList.add(ok ? "ok" : "warn");
+}
+
+function triageCell(f){
+  if(!f || !f.triage_category) return "—";
+  var cat = esc(f.triage_category);
+  var conf = f.triage_confidence ? ' <span style="opacity:.55;font-size:11px">' + esc(f.triage_confidence) + '</span>' : "";
+  if(f.triage_by_design) cat += ' <span style="opacity:.6;font-size:11px">(by-design)</span>';
+  return cat + conf;
 }
 
 function addFinding(d){
@@ -878,6 +1084,7 @@ function addFinding(d){
   tr.innerHTML =
     "<td>" + esc(d.id) + "</td>" +
     '<td class="sev-' + esc(d.severity) + '">' + esc(d.severity) + "</td>" +
+    "<td>" + triageCell(d) + "</td>" +
     '<td><span class="badge ' + esc(d.verdict) + '">' + esc(d.verdict) + "</span></td>" +
     "<td>" + esc((d.reason||"").slice(0,220)) + "</td>";
   findingsBody.insertBefore(tr, findingsBody.firstChild);
@@ -887,11 +1094,11 @@ function setProgress(done, total){
   var pct = total > 0 ? (done / total) * 100 : 0;
   pFill.style.width = pct.toFixed(1) + "%";
   pCount.textContent = done + " / " + total;
-  pLabel.textContent = done < total ? "scanning\u2026" : "complete";
+  pLabel.textContent = done < total ? "scanning…" : "complete";
   if(done >= total) pFill.classList.add("done");
 }
 
-function showSummary(counts, reportPath){
+function showSummary(counts, reportTarget){
   var c = counts || {};
   var cards = [
     ["Vulnerable", c.VULNERABLE || 0, "crit"],
@@ -903,9 +1110,11 @@ function showSummary(counts, reportPath){
     return '<div class="summary-card ' + row[2] + '"><div class="n">' + row[1] + '</div><div class="l">' + esc(row[0]) + '</div></div>';
   }).join("");
   var extra = "";
-  if(reportPath){
-    var fileUrl = "file:///" + String(reportPath).replace(/\\/g, "/");
-    extra += '<a class="report-link" href="' + esc(fileUrl) + '" target="_blank">Open HTML report \u2192</a>';
+  if(reportTarget){
+    var base = "/api/export?target=" + encodeURIComponent(reportTarget) + "&fmt=";
+    extra += "No report is generated automatically — export one if you want it:";
+    extra += ' <a class="report-link" href="' + base + 'pdf" target="_blank">Export PDF</a>';
+    extra += ' <a class="report-link" href="' + base + 'html" target="_blank">Export HTML</a>';
   }
   $("summary-extra").innerHTML = extra;
   $("summary-section").style.display = "block";
@@ -940,6 +1149,45 @@ function renderResult(result){
       cov.total_count + ' capabilities executed</div>' + rows + untested;
     $("coverage-section").style.display = "block";
   }
+  var dRows = result.data_rows || [];
+  if(dRows.length){
+    var dHtml = dRows.map(function(dr){
+      var rows = dr.rows || [];
+      var rowBlocks = rows.map(function(r){
+        var cells = Object.keys(r).map(function(k){
+          return '<tr><td class="k" style="padding:5px 10px;color:var(--muted);font-family:var(--mono);width:32%">' +
+            esc(k) + '</td><td style="padding:5px 10px;font-family:var(--mono);word-break:break-all">' +
+            esc(r[k]) + '</td></tr>';
+        }).join("");
+        return '<table style="width:100%;border-collapse:collapse;background:var(--panel2);border-radius:6px;margin:6px 0">' + cells + '</table>';
+      }).join("");
+      var authCls = String(dr.auth_used || "").indexOf("unauth") === 0 ? "unauth" : "auth";
+      var authBg = authCls === "unauth" ? "var(--crit)" : "var(--accent)";
+      return '<div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:10px 0">' +
+        '<div style="color:var(--accent2);font-family:var(--mono);font-size:12px;margin-bottom:8px">' +
+        esc(dr.endpoint) +
+        ' <span style="display:inline-block;padding:1px 8px;border-radius:10px;background:' + authBg + ';color:#fff;font-size:10px;margin-left:8px;text-transform:uppercase">' +
+        esc(dr.auth_used || "unknown") + '</span>' +
+        ' <span style="color:var(--muted)">&middot; ' + (dr.extracted || 0) + ' of ' + (dr.total_rows || 0) + ' row(s)</span></div>' +
+        rowBlocks + '</div>';
+    }).join("");
+    $("data-rows-body").innerHTML = dHtml;
+    $("data-rows-section").style.display = "block";
+  }
+  var ff = (result.findings || []).filter(function(f){
+    return f.verdict === "VULNERABLE" || f.verdict === "SUSPICIOUS";
+  });
+  if(ff.length){
+    findingsBody.innerHTML = ff.map(function(f){
+      return '<tr>' +
+        '<td>' + esc(f.pattern_id || f.id) + '</td>' +
+        '<td class="sev-' + esc(f.severity) + '">' + esc(f.severity) + '</td>' +
+        '<td>' + triageCell(f) + '</td>' +
+        '<td><span class="badge ' + esc(f.verdict) + '">' + esc(f.verdict) + '</span></td>' +
+        '<td>' + esc((f.reason||"").slice(0,220)) + '</td>' +
+      '</tr>';
+    }).join("");
+  }
   var whys = (result.findings || []).filter(function(f){
     return f.why && (f.verdict === "VULNERABLE" || f.verdict === "SUSPICIOUS");
   });
@@ -966,7 +1214,7 @@ function handleEvent(ev){
       break;
     case "phase":
       setPhase(d.name, d.status);
-      log("Phase: " + d.name + " \u2192 " + d.status, d.status === "failed" ? "err" : "dim");
+      log("Phase: " + d.name + " → " + d.status, d.status === "failed" ? "err" : "dim");
       break;
     case "activity":
       log(d.message + (d.n ? "  (" + d.i + "/" + d.n + ")" : ""), "dim");
@@ -991,7 +1239,7 @@ function handleEvent(ev){
       log("API base: " + d.url + "  [" + d.source + "]", "ok");
       break;
     case "js_start":
-      log("Extracting " + d.count + " script sources\u2026", "info");
+      log("Extracting " + d.count + " script sources…", "info");
       break;
     case "js_done":
       setJs(d.count, d.size_kb, d.paths);
@@ -1015,30 +1263,28 @@ function handleEvent(ev){
       break;
     case "pattern_done":
       capDone(d.id, d.verdict, d.duration_ms);
-      log("\u2192 " + d.id + " \u2192 " + d.verdict + "  (" + fmtMs(d.duration_ms) + ")", d.verdict === "PASS" ? "dim" : "warn");
+      log("→ " + d.id + " → " + d.verdict + "  (" + fmtMs(d.duration_ms) + ")", d.verdict === "PASS" ? "dim" : "warn");
       if(d.verdict !== "PASS" && d.verdict !== "UNKNOWN") addFinding(d);
       break;
     case "progress":
       setProgress(d.done, d.total);
       break;
     case "worker_error":
-      log("Worker error: " + d.id + " \u2014 " + d.message, "err");
+      log("Worker error: " + d.id + " — " + d.message, "err");
       break;
     case "summary":
       feed("scan", 'result <span class="mono">' + esc(JSON.stringify(d.counts)) + '</span>');
       log("Summary: " + JSON.stringify(d.counts), "accent");
-      break;
-    case "report":
-      setEdgeData("report", "saved");
-      feed("report", 'report saved <span class="mono">' + esc(d.path) + '</span>');
-      log("Report: " + d.path, "ok");
       break;
     case "done":
       setStatus("done", "done");
       runningPhase = null;
       stopTicker();
       log("Scan complete.", "ok");
-      showSummary(d.counts, d.report);
+      if(findingsBody.querySelector('td[colspan]')){
+        findingsBody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);padding:16px 14px">Scan complete — no vulnerable or suspicious findings.</td></tr>';
+      }
+      showSummary(d.counts, d.report_target);
       if(currentJob){
         fetch("/api/job/" + currentJob).then(function(r){return r.json();}).then(function(job){
           if(job && job.result) renderResult(job.result);
@@ -1066,13 +1312,13 @@ form.addEventListener("submit", async function(e){
 
   // reset state
   findingsSeen.clear();
-  caps = {}; cloudHasCaps = false; cloudEl.innerHTML = '<span class="empty">Naghihintay ng tools\u2026</span>';
-  feedHasRows = false; feedEl.innerHTML = '<div class="empty">Wala pang data na naipapasa\u2026</div>';
+  caps = {}; cloudHasCaps = false; cloudEl.innerHTML = '<span class="empty">Naghihintay ng tools…</span>';
+  feedHasRows = false; feedEl.innerHTML = '<div class="empty">Wala pang data na naipapasa…</div>';
   consoleEl.innerHTML = "";
-  ["chains-section","coverage-section","why-section","summary-section"].forEach(function(id){
+  ["chains-section","coverage-section","why-section","summary-section","data-rows-section"].forEach(function(id){
     var el = $(id); if(el) el.style.display = "none";
   });
-  findingsBody.innerHTML = '<tr><td colspan="4" style="color:var(--muted);padding:16px 14px">Waiting for results\u2026</td></tr>';
+  findingsBody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);padding:16px 14px">Waiting for results…</td></tr>';
   pFill.style.width = "0%"; pFill.classList.remove("done");
   pCount.textContent = "0 / 0"; pLabel.textContent = "waiting";
   ["framework","api","js","login"].forEach(function(k){
@@ -1138,3 +1384,880 @@ form.addEventListener("submit", async function(e){
 </body>
 </html>
 """
+
+PAGE = r'''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sec-checker · live scan</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg:#efefec; --bg-s:#ffffff; --bg-s2:#f6f6f3;
+  --ph:#141414; --ph-hi:#000000; --ph-dim:#8b8b86; --ph-dimmer:#d9d9d4;
+  --ph-line:#e6e6e1;
+  --amber:#d98a00; --red:#e5484d; --green:#2f9e5f;
+  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  background: var(--bg); color: var(--ph); font-family: var(--sans);
+  font-size: 13px; display: grid;
+  grid-template-rows: 52px 1fr 90px; height: 100vh;
+}
+header {
+  display: flex; align-items: center; padding: 0 22px;
+  background: var(--bg-s); border-bottom: 1px solid var(--ph-line);
+  font-family: var(--mono); font-size: 11.5px; gap: 14px;
+}
+.brand { color: var(--ph-hi); letter-spacing: 0.09em; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.brand::before { content: ""; width: 6px; height: 6px; background: var(--ph-hi); }
+.sep { color: var(--ph-dimmer); }
+.target { color: var(--ph); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.spacer { flex: 1; }
+.stat { color: var(--ph-dim); font-variant-numeric: tabular-nums; }
+.stat b { color: var(--ph); font-weight: 600; }
+.stat.v b { color: var(--red); }
+.stat.s b { color: var(--amber); }
+.stat.p b { color: var(--green); }
+.status { display: flex; align-items: center; gap: 7px; color: var(--ph-dim); text-transform: uppercase; letter-spacing: 0.14em; font-size: 10.5px; font-weight: 600; }
+.status::before { content: ""; width: 5px; height: 5px; background: var(--ph-dimmer); border-radius: 50%; }
+.status.running::before { background: var(--ph); animation: blink 1.3s ease-in-out infinite; }
+.status.done::before { background: var(--green); }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+.btn { background: var(--bg-s); border: 1px solid var(--ph-line); color: #4a4a46; padding: 5px 12px; border-radius: 999px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; font-weight: 600; }
+.btn:hover { border-color: var(--ph); color: var(--ph-hi); }
+.main { display: grid; grid-template-columns: 1fr 460px; min-height: 0; }
+.canvas-wrap { position: relative; overflow: hidden; }
+.canvas-wrap::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(circle, var(--ph-dimmer) 0.8px, transparent 0.8px); background-size: 22px 22px; opacity: 0.35; pointer-events: none; }
+svg.exec { position: relative; display: block; width: 100%; height: 100%; }
+.node rect { fill: var(--bg-s); stroke: var(--ph-line); stroke-width: 1; transition: all 240ms; }
+.node text { font-family: var(--mono); font-size: 11px; fill: var(--ph); dominant-baseline: middle; user-select: none; transition: fill 240ms; }
+.node .label { font-size: 11px; font-weight: 600; }
+.node .meta { font-size: 9px; fill: var(--ph-dim); font-weight: 500; }
+.node.terminal .label { font-size: 10px; letter-spacing: 0.14em; font-weight: 700; }
+.node.pending rect { stroke-dasharray: 3 4; opacity: 0.85; }
+.node.pending .label { fill: var(--ph-dim); }
+.node.active rect { stroke: var(--ph-hi); stroke-width: 1.6; animation: pulseActive 1.15s ease-in-out infinite; }
+.node.active .label { fill: var(--ph-hi); }
+@keyframes pulseActive { 0%,100% { stroke-opacity: 1 } 50% { stroke-opacity: 0.55 } }
+.node.done-pass rect { stroke: var(--green); fill: #f3faf4; }
+.node.done-pass .label { fill: #1e6b3e; }
+.node.done-pass .meta { fill: #3c8c5c; }
+.node.done-susp rect { stroke: var(--amber); fill: #fdf8ef; }
+.node.done-susp .label { fill: #8a5a05; }
+.node.done-susp .meta { fill: #b07514; }
+.node.done-vuln rect { stroke: var(--red); fill: #fdf0f0; }
+.node.done-vuln .label { fill: #a82226; }
+.node.done-vuln .meta { fill: var(--red); }
+.node.skipped rect { stroke-dasharray: 3 4; stroke: var(--ph-dimmer); fill: var(--bg-s2); opacity: 0.75; }
+.node.skipped .label { fill: var(--ph-dim); }
+.edge { fill: none; stroke: var(--ph-dimmer); stroke-width: 1; transition: stroke 260ms; }
+.edge.pending { stroke-dasharray: 3 5; }
+.edge.active { stroke: var(--ph); stroke-width: 1.4; stroke-dasharray: 6 4; animation: dash 0.55s linear infinite; }
+.edge.done { stroke: var(--ph-dim); stroke-dasharray: none; }
+.edge.done-vuln { stroke: var(--red); stroke-width: 1.6; stroke-dasharray: none; }
+.edge.done-susp { stroke: var(--amber); stroke-width: 1.4; stroke-dasharray: none; }
+.edge.done-pass { stroke: var(--green); stroke-dasharray: none; }
+@keyframes dash { to { stroke-dashoffset: -10; } }
+.edge-label { font-family: var(--mono); font-size: 9px; fill: var(--ph-dim); font-weight: 500; user-select: none; }
+.edge-label.active { fill: var(--ph); font-weight: 600; }
+.edge-label.vuln { fill: var(--red); font-weight: 600; }
+.edge-label.susp { fill: var(--amber); font-weight: 600; }
+.packet { fill: var(--ph); pointer-events: none; }
+.packet.vuln { fill: var(--red); }
+.packet.susp { fill: var(--amber); }
+.packet.pass { fill: var(--green); }
+.panel { background: var(--bg-s); border-left: 1px solid var(--ph-line); display: grid; grid-template-rows: 1fr 220px; min-height: 0; overflow: hidden; }
+.narrator { display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--ph-line); }
+.narrator-hd { display: flex; align-items: center; gap: 10px; padding: 12px 20px; background: var(--bg-s2); border-bottom: 1px solid var(--ph-line); }
+.avatar { width: 26px; height: 26px; border-radius: 50%; background: var(--ph-hi); color: #fff; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 12px; font-weight: 700; }
+.avatar.running { animation: pulseAvatar 1.6s ease-in-out infinite; }
+@keyframes pulseAvatar { 0%,100% { box-shadow: 0 0 0 0 rgba(20,20,20,.15) } 50% { box-shadow: 0 0 0 8px rgba(20,20,20,0) } }
+.narrator-hd .who { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--ph-hi); letter-spacing: 0.04em; }
+.narrator-hd .state { font-family: var(--mono); font-size: 10px; color: var(--ph-dim); margin-left: auto; font-weight: 500; }
+.narrator-hd .state::before { content: "\00b7 "; color: var(--ph-dimmer); }
+.transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 20px; scroll-behavior: smooth; }
+.transcript::-webkit-scrollbar { width: 6px; }
+.transcript::-webkit-scrollbar-thumb { background: var(--ph-dimmer); border-radius: 999px; }
+.n-msg { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 12px 0; opacity: 0; animation: nIn 320ms cubic-bezier(.2,.9,.3,1) forwards; }
+@keyframes nIn { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: translateY(0) } }
+.n-msg + .n-msg { border-top: 1px solid var(--ph-line); }
+.n-prefix { width: 22px; height: 22px; border-radius: 50%; background: var(--bg-s2); border: 1px solid var(--ph-line); color: var(--ph-dim); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 11px; font-weight: 700; }
+.n-body { min-width: 0; padding-top: 1px; }
+.n-text { font-size: 13px; line-height: 1.65; color: var(--ph); word-wrap: break-word; }
+.n-text b { font-weight: 600; color: var(--ph-hi); }
+.n-text code { font-family: var(--mono); font-size: 11.5px; background: var(--bg-s2); padding: 1px 5px; border-radius: 4px; color: #0e0e0e; }
+.n-detail { margin-top: 10px; background: var(--bg-s2); border-radius: 10px; padding: 10px 12px; font-family: var(--mono); font-size: 10.5px; line-height: 1.6; color: #4a4a46; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow-y: auto; border: 1px solid var(--ph-line); }
+.n-msg.pass .n-prefix { background: var(--green); border-color: var(--green); color: #fff; }
+.n-msg.pass .n-text { color: #1e6b3e; }
+.n-msg.susp .n-prefix { background: var(--amber); border-color: var(--amber); color: #fff; }
+.n-msg.susp .n-text { color: #8a5a05; }
+.n-msg.vuln .n-prefix { background: var(--red); border-color: var(--red); color: #fff; }
+.n-msg.vuln .n-text { color: #7a181b; font-weight: 500; }
+.n-msg.vuln .n-detail { background: #fdf0f0; border-color: #fbd4d5; color: #7a181b; }
+.n-msg.summary { grid-template-columns: 1fr; background: var(--ph-hi); color: #fff; border-radius: 16px; padding: 20px; margin: 14px 0 6px; border-top: none; }
+.n-msg.summary .n-prefix { display: none; }
+.n-msg.summary .n-text { color: #fff; font-size: 13.5px; line-height: 1.75; }
+.n-msg.summary .n-text b { color: #fff; }
+.n-msg.summary .n-text code { background: rgba(255,255,255,0.14); color: #fff; }
+.n-msg.summary .n-title { font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(255,255,255,0.6); font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.n-msg.summary .n-title::before { content: ""; width: 6px; height: 6px; background: #fff; border-radius: 50%; }
+.n-msg.summary .n-list { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 10px; }
+.n-msg.summary .n-list li { padding: 10px 12px; background: rgba(255,255,255,0.06); border-left: 3px solid rgba(255,255,255,0.35); border-radius: 10px; font-size: 12.5px; line-height: 1.6; color: rgba(255,255,255,0.88); }
+.n-msg.summary .n-list li b { color: #fff; }
+.n-msg.summary .n-list li.danger { background: rgba(229,72,77,0.18); border-left-color: var(--red); }
+.findings-pane { display: flex; flex-direction: column; min-height: 0; }
+.findings-hd { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: var(--bg-s2); border-bottom: 1px solid var(--ph-line); font-family: var(--mono); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ph-dim); }
+.findings-hd .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); }
+.findings-hd .count { margin-left: auto; background: var(--bg-s); border: 1px solid var(--ph-line); border-radius: 999px; padding: 1px 8px; font-size: 9.5px; color: var(--ph); }
+.findings-hd .count.has { background: var(--red); color: #fff; border-color: var(--red); }
+.findings-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.findings-body::-webkit-scrollbar { width: 5px; }
+.findings-body::-webkit-scrollbar-thumb { background: var(--ph-dimmer); border-radius: 999px; }
+.findings-empty { color: var(--ph-dim); font-size: 11px; font-family: var(--mono); padding: 20px 6px; line-height: 1.7; text-align: center; }
+.fcard { border: 1px solid var(--ph-line); border-left: 3px solid var(--ph-dim); border-radius: 10px; padding: 9px 12px; background: var(--bg-s); font-family: var(--mono); font-size: 10.5px; animation: cardIn 340ms cubic-bezier(.2,.9,.3,1); line-height: 1.5; }
+.fcard.vuln { border-left-color: var(--red); background: #fffafa; }
+.fcard.susp { border-left-color: var(--amber); background: #fffdf7; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(-6px) } to { opacity: 1; transform: translateY(0) } }
+.fcard .fh { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; color: var(--ph-dim); font-size: 9px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+.fcard .fh .tag { padding: 1px 6px; border-radius: 999px; font-size: 8.5px; font-weight: 700; }
+.fcard.vuln .fh .tag { background: var(--red); color: #fff; }
+.fcard.susp .fh .tag { background: var(--amber); color: #fff; }
+.fcard .fn { font-family: var(--sans); font-size: 12.5px; font-weight: 600; color: var(--ph-hi); margin-bottom: 4px; }
+.fcard .fp { color: #4a4a46; font-size: 10px; word-break: break-all; }
+.ep-badge { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 9px; font-weight: 700; font-family: var(--mono); background: var(--ph-dim); color: #fff; vertical-align: middle; }
+.ep-badge.ep-ok { background: var(--green); }
+.ep-badge.ep-warn { background: var(--amber); }
+.ep-badge.ep-dim { background: var(--ph-dim); opacity: .75; }
+.ep-badge.ep-bad { background: var(--red); }
+.log-ribbon { background: var(--bg-s); border-top: 1px solid var(--ph-line); font-family: var(--mono); font-size: 11px; padding: 10px 22px; display: flex; flex-direction: column; gap: 2px; overflow: hidden; line-height: 1.55; }
+.log-line { display: flex; gap: 12px; color: var(--ph-dim); white-space: nowrap; opacity: 0; animation: logIn 240ms ease forwards; }
+.log-line .t { color: var(--ph-dim); }
+.log-line .src { color: var(--ph-dim); min-width: 100px; font-weight: 600; }
+.log-line .msg { color: var(--ph); overflow: hidden; text-overflow: ellipsis; }
+.log-line.pass .msg { color: var(--green); }
+.log-line.vuln .msg { color: var(--red); font-weight: 600; }
+.log-line.susp .msg { color: var(--amber); }
+.log-line.hi .msg { color: var(--ph-hi); font-weight: 600; }
+@keyframes logIn { from { opacity: 0; transform: translateY(3px) } to { opacity: 1; transform: translateY(0) } }
+.overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(239,239,236,0.94); backdrop-filter: blur(8px); z-index: 10; transition: opacity 400ms; }
+.overlay.hidden { opacity: 0; pointer-events: none; }
+.overlay-inner { width: min(520px, 88%); background: var(--bg-s); border: 1px solid var(--ph-line); border-radius: 30px; padding: 36px 34px 30px; box-shadow: 0 34px 70px rgba(17,17,17,.13); }
+.overlay-inner h1 { margin: 0 0 10px; font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ph-hi); letter-spacing: 0.14em; text-transform: uppercase; }
+.overlay-inner h1::before { content: "> "; color: var(--ph-dimmer); }
+.overlay-inner p { margin: 0 0 24px; color: var(--ph-dim); font-size: 12.5px; line-height: 1.75; }
+.input-row { display: flex; background: var(--bg-s2); border: 1px solid var(--ph-line); border-radius: 999px; padding: 5px 5px 5px 20px; }
+.input-row:focus-within { border-color: var(--ph); box-shadow: 0 0 0 4px rgba(20,20,20,.05); }
+.input-row input { flex: 1; background: transparent; border: none; outline: none; padding: 9px 0; color: var(--ph); font-family: var(--mono); font-size: 13px; }
+.input-row input::placeholder { color: var(--ph-dimmer); }
+.input-row button { background: var(--ph-hi); border: none; padding: 0 22px; border-radius: 999px; color: #fff; font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; cursor: pointer; font-weight: 700; }
+.input-row button:hover { background: #2b2b2b; }
+@media (max-width: 1000px) {
+  header { padding: 0 14px; gap: 10px; font-size: 10.5px; }
+  .stat.maybe-hide { display: none; }
+  .main { grid-template-columns: 1fr; }
+  .panel { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">sec-checker</div>
+  <div class="sep">/</div>
+  <div class="target" id="hTarget">—</div>
+  <div class="spacer"></div>
+  <div class="stat maybe-hide" id="hCounts">V <b>0</b> · S <b>0</b> · P <b>0</b> · U <b>0</b></div>
+  <div class="stat" id="hElapsed">00:00.0</div>
+  <div class="status" id="hStatus">idle</div>
+  <button class="btn" id="resetBtn">reset</button>
+</header>
+<div class="main">
+  <div class="canvas-wrap">
+    <svg class="exec" id="exec" viewBox="0 0 900 640" preserveAspectRatio="xMidYMid meet">
+      <g id="edges"></g>
+      <g id="packets"></g>
+      <g id="nodes"></g>
+    </svg>
+    <div class="overlay" id="overlay">
+      <div class="overlay-inner">
+        <h1>scan a target</h1>
+        <p>Enter a URL. I will walk you through every step — what I found, what I tried, and why — in plain language.</p>
+        <div class="input-row">
+          <input id="url" type="text" placeholder="https://target" value="https://shop.demo.local" spellcheck="false" autocomplete="off">
+          <button id="startBtn">Analyze →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <aside class="panel">
+    <div class="narrator">
+      <div class="narrator-hd">
+        <div class="avatar" id="avatar">S</div>
+        <div class="who">sec-checker</div>
+        <div class="state" id="narratorState">idle</div>
+      </div>
+      <div class="transcript" id="transcript">
+        <div class="n-msg obs">
+          <div class="n-prefix">·</div>
+          <div class="n-body"><div class="n-text">Waiting for you to start a scan. I will explain everything as it happens.</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="findings-pane">
+      <div class="findings-hd">
+        <span class="dot"></span>
+        <span>findings</span>
+        <span class="count" id="findingsCount">0</span>
+      </div>
+      <div class="findings-body" id="findingsBody">
+        <div class="findings-empty">nothing found yet</div>
+      </div>
+    </div>
+  </aside>
+</div>
+<div class="log-ribbon" id="logRibbon"></div>
+<script>
+(function () {
+  'use strict';
+  var NS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs) {
+    var e = document.createElementNS(NS, tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+    });
+  }
+  var edgesG = document.getElementById('edges');
+  var packetsG = document.getElementById('packets');
+  var nodesG = document.getElementById('nodes');
+  var nodeEls = {};
+  var nodeMetaEls = {};
+  var edgeEls = {};
+  var edgeLabelEls = {};
+  var MAIN = [
+    { id: 'start', label: 'START', x: 30, y: 30, w: 62, h: 42, kind: 'terminal' },
+    { id: 'preflight', label: 'PREFLIGHT', x: 112, y: 20, w: 100, h: 62, kind: 'phase' },
+    { id: 'fp', label: 'FINGERPRINT', x: 232, y: 20, w: 110, h: 62, kind: 'phase' },
+    { id: 'disc', label: 'DISCOVERY', x: 362, y: 20, w: 100, h: 62, kind: 'phase' },
+    { id: 'login', label: 'LOGIN', x: 482, y: 20, w: 90, h: 62, kind: 'phase' },
+    { id: 'propose', label: 'PROPOSE', x: 592, y: 20, w: 100, h: 62, kind: 'phase' },
+    { id: 'report', label: 'REPORT', x: 782, y: 20, w: 100, h: 62, kind: 'terminal' }
+  ];
+  var CHAIN = [
+    { id: 'jwt', label: 'jwt-chain', y: 160, edge: 'has_jwt' },
+    { id: 'gql', label: 'graphql-chain', y: 232, edge: 'has_graphql' },
+    { id: 'ssrf', label: 'ssrf-chain', y: 304, edge: 'has_ssrf_hint' },
+    { id: 'biz', label: 'bizlogic-chain', y: 376, edge: 'has_ecommerce' },
+    { id: 'race', label: 'race-chain', y: 448, edge: 'has_cart' }
+  ];
+  for (var i = 0; i < CHAIN.length; i++) {
+    CHAIN[i].x = 300;
+    CHAIN[i].w = 180;
+    CHAIN[i].h = 46;
+  }
+  var SPINE = [];
+  for (var s = 0; s < MAIN.length - 1; s++) {
+    SPINE.push({ id: 'e-spine-' + s, from: MAIN[s].id, to: MAIN[s + 1].id });
+  }
+  var FAN = CHAIN.map(function (c) {
+    return { id: 'e-fan-' + c.id, from: 'propose', to: 'chain-' + c.id, label: c.edge };
+  });
+  var RETURN = CHAIN.map(function (c) {
+    return { id: 'e-ret-' + c.id, from: 'chain-' + c.id, to: 'report' };
+  });
+  function getBox(id) {
+    var n = null;
+    for (var k = 0; k < MAIN.length; k++) if (MAIN[k].id === id) n = MAIN[k];
+    for (var c = 0; c < CHAIN.length; c++) {
+      if (CHAIN[c].id === 'chain-' + CHAIN[c].id) continue;
+      if (('chain-' + CHAIN[c].id) === id) {
+        n = { x: CHAIN[c].x, y: CHAIN[c].y, w: CHAIN[c].w, h: CHAIN[c].h };
+      }
+    }
+    return n;
+  }
+  function spinePath(e) {
+    var f = getBox(e.from), t = getBox(e.to);
+    var p1 = { x: f.x + f.w, y: f.y + f.h / 2 };
+    var p2 = { x: t.x, y: t.y + t.h / 2 };
+    var c = Math.max(30, (p2.x - p1.x) * 0.45);
+    return 'M ' + p1.x + ' ' + p1.y + ' C ' + (p1.x + c) + ' ' + p1.y + ', ' + (p2.x - c) + ' ' + p2.y + ', ' + p2.x + ' ' + p2.y;
+  }
+  function fanPath(e) {
+    var f = getBox(e.from), t = getBox(e.to);
+    var p1 = { x: f.x + f.w / 2, y: f.y + f.h };
+    var p2 = { x: t.x + t.w / 2, y: t.y };
+    var my = (p1.y + p2.y) / 2;
+    return 'M ' + p1.x + ' ' + p1.y + ' C ' + p1.x + ' ' + my + ', ' + p2.x + ' ' + my + ', ' + p2.x + ' ' + p2.y;
+  }
+  function retPath(e) {
+    var f = getBox(e.from), t = getBox(e.to);
+    var p1 = { x: f.x + f.w, y: f.y + f.h / 2 };
+    var p2 = { x: t.x, y: t.y + t.h - 4 };
+    var c = (p2.x - p1.x) * 0.5;
+    return 'M ' + p1.x + ' ' + p1.y + ' C ' + (p1.x + c) + ' ' + p1.y + ', ' + (p2.x - c) + ' ' + p2.y + ', ' + p2.x + ' ' + p2.y;
+  }
+  function mid(e, kind) {
+    var f = getBox(e.from), t = getBox(e.to);
+    if (kind === 'fan') {
+      return { x: (f.x + f.w / 2 + t.x + t.w / 2) / 2 + 30, y: (f.y + f.h + t.y) / 2 };
+    }
+    return { x: (f.x + f.w + t.x) / 2, y: (f.y + f.h / 2 + t.y + t.h / 2) / 2 - 8 };
+  }
+  function drawNode(box, kind, extra) {
+    var g = el('g', { class: 'node pending ' + kind });
+    g.appendChild(el('rect', { x: box.x, y: box.y, width: box.w, height: box.h, rx: 8 }));
+    var ly = box.y + box.h / 2 - (extra !== undefined ? 6 : 0);
+    var l = el('text', { x: box.x + box.w / 2, y: ly, class: 'label', 'text-anchor': 'middle' });
+    l.textContent = box.label;
+    g.appendChild(l);
+    if (extra !== undefined) {
+      var m = el('text', { x: box.x + box.w / 2, y: box.y + box.h / 2 + 8, class: 'meta', 'text-anchor': 'middle' });
+      m.textContent = extra;
+      g.appendChild(m);
+      nodeMetaEls[box.id] = m;
+    }
+    nodesG.appendChild(g);
+    nodeEls[box.id] = g;
+  }
+  MAIN.forEach(function (n) { n.id = n.id; drawNode(n, n.kind, undefined); });
+  CHAIN.forEach(function (c) {
+    var box = { id: 'chain-' + c.id, label: c.label, x: c.x, y: c.y, w: c.w, h: c.h };
+    drawNode(box, 'phase', '· idle');
+  });
+  SPINE.forEach(function (e) {
+    var p = el('path', { class: 'edge pending', d: spinePath(e) });
+    edgesG.appendChild(p);
+    edgeEls[e.id] = p;
+  });
+  FAN.forEach(function (e) {
+    var p = el('path', { class: 'edge pending', d: fanPath(e) });
+    edgesG.appendChild(p);
+    edgeEls[e.id] = p;
+    var m = mid(e, 'fan');
+    var lbl = el('text', { x: m.x, y: m.y, class: 'edge-label', 'text-anchor': 'start' });
+    lbl.textContent = e.label;
+    edgesG.appendChild(lbl);
+    edgeLabelEls[e.id] = lbl;
+  });
+  RETURN.forEach(function (e) {
+    var p = el('path', { class: 'edge pending', d: retPath(e) });
+    edgesG.appendChild(p);
+    edgeEls[e.id] = p;
+  });
+  function setNode(id, state, meta) {
+    var g = nodeEls[id];
+    if (!g) return;
+    g.classList.remove('pending','active','done','done-pass','done-susp','done-vuln','skipped');
+    g.classList.add(state);
+    if (meta !== undefined && nodeMetaEls[id]) nodeMetaEls[id].textContent = meta || '';
+  }
+  function setEdge(id, state) {
+    var p = edgeEls[id];
+    if (!p) return;
+    p.classList.remove('pending','active','done','done-vuln','done-susp','done-pass');
+    p.classList.add(state);
+    var lbl = edgeLabelEls[id];
+    if (lbl) {
+      lbl.classList.remove('active','vuln','susp');
+      if (state === 'active') lbl.classList.add('active');
+      if (state === 'done-vuln') lbl.classList.add('vuln');
+      if (state === 'done-susp') lbl.classList.add('susp');
+    }
+  }
+  function firePacket(edgeId, cls, dur) {
+    var p = edgeEls[edgeId];
+    if (!p) return;
+    var len = p.getTotalLength();
+    if (!len) return;
+    var d = el('circle', { r: 3, class: 'packet' + (cls ? ' ' + cls : '') });
+    packetsG.appendChild(d);
+    var t0 = performance.now();
+    var duration = dur || 560;
+    (function step(now) {
+      var t = Math.min(1, (now - t0) / duration);
+      var e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      var pt = p.getPointAtLength(e * len);
+      d.setAttribute('cx', pt.x);
+      d.setAttribute('cy', pt.y);
+      d.setAttribute('opacity', t < 0.85 ? 1 : (1 - t) * 6.6);
+      if (t < 1) requestAnimationFrame(step);
+      else d.remove();
+    })(performance.now());
+  }
+  var ribbon = document.getElementById('logRibbon');
+  var logLines = [];
+  function log(src, msg, cls) {
+    var t = new Date().toTimeString().slice(0, 8);
+    logLines.push({ t: t, src: src, msg: msg, cls: cls || '' });
+    while (logLines.length > 4) logLines.shift();
+    ribbon.innerHTML = logLines.map(function (l) {
+      return '<div class="log-line ' + l.cls + '"><span class="t">' + l.t + '</span><span class="src">' + esc(l.src) + '</span><span class="msg">' + esc(l.msg) + '</span></div>';
+    }).join('');
+  }
+  var transcript = document.getElementById('transcript');
+  var narratorState = document.getElementById('narratorState');
+  var avatar = document.getElementById('avatar');
+  var ICONS = { obs: '·', action: '▸', pass: '✓', susp: '?', vuln: '✗' };
+  function narrate(text, opts) {
+    opts = opts || {};
+    var type = opts.type || 'obs';
+    var node = document.createElement('div');
+    node.className = 'n-msg ' + type;
+    var icon = ICONS[type] || '·';
+    var html = '<div class="n-prefix">' + icon + '</div>' +
+               '<div class="n-body"><div class="n-text">' + text + '</div>';
+    if (opts.detail) {
+      html += '<div class="n-detail">' + esc(opts.detail) + '</div>';
+    }
+    html += '</div>';
+    node.innerHTML = html;
+    transcript.appendChild(node);
+    transcript.scrollTop = transcript.scrollHeight;
+    while (transcript.childNodes.length > 200) transcript.removeChild(transcript.firstChild);
+  }
+  function narrateSummary(s) {
+    var bullets = (s.bullets || []).map(function (b) {
+      return '<li class="' + esc(b.class || '') + '">' + b.html + '</li>';
+    }).join('');
+    var node = document.createElement('div');
+    node.className = 'n-msg summary';
+    var exportHtml = '';
+    if (s.target) {
+      var base = '/api/export?target=' + encodeURIComponent(s.target) + '&fmt=';
+      exportHtml = '<div class="n-text" style="margin-top:12px;font-size:12.5px">' +
+        'No report is saved automatically — export one if you want it: ' +
+        '<a href="' + base + 'pdf" target="_blank" style="color:#79c0ff">Export PDF</a>' +
+        ' &middot; <a href="' + base + 'html" target="_blank" style="color:#79c0ff">Export HTML</a></div>';
+    }
+    node.innerHTML = '<div class="n-title">summary · ' + esc(s.target || 'target') + '</div>' +
+      '<div class="n-text">Here is what I found.</div>' +
+      (bullets ? '<ul class="n-list">' + bullets + '</ul>' : '') +
+      (s.closing ? '<div class="n-text" style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.85);font-size:12.5px">' + s.closing + '</div>' : '') +
+      exportHtml;
+    transcript.appendChild(node);
+    transcript.scrollTop = transcript.scrollHeight;
+  }
+  function clearTranscript() {
+    transcript.innerHTML = '';
+    var n = document.createElement('div');
+    n.className = 'n-msg obs';
+    n.innerHTML = '<div class="n-prefix">·</div><div class="n-body"><div class="n-text">Starting a scan…</div></div>';
+    transcript.appendChild(n);
+  }
+  var findingsBody = document.getElementById('findingsBody');
+  var findingsCount = document.getElementById('findingsCount');
+  var findings = [];
+  function addFinding(f) {
+    if (findings.find(function (x) { return x.id === f.id; })) return;
+    findings.push(f);
+    findingsCount.textContent = String(findings.length);
+    findingsCount.classList.toggle('has', findings.length > 0);
+    if (findings.length === 1) findingsBody.innerHTML = '';
+    var card = document.createElement('div');
+    card.className = 'fcard ' + (f.verdict === 'vuln' ? 'vuln' : 'susp');
+    card.innerHTML = '<div class="fh"><span>' + esc(f.chain) + ' · ' + esc(f.step) + '</span>' +
+      '<span class="tag">' + (f.verdict === 'vuln' ? 'VULN' : 'SUSP') + '</span></div>' +
+      '<div class="fn">' + esc(f.title) + '</div>' +
+      '<div class="fp">' + esc(f.payload || '') + '</div>';
+    findingsBody.appendChild(card);
+    findingsBody.scrollTop = findingsBody.scrollHeight;
+  }
+  function triageLine(f) {
+    if (!f.triage_category) return '';
+    var t = 'triage: ' + esc(f.triage_category);
+    if (f.triage_by_design) t += ' (by-design)';
+    if (f.triage_confidence) t += ' · conf ' + esc(f.triage_confidence);
+    return '<div class="fp" style="opacity:.8;margin-top:3px">' + t + '</div>';
+  }
+  function renderFinalFindings(result) {
+    var ff = (result.findings || []).filter(function (f) {
+      return f.verdict === 'VULNERABLE' || f.verdict === 'SUSPICIOUS';
+    });
+    if (!ff.length) return;
+    findingsBody.innerHTML = '';
+    findingsCount.textContent = String(ff.length);
+    findingsCount.classList.toggle('has', ff.length > 0);
+    ff.forEach(function (f) {
+      var card = document.createElement('div');
+      card.className = 'fcard ' + (f.verdict === 'VULNERABLE' ? 'vuln' : 'susp');
+      card.innerHTML = '<div class="fh"><span>' + esc(f.pattern_id || f.id) +
+        ' · ' + esc(f.severity) + '</span>' +
+        '<span class="tag">' + (f.verdict === 'VULNERABLE' ? 'VULN' : 'SUSP') + '</span></div>' +
+        '<div class="fn">' + esc((f.reason || '').slice(0, 160)) + '</div>' +
+        triageLine(f);
+      findingsBody.appendChild(card);
+    });
+  }
+  function endpointBadgeClass(status, verdict) {
+    if (verdict === 'blocked' || verdict === 'unreachable') return 'ep-dim';
+    if (status === 401 || status === 403 || status === 405) return 'ep-warn';
+    if (status >= 200 && status < 300) return 'ep-ok';
+    if (status === 404) return 'ep-dim';
+    if (status >= 500) return 'ep-bad';
+    return 'ep-dim';
+  }
+  function narrateEndpoint(e) {
+    var label = e.status != null ? String(e.status) : (e.verdict || '?').toUpperCase();
+    var cls = endpointBadgeClass(e.status, e.verdict);
+    var line = esc(e.path) + '<span class="ep-badge ' + cls + '">' + esc(label) + '</span>';
+    narrate(line, { type: 'obs' });
+  }
+  var hTarget = document.getElementById('hTarget');
+  var hCounts = document.getElementById('hCounts');
+  var hElapsed = document.getElementById('hElapsed');
+  var hStatus = document.getElementById('hStatus');
+  var counts = { v: 0, s: 0, p: 0, u: 0 };
+  function renderCounts() {
+    hCounts.innerHTML = 'V <b>' + counts.v + '</b> · S <b>' + counts.s + '</b> · P <b>' + counts.p + '</b> · U <b>' + counts.u + '</b>';
+  }
+  var startT = 0, timerId = null;
+  function startTimer() {
+    startT = performance.now();
+    clearInterval(timerId);
+    timerId = setInterval(function () {
+      var dt = (performance.now() - startT) / 1000;
+      var m = String(Math.floor(dt / 60)).padStart(2, '0');
+      var s = String(Math.floor(dt % 60)).padStart(2, '0');
+      var d = String(Math.floor((dt * 10) % 10));
+      hElapsed.textContent = m + ':' + s + '.' + d;
+    }, 100);
+  }
+  function stopTimer() { clearInterval(timerId); timerId = null; }
+  function setStatus(s, cls) { hStatus.textContent = s; hStatus.className = 'status' + (cls ? ' ' + cls : ''); }
+  function setNarratorState(s) { narratorState.textContent = s; }
+  function setAvatarRunning(on) {
+    avatar.classList.toggle('running', !!on);
+    if (on) setNarratorState('speaking…'); else setNarratorState('idle');
+  }
+  var overlay = document.getElementById('overlay');
+  var inputEl = document.getElementById('url');
+  var startBtn = document.getElementById('startBtn');
+  var resetBtn = document.getElementById('resetBtn');
+  var currentJob = null;
+  var es = null;
+  function handleEvent(ev) {
+    var d = ev.data || {};
+    switch (ev.type) {
+      case 'start':
+        log('core', 'starting scan for ' + d.url, 'hi');
+        break;
+      case 'phase':
+        if (d.status === 'running') setAvatarRunning(true);
+        break;
+      case 'preflight':
+        if (d.ok) log('preflight', 'HTTP ' + d.status, 'pass');
+        else log('preflight', 'unreachable', 'vuln');
+        break;
+      case 'framework':
+        setNode('fp', 'done-pass', d.id);
+        setEdge('e-spine-1', 'done');
+        log('framework', d.name + ' (' + d.score + ')', 'pass');
+        break;
+      case 'api_base':
+        setNode('disc', 'done-pass');
+        setEdge('e-spine-2', 'done');
+        log('discovery', d.url + ' [' + d.source + ']', 'pass');
+        break;
+      case 'js_done':
+        log('discovery', d.count + ' bundles · ' + d.paths + ' paths', '');
+        break;
+      case 'endpoint_probe':
+        narrateEndpoint(d);
+        log('discovery', d.path + ' ' + (d.status != null ? d.status : d.verdict), d.verdict === 'live_api' ? 'pass' : '');
+        break;
+      case 'login':
+        if (d.ok) { setNode('login', 'done-pass'); setEdge('e-spine-3', 'done'); }
+        else setNode('login', 'skipped', 'unauthenticated');
+        log('login', d.ok ? 'token acquired' : 'unauthenticated', d.ok ? 'pass' : '');
+        break;
+      case 'propose':
+        setNode('propose', 'done-pass');
+        log('propose', 'chains ranked', 'pass');
+        break;
+      case 'pattern_start':
+        log('scan', d.id, '');
+        break;
+      case 'pattern_done':
+        if (d.verdict === 'VULNERABLE') {
+          log('scan', d.id + ' VULNERABLE', 'vuln');
+          addFinding({
+            id: d.id, chain: 'pattern', step: d.id, verdict: 'vuln',
+            title: d.id, payload: d.payload || d.reason,
+          });
+        } else if (d.verdict === 'SUSPICIOUS') {
+          log('scan', d.id + ' SUSPICIOUS', 'susp');
+          addFinding({
+            id: d.id, chain: 'pattern', step: d.id, verdict: 'susp',
+            title: d.id, payload: d.payload || d.reason,
+          });
+        } else {
+          log('scan', d.id + ' ' + d.verdict, '');
+        }
+        break;
+      case 'narrator':
+        narrate(d.text, { type: d.type, detail: d.detail });
+        break;
+      case 'activity':
+        if (d.message) {
+          log('core', d.message, '');
+          if (d.message.indexOf('Probing endpoint ') !== 0) {
+            narrate(esc(d.message), { type: 'obs' });
+          }
+        }
+        break;
+      case 'done':
+        setStatus('done', 'done');
+        setAvatarRunning(false);
+        stopTimer();
+        if (d.counts) {
+          counts.v = d.counts.VULNERABLE || 0;
+          counts.s = d.counts.SUSPICIOUS || 0;
+          counts.p = d.counts.PASS || 0;
+          counts.u = d.counts.UNKNOWN || 0;
+          renderCounts();
+        }
+        if (currentJob) {
+          fetch('/api/job/' + currentJob)
+            .then(function (r) { return r.json(); })
+            .then(function (job) {
+              if (job && job.narrator_summary) narrateSummary(job.narrator_summary);
+              if (job && job.result) renderFinalFindings(job.result);
+            })
+            .catch(function () {});
+        }
+        if (es) { es.close(); es = null; }
+        break;
+      case 'error':
+        setStatus('error', 'error');
+        setAvatarRunning(false);
+        stopTimer();
+        log('core', 'ERROR: ' + d.message, 'vuln');
+        break;
+      case 'report':
+        log('report', 'saved', 'pass');
+        break;
+      case 'summary':
+        log('core', JSON.stringify(d.counts), 'hi');
+        break;
+    }
+  }
+  function resetAll() {
+    stopTimer();
+    counts.v = counts.s = counts.p = counts.u = 0;
+    renderCounts();
+    hElapsed.textContent = '00:00.0';
+    hTarget.textContent = '—';
+    setStatus('idle', '');
+    setNarratorState('idle');
+    setAvatarRunning(false);
+    ribbon.innerHTML = '';
+    logLines.length = 0;
+    clearTranscript();
+    findings.length = 0;
+    findingsCount.textContent = '0';
+    findingsCount.classList.remove('has');
+    findingsBody.innerHTML = '<div class="findings-empty">nothing found yet</div>';
+    for (var id in nodeEls) {
+      var kind = 'phase';
+      for (var k = 0; k < MAIN.length; k++) if (MAIN[k].id === id) kind = MAIN[k].kind;
+      nodeEls[id].setAttribute('class', 'node pending ' + kind);
+      if (nodeMetaEls[id] && id.indexOf('chain-') === 0) nodeMetaEls[id].textContent = '· idle';
+    }
+    for (var eid in edgeEls) edgeEls[eid].setAttribute('class', 'edge pending');
+    for (var lid in edgeLabelEls) edgeLabelEls[lid].setAttribute('class', 'edge-label');
+    packetsG.innerHTML = '';
+    if (es) { es.close(); es = null; }
+    overlay.classList.remove('hidden');
+  }
+  function run() {
+    var url = (inputEl.value || '').trim();
+    if (!url) { inputEl.focus(); return; }
+    resetAll();
+    overlay.classList.add('hidden');
+    hTarget.textContent = url;
+    setStatus('running', 'running');
+    startTimer();
+    fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url, min_severity: 'medium' }),
+    })
+    .then(function (r) {
+      return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+    })
+    .then(function (res) {
+      if (!res.ok) {
+        overlay.classList.remove('hidden');
+        setStatus('idle', '');
+        stopTimer();
+        log('core', 'REJECTED: ' + (res.data.error || 'unknown'), 'vuln');
+        narrate('<b>Scan rejected.</b> ' + esc(res.data.error || '') + (res.data.hint ? '<br><i>' + esc(res.data.hint) + '</i>' : ''), { type: 'vuln' });
+        return;
+      }
+      currentJob = res.data.job_id;
+      es = new EventSource('/api/scan/' + currentJob + '/stream');
+      es.onmessage = function (msg) {
+        try {
+          var ev = JSON.parse(msg.data);
+          handleEvent(ev);
+        } catch (err) { /* ignore */ }
+      };
+      es.onerror = function () {
+        if (es && es.readyState === EventSource.CLOSED) es = null;
+      };
+    })
+    .catch(function (err) {
+      overlay.classList.remove('hidden');
+      setStatus('idle', '');
+      stopTimer();
+      log('core', 'network error: ' + err, 'vuln');
+    });
+  }
+  startBtn.addEventListener('click', run, true);
+  inputEl.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+  resetBtn.addEventListener('click', resetAll);
+  renderCounts();
+})();
+</script>
+</body>
+</html>
+'''
+
+def _inject_credential_ui(html):
+    if "credToggleRuntime" in html:
+        return html
+    marker = "</body>"
+    idx = html.rfind(marker)
+    if idx == -1:
+        return html
+    injection = """
+<script>
+(function(){
+  if (window.__credToggleRuntime) return;
+  window.__credToggleRuntime = true;
+
+  function init(){
+    var url = document.getElementById("url");
+    if (!url) return;
+    if (document.getElementById("credToggle")) return;
+    var row = url.parentNode;
+    if (!row) return;
+
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "credToggle";
+    btn.textContent = "+";
+    btn.title = "Add credentials (optional)";
+    btn.style.cssText = "background:transparent;border:1px solid rgba(128,128,128,0.45);border-radius:999px;color:inherit;font-size:13px;line-height:1;width:22px;height:22px;margin:8px;padding:0;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;font-family:inherit";
+    row.insertBefore(btn, url);
+
+    var form = document.createElement("div");
+    form.id = "credForm";
+    form.style.cssText = "display:none;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;padding-top:12px;border-top:1px dashed rgba(128,128,128,0.35)";
+    form.innerHTML =
+      '<input id="credUser" type="text" placeholder="username / email (optional)" autocomplete="off" spellcheck="false" style="background:transparent;border:1px solid rgba(128,128,128,0.45);border-radius:6px;color:inherit;font-family:inherit;font-size:12px;padding:8px 10px;outline:none;min-width:0">' +
+      '<input id="credPass" type="password" placeholder="password (optional)" autocomplete="off" style="background:transparent;border:1px solid rgba(128,128,128,0.45);border-radius:6px;color:inherit;font-family:inherit;font-size:12px;padding:8px 10px;outline:none;min-width:0">' +
+      '<input id="credLoginUrl" type="text" placeholder="login URL (optional \u2014 defaults to auto-discovered)" autocomplete="off" spellcheck="false" style="grid-column:1/-1;background:transparent;border:1px solid rgba(128,128,128,0.45);border-radius:6px;color:inherit;font-family:inherit;font-size:12px;padding:8px 10px;outline:none;min-width:0">' +
+      '<input id="credToken" type="password" placeholder="bearer token (optional \u2014 paste if you already have one)" autocomplete="off" spellcheck="false" style="grid-column:1/-1;background:transparent;border:1px solid rgba(128,128,128,0.45);border-radius:6px;color:inherit;font-family:inherit;font-size:12px;padding:8px 10px;outline:none;min-width:0">';
+    row.parentNode.insertBefore(form, row.nextSibling);
+
+    btn.addEventListener("click", function(){
+      var open = form.style.display !== "grid";
+      form.style.display = open ? "grid" : "none";
+      btn.textContent = open ? "x" : "+";
+      btn.style.color = open ? "currentColor" : "inherit";
+      btn.style.borderColor = open ? "currentColor" : "rgba(128,128,128,0.45)";
+    });
+
+    var origFetch = window.fetch;
+    window.fetch = function(input, init){
+      try {
+        if (init && init.body && typeof input === "string" &&
+            input.indexOf("/api/scan") !== -1) {
+          var b = JSON.parse(init.body);
+          var uEl = document.getElementById("credUser");
+          var pEl = document.getElementById("credPass");
+          var luEl = document.getElementById("credLoginUrl");
+          var tEl = document.getElementById("credToken");
+          var u = uEl ? (uEl.value || "").trim() : "";
+          var p = pEl ? (pEl.value || "") : "";
+          var lu = luEl ? (luEl.value || "").trim() : "";
+          var tk = tEl ? (tEl.value || "").trim() : "";
+          if (u || p || lu || tk) {
+            b.credentials = {};
+            if (u) b.credentials.username = u;
+            if (p) b.credentials.password = p;
+            if (lu) b.credentials.login_url = lu;
+            if (tk) b.credentials.token = tk;
+            init.body = JSON.stringify(b);
+          }
+          var aiEl = document.getElementById("aiKey");
+          var aiV = aiEl ? (aiEl.value || "").trim() : "";
+          if (aiV) b.ai_key = aiV;
+          var aiToggleEl = document.getElementById("aiToggle");
+          if (aiToggleEl && !aiToggleEl.checked) b.use_brain = false;
+        }
+      } catch (e) {}
+      return origFetch.apply(this, arguments);
+    };
+  }
+
+  function buildAI(){
+    if (document.getElementById("aiBox")) return;
+    var form = document.getElementById("credForm");
+    if (!form) return;
+    var box = document.createElement("div");
+    box.id = "aiBox";
+    box.style.cssText = "grid-column:1/-1;margin-top:10px;padding-top:10px;border-top:1px dashed rgba(128,128,128,0.35);font-family:inherit;font-size:12px";
+    box.innerHTML =
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+        '<span id="aiDot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#5c6166"></span>' +
+        '<span id="aiLabel" style="color:inherit;opacity:0.8">AI: checking…</span>' +
+      '</div>' +
+      '<label id="aiToggleLabel" style="display:none;align-items:center;gap:6px;margin-bottom:6px;cursor:pointer;opacity:0.9">' +
+        '<input id="aiToggle" type="checkbox" checked style="margin:0">' +
+        '<span>Gamitin ang AI brain para sa scan na ito</span>' +
+      '</label>' +
+      '<input id="aiKey" type="password" placeholder="LLM API key (optional \u2014 used for triage only)" autocomplete="off" spellcheck="false" style="width:100%;background:transparent;border:1px solid rgba(128,128,128,0.45);border-radius:6px;color:inherit;font-family:inherit;font-size:12px;padding:8px 10px;outline:none;display:none">';
+    form.appendChild(box);
+    fetch("/api/ai_status").then(function(r){return r.json();}).then(function(s){
+      var dot = document.getElementById("aiDot");
+      var lbl = document.getElementById("aiLabel");
+      var inp = document.getElementById("aiKey");
+      var toggleLabel = document.getElementById("aiToggleLabel");
+      if (s && s.configured) {
+        dot.style.background = "#2f9e5f";
+        lbl.textContent = "AI: online (" + (s.provider || "?") + "/" + (s.model || "?") + ")";
+        if (toggleLabel) toggleLabel.style.display = "flex";
+      } else {
+        dot.style.background = "#5c6166";
+        lbl.textContent = "AI: offline \u2014 paste a key to enable triage";
+        if (inp) inp.style.display = "block";
+      }
+    }).catch(function(){
+      var lbl = document.getElementById("aiLabel");
+      if (lbl) lbl.textContent = "AI: status unknown";
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function(){ init(); buildAI(); });
+  } else {
+    init(); buildAI();
+  }
+})();
+</script>
+"""
+    return html[:idx] + injection + html[idx:]
+
+
+PAGE = _inject_credential_ui(PAGE)
+PAGE_CLASSIC = _inject_credential_ui(PAGE_CLASSIC)

@@ -431,6 +431,8 @@ def _enrich_evidence_fields(f):
     if isinstance(tri, dict):
         f.setdefault("triage_category", tri.get("category"))
         f.setdefault("triage_by_design", bool(tri.get("by_design")))
+        if tri.get("confidence"):
+            f.setdefault("triage_confidence", tri.get("confidence"))
         if tri.get("note"):
             f.setdefault("triage_note", tri.get("note"))
 
