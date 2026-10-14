@@ -2319,7 +2319,8 @@ function handleLiveExtraction(d) {
       case 'narrator':
         narrate(d.text, { type: d.type, detail: d.detail });
         if(d.extracted && d.extracted.length){
-        handleLiveExtraction(d);
+          handleLiveExtraction(d);
+        }
         break;
       case 'step_done':
         handleLiveExtraction(d);
