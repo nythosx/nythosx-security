@@ -37,7 +37,34 @@ def neighbor_ids(value):
     return [x for x in (n - 1, n + 1) if x > 0]
 
 
-def analyze(self_probe, neighbor_probes):
+def _triage_evidence(self_probe, offenders, resource_base):
+    try:
+        from . import triage as _triage
+    except Exception:
+        return None
+    keys = set()
+    for probe in [self_probe] + list(offenders or []):
+        for k, _ in extract_ids(probe.get("body") or ""):
+            keys.add(k)
+        try:
+            data = json.loads(probe.get("body") or "")
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            inner = data.get("data") if isinstance(data.get("data"), dict) else data
+            if isinstance(inner, dict):
+                keys.update(inner.keys())
+    det = _triage.classify_detailed(resource_base or "", sorted(keys))
+    return {
+        "category": det["category"],
+        "severity_hint": _triage.WRITE_SEVERITY.get(det["category"], ("medium", ""))[0].lower(),
+        "confidence": det["confidence"],
+        "basis": det["basis"],
+        "by_design": det["category"] in _triage.BY_DESIGN_CATEGORIES,
+    }
+
+
+def analyze(self_probe, neighbor_probes, resource_base=None):
     self_hash = self_probe.get("body_hash")
     offenders = []
     for np in neighbor_probes:
@@ -46,12 +73,16 @@ def analyze(self_probe, neighbor_probes):
                 and len((np.get("body") or "").strip()) > 2:
             offenders.append(np)
     if offenders:
+        evidence = {"offender_ids": [o["id"] for o in offenders],
+                    "self_id": self_probe.get("id")}
+        tri = _triage_evidence(self_probe, offenders, resource_base)
+        if tri:
+            evidence["triage"] = tri
         return {
             "verdict": "VULNERABLE",
             "reason": f"{len(offenders)} neighbor ID(s) returned a distinct 200 body "
                       f"(accessed another record)",
-            "evidence": {"offender_ids": [o["id"] for o in offenders],
-                         "self_id": self_probe.get("id")},
+            "evidence": evidence,
         }
     seen_200 = [np for np in neighbor_probes if np.get("status") == 200]
     if seen_200:
@@ -113,7 +144,7 @@ def _run_probe_impl(identity_url, resource_base, headers=None, cookies=None,
                                     "body_hash": r.get("body_hash"),
                                     "body": r.get("body")})
         out["neighbors"] = neighbor_probes
-        out["result"] = analyze(self_probe, neighbor_probes)
+        out["result"] = analyze(self_probe, neighbor_probes, resource_base=base)
     finally:
         client.close()
     return out

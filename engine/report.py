@@ -75,6 +75,16 @@ tr:hover { background: #161b22; }
 details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 .cov-bar { background: #30363d; border-radius: 6px; height: 10px; overflow: hidden; min-width: 80px; }
 .cov-bar > span { display: block; height: 100%; background: #238636; }
+.datarow-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; margin: 10px 0; padding: 12px 14px; }
+.datarow-card .hd { color: #79c0ff; font-family: ui-monospace, monospace; font-size: 12px; margin-bottom: 8px; }
+.datarow-card .hd .badge2 { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 10px; margin-left: 8px; font-weight: 600; text-transform: uppercase; }
+.datarow-card .hd .badge2.auth { background: #1f6feb; color: #fff; }
+.datarow-card .hd .badge2.unauth { background: #f85149; color: #fff; }
+.datarow-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.datarow-table td { padding: 5px 10px; font-family: ui-monospace, monospace; font-size: 12px; border-bottom: 1px solid #21262d; vertical-align: top; }
+.datarow-table td.k { color: #8b949e; width: 32%; }
+.datarow-table td.v { color: #c9d1d9; word-break: break-all; }
+.datarow-empty { color: #8b949e; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -104,6 +114,25 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 </tbody>
 </table>
 {% endif %}
+{% if cves %}
+<h2>Known Vulnerabilities</h2>
+<p class="meta">CVEs affecting the detected component versions.</p>
+<table>
+<thead>
+<tr><th>ID</th><th>Severity</th><th>Component</th><th>Summary</th></tr>
+</thead>
+<tbody>
+{% for c in cves %}
+<tr>
+<td><a href="https://nvd.nist.gov/vuln/detail/{{ c.id }}" target="_blank">{{ c.id }}</a></td>
+<td class="sev-{{ c.severity }}">{{ c.severity }}</td>
+<td>{{ c.product }} {{ c.version }}</td>
+<td>{{ c.summary }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endif %}
 {% if chains %}
 <h2>Attack Chains</h2>
 <p class="meta">Correlated multi-step attacks built from individual findings.</p>
@@ -119,7 +148,7 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 <h2>Findings</h2>
 <table>
 <thead>
-<tr><th>ID</th><th>Pattern</th><th>Severity</th><th>Verdict</th><th>Confirm</th><th>Reason</th><th>WSTG</th><th>CWE</th></tr>
+<tr><th>ID</th><th>Pattern</th><th>Severity</th><th>Triage</th><th>Verdict</th><th>Confirm</th><th>Reason</th><th>WSTG</th><th>CWE</th></tr>
 </thead>
 <tbody>
 {% for f in findings %}
@@ -127,6 +156,7 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 <td>{{ f.id }}</td>
 <td>{{ f.pattern_id }}</td>
 <td class="sev-{{ f.severity }}">{{ f.severity }}</td>
+<td>{% if f.triage_category %}{{ f.triage_category }}{% if f.triage_by_design %} <span title="{{ f.triage_note }}">(by-design)</span>{% endif %}{% else %}-{% endif %}</td>
 <td><span class="badge {{ f.verdict }}">{{ f.verdict }}</span></td>
 <td>{{ f.confirmation_status or '-' }}</td>
 <td>{{ f.reason }}
@@ -146,6 +176,26 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 {% endfor %}
 </tbody>
 </table>
+{% if data_rows %}
+<h2>Extracted Data Rows</h2>
+<p class="meta">Masked data rows recovered from the target. First character of each sensitive value is preserved; the remainder is rotated.</p>
+{% if data_svg %}<div class="chain-graph">{{ data_svg|safe }}</div>{% endif %}
+{% for dr in data_rows %}
+<div class="datarow-card">
+<div class="hd">{{ dr.endpoint }}
+<span class="badge2 {{ 'unauth' if 'unauth' in (dr.auth_used or '')|lower else 'auth' }}">{{ dr.auth_used or 'unknown' }}</span>
+<span class="datarow-empty"> &middot; {{ dr.extracted }} of {{ dr.total_rows }} row(s)</span>
+</div>
+{% for row in dr.rows %}
+<table class="datarow-table">
+{% for k, v in row.items() %}
+<tr><td class="k">{{ k }}</td><td class="v">{{ v }}</td></tr>
+{% endfor %}
+</table>
+{% endfor %}
+</div>
+{% endfor %}
+{% endif %}
 {% if coverage %}
 <h2>Coverage</h2>
 <p class="meta">What was tested, and what was not. {{ coverage.executed_count }} of {{ coverage.total_count }} capabilities executed.</p>
@@ -186,6 +236,16 @@ MD_TEMPLATE = """# Security Assessment Report
 | Medium   | {{ counts.medium }} |
 | Low      | {{ counts.low }} |
 | Info     | {{ counts.info }} |
+{% if cves %}
+## Known Vulnerabilities
+
+| CVE | Severity | Component | Summary |
+|-----|----------|-----------|---------|
+{% for c in cves -%}
+| {{ c.id }} | {{ c.severity }} | {{ c.product }} {{ c.version }} | {{ c.summary }} |
+{% endfor %}
+
+{% endif %}
 {% if chains %}
 ## Attack Chains
 
@@ -229,6 +289,24 @@ Severity: {{ c.severity }} · Confidence: {{ '%.0f'|format((c.confidence or 0) *
 
 {% endfor %}
 {% endif %}
+{% if data_rows %}
+## Extracted Data Rows
+
+Masked data rows recovered from the target. First character of each sensitive value is preserved; the remainder is rotated.
+
+{% for dr in data_rows -%}
+### `{{ dr.endpoint }}` — {{ dr.auth_used or 'unknown' }} ({{ dr.extracted }}/{{ dr.total_rows }})
+
+{% for row in dr.rows -%}
+| field | value |
+|-------|-------|
+{% for k, v in row.items() -%}
+| `{{ k }}` | `{{ v }}` |
+{% endfor %}
+
+{% endfor %}
+{% endfor %}
+{% endif %}
 {% if coverage %}
 ## Coverage
 
@@ -259,8 +337,48 @@ def _counts(findings):
 
 def _findings_to_dicts(rows):
     keys = ["id", "timestamp", "pattern_id", "category", "verdict", "severity",
-            "reason", "wstg_id", "cwe_id", "evidence_path", "duration_ms"]
+            "reason", "wstg_id", "cwe_id", "evidence_path", "duration_ms",
+            "evidence_json"]
     return [dict(zip(keys, r)) for r in rows]
+
+
+def _parse_evidence_json(raw):
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            import json as _json
+            return _json.loads(raw) or {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _extract_cves(findings):
+    out = []
+    seen = set()
+    for f in findings:
+        pid = (f.get("pattern_id") or "").lower()
+        if "cve" not in pid and "chain-cve" not in pid:
+            continue
+        ev = _parse_evidence_json(f.get("evidence_json"))
+        for c in (ev.get("cves") or []):
+            if not isinstance(c, dict):
+                continue
+            cid = c.get("id")
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            out.append({
+                "id": cid,
+                "severity": (c.get("severity") or "medium").lower(),
+                "summary": (c.get("summary") or "")[:280],
+                "product": c.get("product") or ev.get("product") or "",
+                "version": c.get("version") or ev.get("version") or "",
+            })
+    order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    out.sort(key=lambda c: -order.get(c["severity"], 0))
+    return out
 
 
 def _dedupe(findings):
@@ -309,6 +427,12 @@ def _enrich_evidence_fields(f):
     elif "confirmed" in ev:
         f["confirmation_status"] = ("confirmed" if ev["confirmed"]
                                     else "unconfirmed")
+    tri = ev.get("triage")
+    if isinstance(tri, dict):
+        f.setdefault("triage_category", tri.get("category"))
+        f.setdefault("triage_by_design", bool(tri.get("by_design")))
+        if tri.get("note"):
+            f.setdefault("triage_note", tri.get("note"))
 
 
 def enrich_findings(findings):
@@ -413,6 +537,7 @@ def generate_sarif(target):
     for f in findings:
         if f.get("verdict") not in ("VULNERABLE", "SUSPICIOUS"):
             continue
+        _enrich_evidence_fields(f)
         rid = f.get("pattern_id") or "unknown"
         if rid not in rules_seen:
             rules_seen.add(rid)
@@ -439,6 +564,9 @@ def generate_sarif(target):
             "properties": {
                 "verdict": f.get("verdict"),
                 "severity": f.get("severity"),
+                "triageCategory": f.get("triage_category") or "",
+                "triageByDesign": bool(f.get("triage_by_design")),
+                "triageNote": f.get("triage_note") or "",
             },
         })
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -449,43 +577,125 @@ def generate_sarif(target):
     return str(path)
 
 
-def generate(target, fmt="html", engine_cfg=None):
-    if fmt == "sarif":
-        return generate_sarif(target)
+def _extract_data_rows(findings):
+    import json as _json
+    out = []
+    for f in findings or []:
+        pid = (f.get("pattern_id") or "").lower()
+        if not any(k in pid for k in ("bola", "unauth", "extract")):
+            continue
+        ev = f.get("evidence_json")
+        if isinstance(ev, str):
+            try:
+                ev = _json.loads(ev)
+            except Exception:
+                continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("rows"):
+            out.append({
+                "endpoint": ev.get("url") or pid,
+                "auth_used": ev.get("auth_used") or "unknown",
+                "total_rows": int(ev.get("total_rows") or len(ev["rows"])),
+                "extracted": int(ev.get("extracted") or len(ev["rows"])),
+                "rows": [r for r in ev["rows"] if isinstance(r, dict)],
+            })
+            continue
+        for entry in ev.get("findings") or []:
+            if not isinstance(entry, dict) or not entry.get("rows"):
+                continue
+            auth = "unauthenticated" if "unauth" in pid else "user-b"
+            out.append({
+                "endpoint": entry.get("url") or entry.get("path") or pid,
+                "auth_used": auth,
+                "total_rows": int(entry.get("total_rows")
+                                   or entry.get("b_rows")
+                                   or len(entry["rows"])),
+                "extracted": int(entry.get("extracted")
+                                  or entry.get("b_extracted")
+                                  or len(entry["rows"])),
+                "rows": [r for r in entry["rows"] if isinstance(r, dict)],
+            })
+    return out
+
+
+def _build_context(target, engine_cfg=None):
     if engine_cfg is None:
         from .config import load_engine
         engine_cfg = load_engine()
     threshold = engine_cfg.get("report", {}).get("severity_threshold", "info")
     rows = ledger.findings_for_target(target)
-    findings = _apply_severity_threshold(
-        _dedupe(_findings_to_dicts(rows)), threshold)
+    findings = _dedupe(_findings_to_dicts(rows))
+    try:
+        from . import context as _ctx
+        for f in findings:
+            f["pattern_severity"] = f.get("severity", "info")
+            f["severity"] = _ctx.context_severity(
+                target, f["pattern_severity"])
+    except Exception:
+        pass
+    findings = _apply_severity_threshold(findings, threshold)
     from . import redact as _redact
     findings = _redact.redact_dict(findings)
     enrich_findings(findings)
     chains = build_chains(findings)
     coverage = build_coverage(target, findings)
+    cves = _extract_cves(findings)
     try:
         from . import report_graph
         graph_svg = report_graph.render_chain_svg(chains) if chains else ""
     except Exception:
         graph_svg = ""
+    data_rows = _extract_data_rows(findings)
+    try:
+        from . import report_graph
+        data_svg = report_graph.render_data_flow_svg(data_rows) if data_rows else ""
+    except Exception:
+        data_svg = ""
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in target)[:80]
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    context = {
+    return {
         "target": target,
         "timestamp": ts,
         "findings": findings,
         "counts": _counts(findings),
         "chains": chains,
         "coverage": coverage,
+        "cves": cves,
         "graph_svg": graph_svg,
+        "data_rows": data_rows,
+        "data_svg": data_svg,
     }
+
+
+def _html_to_pdf(html_str, out_path):
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.set_content(html_str, wait_until="load")
+            page.pdf(path=str(out_path), format="A4", print_background=True,
+                      margin={"top": "14mm", "bottom": "14mm",
+                              "left": "10mm", "right": "10mm"})
+        finally:
+            browser.close()
+
+
+def generate(target, fmt="html", engine_cfg=None):
+    if fmt == "sarif":
+        return generate_sarif(target)
+    context = _build_context(target, engine_cfg)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in target)[:80]
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     if fmt == "md":
         path = REPORTS_DIR / f"{stamp}_{safe}.md"
         path.write_text(_MD_ENV.from_string(MD_TEMPLATE).render(**context),
                         encoding="utf-8")
+    elif fmt == "pdf":
+        html_str = _HTML_ENV.from_string(HTML_TEMPLATE).render(**context)
+        path = REPORTS_DIR / f"{stamp}_{safe}.pdf"
+        _html_to_pdf(html_str, path)
     else:
         path = REPORTS_DIR / f"{stamp}_{safe}.html"
         path.write_text(_HTML_ENV.from_string(HTML_TEMPLATE).render(**context),

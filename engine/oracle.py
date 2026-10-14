@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json as _json
 import statistics
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -36,6 +37,47 @@ def _annotate_with_signal(result, context):
     ev.setdefault("signal_strength", strength)
     result = dict(result)
     result["evidence"] = ev
+    return result
+
+
+def _sample_keys_from_context(context):
+    keys = set()
+    for s in reversed(context.get("steps", []) or []):
+        if not _step_is_jsonish(s):
+            continue
+        body = s.get("body") or ""
+        try:
+            data = _json.loads(body)
+        except Exception:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("data"), (dict, list)):
+            data = data["data"]
+        rows = data if isinstance(data, list) else [data]
+        for row in rows[:5]:
+            if isinstance(row, dict):
+                keys.update(row.keys())
+        if keys:
+            break
+    return sorted(keys)
+
+
+def _annotate_with_triage(result, context):
+    if not isinstance(result, dict):
+        return result
+    try:
+        from . import triage as _triage
+        url = _context_url(context)
+        if not url:
+            return result
+        tri = _triage.triage_finding(url, result.get("verdict"),
+                                     sample_keys=_sample_keys_from_context(context))
+        ev = result.get("evidence")
+        if not isinstance(ev, dict):
+            ev = {}
+            result["evidence"] = ev
+        ev.setdefault("triage", tri)
+    except Exception:
+        pass
     return result
 
 
@@ -409,7 +451,10 @@ def _status_code_absent(oracle, context):
         return {"verdict": "UNKNOWN", "reason": "no steps", "evidence": {}}
     statuses = [s.get("status") for s in steps if s.get("status") is not None]
     if not statuses:
-        return {"verdict": "UNKNOWN", "reason": "all requests failed",
+        from .util import summarize_failures
+        why = summarize_failures(steps)
+        return {"verdict": "UNKNOWN",
+                "reason": f"all requests failed ({why})" if why else "all requests failed",
                 "evidence": {"total_steps": len(steps)}}
     if all(s >= 500 for s in statuses):
         return {"verdict": "UNKNOWN", "reason": "all responses 5xx",
@@ -543,8 +588,8 @@ def _timing_difference(oracle, context):
     step_names = [s.get("step_name") for s in steps]
     unique = list(dict.fromkeys(step_names))
     if len(unique) >= 2:
-        batch1 = [s.get("time_ms", 0) for s in steps if s.get("step_name") == unique[0]]
-        batch2 = [s.get("time_ms", 0) for s in steps if s.get("step_name") == unique[1]]
+        batch1 = [s.get("time_ms", 0) for s in steps if s.get("step_name") == unique[-2]]
+        batch2 = [s.get("time_ms", 0) for s in steps if s.get("step_name") == unique[-1]]
     else:
         batch1 = [steps[0].get("time_ms", 0)]
         batch2 = [steps[1].get("time_ms", 0)]
@@ -1046,7 +1091,10 @@ def _race_advanced(oracle, context):
         if s.get("status") is not None:
             statuses.append(s["status"])
     if not statuses:
-        return {"verdict": "UNKNOWN", "reason": "all requests failed",
+        from .util import summarize_failures
+        why = summarize_failures(steps)
+        return {"verdict": "UNKNOWN",
+                "reason": f"all requests failed ({why})" if why else "all requests failed",
                 "evidence": {}}
     from collections import Counter
     counts = Counter(statuses)
@@ -1365,6 +1413,7 @@ def _evaluate_impl(oracle, context):
     except Exception as e:
         return {"verdict": "UNKNOWN", "reason": f"oracle error: {e}", "evidence": {}}
     result = _annotate_with_signal(result, context)
+    result = _annotate_with_triage(result, context)
     return result
 
 def evaluate(oracle, context):
@@ -1409,6 +1458,20 @@ def _context_target(context):
     return ""
 
 
+_dynamic_import_lock = threading.Lock()
+
+
+def _import_scanner_module(module_path):
+    # Pattern handlers run concurrently in a ThreadPoolExecutor; a first-time
+    # import_module() from several worker threads at once can trigger
+    # CPython's own cross-module import-lock deadlock detector
+    # (importlib._bootstrap._DeadlockError). Serialize dynamic imports so
+    # only one thread resolves a given module at a time.
+    from importlib import import_module
+    with _dynamic_import_lock:
+        return import_module(module_path)
+
+
 def _make_scanner_handler(module_path, func_name,
                           extra_kwargs=None, destructive_note=None):
     def _handler(oracle, context):
@@ -1435,8 +1498,7 @@ def _make_scanner_handler(module_path, func_name,
             except Exception:
                 pass
         try:
-            from importlib import import_module
-            mod = import_module(module_path)
+            mod = _import_scanner_module(module_path)
             func = getattr(mod, func_name)
             r = func(target, **kwargs)
         except Exception as e:
@@ -1566,4 +1628,353 @@ _HANDLERS.update({
     "oauth_pkce_scan": _oauth_pkce_scan,
     "oauth_id_token_scan": _oauth_id_token_scan,
     "http2_scan": _http2_scan,
+})
+
+
+# ===========================================================================
+# Phase 4 — oracle handlers for CVE correlation, access bypass, cache
+# deception. Each handler dispatches to the scanner module, which does its
+# own probing with its own ROE enforcement.
+# ===========================================================================
+_PHASE4_ORACLE_INSTALLED = True
+
+
+def _steps_headers(context):
+    headers = {}
+    for s in (context.get("steps") or []):
+        for k, v in (s.get("headers") or {}).items():
+            headers.setdefault(k.lower(), v)
+    return headers
+
+
+def _context_url(context):
+    for s in (context.get("steps") or []):
+        u = s.get("url")
+        if u:
+            return u
+    return context.get("target") or ""
+
+
+def _oracle_cve_correlation(oracle, context):
+    import re
+    from . import cve_lookup
+    headers = _steps_headers(context)
+    server = headers.get("server", "")
+    powered = headers.get("x-powered-by", "")
+    results = []
+    for raw in (server, powered):
+        if not raw:
+            continue
+        m = re.search(r"([A-Za-z][A-Za-z0-9_\-]*)/([0-9][\w.\-]*)", raw)
+        if not m:
+            continue
+        product, version = m.group(1), m.group(2)
+        for h in cve_lookup.lookup(product, version):
+            results.append({"product": product, "version": version, **h})
+    if not results:
+        return {"verdict": "PASS",
+                "reason": "no CVE correlation for detected components",
+                "evidence": {}}
+    critical = [r for r in results if r.get("severity") in ("critical", "high")]
+    if critical:
+        return {
+            "verdict": "VULNERABLE",
+            "reason": (f"{len(critical)} high/critical CVE(s) for "
+                       + ", ".join(sorted({r["product"] + " " + r["version"]
+                                            for r in critical})[:3])),
+            "evidence": {"total": len(results),
+                         "critical": len(critical),
+                         "cves": results[:20]},
+        }
+    return {
+        "verdict": "SUSPICIOUS",
+        "reason": f"{len(results)} CVE(s) but none critical/high",
+        "evidence": {"total": len(results), "cves": results[:20]},
+    }
+
+
+def _oracle_access_bypass(oracle, context):
+    from .injection import access_bypass
+    url = _context_url(context)
+    if not url:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    guard = context.get("roe_guard")
+    r = access_bypass.scan(url, roe_guard=guard)
+    return {"verdict": r["verdict"], "reason": r.reason,
+            "evidence": r.evidence or {}}
+
+
+def _oracle_cache_deception(oracle, context):
+    from .injection import cache_deception
+    url = _context_url(context)
+    if not url:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    guard = context.get("roe_guard")
+    r = cache_deception.scan(url, roe_guard=guard)
+    return {"verdict": r["verdict"], "reason": r.reason,
+            "evidence": r.evidence or {}}
+
+
+_HANDLERS.update({
+    "cve_correlation": _oracle_cve_correlation,
+    "access_bypass_scan": _oracle_access_bypass,
+    "cache_deception_scan": _oracle_cache_deception,
+})
+
+
+# ===========================================================================
+# Phase 5 — differential + wayback oracle handlers.
+# ===========================================================================
+_PHASE5_ORACLE_INSTALLED = True
+
+
+def _oracle_differential(oracle, context):
+    from . import differential
+    url = _context_url(context)
+    if not url:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    guard = context.get("roe_guard")
+    r = differential.scan(url, roe_guard=guard)
+    return {"verdict": r["verdict"], "reason": r.reason,
+            "evidence": r.evidence or {}}
+
+
+def _oracle_wayback(oracle, context):
+    from .recon import wayback
+    url = _context_url(context) or context.get("target", "")
+    if not url:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    result = wayback.harvest(url)
+    if not result:
+        return {"verdict": "PASS",
+                "reason": "no historic URLs found", "evidence": {}}
+    priority = result.get("priority_paths") or []
+    return {"verdict": "SUSPICIOUS" if priority else "PASS",
+            "reason": (f"{len(result.get('paths') or [])} historic path(s), "
+                       f"{len(priority)} priority"),
+            "evidence": result}
+
+
+_HANDLERS.update({
+    "differential_scan": _oracle_differential,
+    "wayback_harvest": _oracle_wayback,
+})
+
+
+# ===========================================================================
+# Phase 6 — framework + robust timing oracle handlers.
+# ===========================================================================
+_PHASE6_ORACLE_INSTALLED = True
+
+
+def _oracle_framework_probe(oracle, context):
+    from .frameworks import scan_all
+    url = _context_url(context) or context.get("target", "")
+    if not url:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    guard = context.get("roe_guard")
+    adapter_id = None
+    fw = (context.get("framework") or {}).get("adapter") or {}
+    if isinstance(fw, dict):
+        adapter_id = fw.get("id")
+    r = scan_all(url, adapter_id=adapter_id, roe_guard=guard)
+    findings = r.get("findings") or []
+    if findings:
+        sev = {f.get("severity", "medium") for f in findings}
+        worst = ("critical" if "critical" in sev else
+                 "high" if "high" in sev else "medium")
+        return {
+            "verdict": "VULNERABLE",
+            "reason": (f"{len(findings)} framework finding(s): "
+                       + ", ".join(f["probe"] for f in findings[:4])),
+            "evidence": {"severity": worst,
+                         "findings": findings,
+                         "modules_run": r.get("modules_run")},
+        }
+    return {"verdict": "PASS",
+            "reason": "no framework surface findings",
+            "evidence": {"modules_run": r.get("modules_run")}}
+
+
+def _oracle_timing_robust(oracle, context):
+    from .stats import payload_is_slower_than_baseline
+    from . import oracles_timing as _ot
+    url = _context_url(context) or context.get("target", "")
+    if not url:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    param = (oracle.get("param") if isinstance(oracle, dict) else None) or "q"
+    guard = context.get("roe_guard")
+    baselines = []
+    for _ in range(10):
+        r = _ot._send(url, "GET", params={param: "1"},
+                      timeout=15, roe_guard=guard)
+        if r.get("blocked"):
+            return {"verdict": "UNKNOWN", "reason": r["error"],
+                    "evidence": {}}
+        if r.get("status") is not None:
+            baselines.append(r.get("elapsed_ms", 0.0))
+    if len(baselines) < 3:
+        return {"verdict": "UNKNOWN",
+                "reason": "baseline failed", "evidence": {}}
+    payloads = []
+    for _ in range(10):
+        r = _ot._send(url, "GET",
+                      params={param: "' OR SLEEP(4)-- -"},
+                      timeout=15 + 7, roe_guard=guard)
+        if r.get("blocked"):
+            return {"verdict": "UNKNOWN", "reason": r["error"], "evidence": {}}
+        if r.get("status") is not None:
+            payloads.append(r.get("elapsed_ms", 0.0))
+    if len(payloads) < 3:
+        return {"verdict": "UNKNOWN",
+                "reason": "payload failed",
+                "evidence": {"baseline_samples": baselines}}
+    decision, ev = payload_is_slower_than_baseline(baselines, payloads)
+    ev["param"] = param
+    if decision:
+        return {"verdict": "SUSPICIOUS",
+                "reason": f"robust timing signal (delta={ev['delta_ms']:.0f}ms)",
+                "evidence": ev}
+    return {"verdict": "PASS", "reason": "no robust timing signal",
+            "evidence": ev}
+
+
+_HANDLERS.update({
+    "framework_probe": _oracle_framework_probe,
+    "timing_robust": _oracle_timing_robust,
+})
+
+
+# ===========================================================================
+# Phase 7 — deserialization, graphql schema, sourcemap, CT log oracles.
+# ===========================================================================
+_PHASE7_ORACLE_INSTALLED = True
+
+
+def _oracle_deserialization(oracle, context):
+    from . import deserialization
+    url = _context_url(context)
+    if not url:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    method = (oracle.get("method") if isinstance(oracle, dict) else None) or "POST"
+    r = deserialization.scan(url, method=method,
+                              roe_guard=context.get("roe_guard"))
+    return {"verdict": r["verdict"], "reason": r.reason,
+            "evidence": r.evidence or {}}
+
+
+def _oracle_graphql_schema(oracle, context):
+    from . import graphql_schema
+    endpoint = _context_url(context)
+    if not endpoint:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    r = graphql_schema.scan(endpoint, roe_guard=context.get("roe_guard"))
+    return {"verdict": r["verdict"], "reason": r.reason,
+            "evidence": r.evidence or {}}
+
+
+def _oracle_sourcemap_mine(oracle, context):
+    from .recon import sourcemaps
+    js_urls = []
+    for s in (context.get("steps") or []):
+        u = s.get("url") or ""
+        if u.endswith(".js") or ".js?" in u:
+            js_urls.append(u)
+    if not js_urls:
+        return {"verdict": "PASS", "reason": "no JS URLs in context",
+                "evidence": {}}
+    r = sourcemaps.mine(js_urls, roe_guard=context.get("roe_guard"))
+    maps = r.get("maps_found") or []
+    if not maps:
+        return {"verdict": "PASS",
+                "reason": f"no source maps across {len(js_urls)} JS URL(s)",
+                "evidence": {}}
+    total_params = set()
+    for m in maps:
+        total_params.update(m.get("params") or [])
+    return {"verdict": "SUSPICIOUS",
+            "reason": f"{len(maps)} source map(s), {len(total_params)} param(s)",
+            "evidence": r}
+
+
+def _oracle_ct_subdomain(oracle, context):
+    from .recon import ct_logs
+    domain = _context_url(context) or context.get("target", "")
+    if not domain:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    r = ct_logs.harvest(domain)
+    if not r:
+        return {"verdict": "UNKNOWN",
+                "reason": "crt.sh unreachable or no certificates",
+                "evidence": {}}
+    count = r.get("count") or 0
+    return {"verdict": "SUSPICIOUS" if count else "PASS",
+            "reason": f"{count} subdomain(s) in CT logs",
+            "evidence": r}
+
+
+_HANDLERS.update({
+    "deserialization_scan": _oracle_deserialization,
+    "graphql_schema_walk": _oracle_graphql_schema,
+    "sourcemap_mine": _oracle_sourcemap_mine,
+    "ct_subdomain": _oracle_ct_subdomain,
+})
+
+
+# ===========================================================================
+# Phase 8 — subdomain takeover, cloud storage, HPP oracles.
+# ===========================================================================
+_PHASE8_ORACLE_INSTALLED = True
+
+
+def _oracle_subdomain_takeover(oracle, context):
+    from . import subdomain_takeover
+    urls = []
+    for s in (context.get("steps") or []):
+        u = s.get("url")
+        if u and u.startswith(("http://", "https://")):
+            urls.append(u)
+    if not urls:
+        return {"verdict": "UNKNOWN", "reason": "no urls in context",
+                "evidence": {}}
+    r = subdomain_takeover.scan(urls, roe_guard=context.get("roe_guard"))
+    return {"verdict": r["verdict"], "reason": r.reason,
+            "evidence": r.evidence or {}}
+
+
+def _oracle_cloud_storage(oracle, context):
+    from . import cloud_storage
+    url = _context_url(context) or context.get("target", "")
+    if not url:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    r = cloud_storage.scan(url)
+    return {"verdict": r["verdict"], "reason": r.reason,
+            "evidence": r.evidence or {}}
+
+
+def _oracle_hpp(oracle, context):
+    from .injection import hpp
+    url = _context_url(context) or context.get("target", "")
+    if not url:
+        return {"verdict": "UNKNOWN", "reason": "no url in context",
+                "evidence": {}}
+    r = hpp.scan(url, roe_guard=context.get("roe_guard"))
+    return {"verdict": r["verdict"], "reason": r.reason,
+            "evidence": r.evidence or {}}
+
+
+_HANDLERS.update({
+    "subdomain_takeover": _oracle_subdomain_takeover,
+    "cloud_storage_enum": _oracle_cloud_storage,
+    "hpp_scan": _oracle_hpp,
 })
