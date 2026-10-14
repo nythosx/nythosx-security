@@ -2220,6 +2220,8 @@ function handleLiveExtraction(d) {
     }
     body.innerHTML = sum + idorBlock + cards;
     pane.style.display = 'flex';
+    window.__scanRecon = data;
+    if (window.__articleReady) window.__articleReady();
   }
   function fetchRecon(url) {
     if (!url) return;
@@ -2370,6 +2372,9 @@ function handleLiveExtraction(d) {
             .then(function (job) {
               if (job && job.narrator_summary) narrateSummary(job.narrator_summary);
               if (job && job.result) renderFinalFindings(job.result);
+              window.__scanResult = (job && job.result) || null;
+              window.__scanSummary = (job && job.narrator_summary) || null;
+              if (window.__articleReady) window.__articleReady();
               fetchRecon(reconTarget);
             })
             .catch(function () {});
@@ -2417,6 +2422,8 @@ function handleLiveExtraction(d) {
     for (var eid in edgeEls) edgeEls[eid].setAttribute('class', 'edge pending');
     for (var lid in edgeLabelEls) edgeLabelEls[lid].setAttribute('class', 'edge-label');
     packetsG.innerHTML = '';
+    window.__scanResult = null; window.__scanRecon = null; window.__scanSummary = null;
+    if (window.__articleReset) window.__articleReset();
     if (es) { es.close(); es = null; }
     overlay.classList.remove('hidden');
   }
@@ -2624,5 +2631,179 @@ def _inject_credential_ui(html):
     return html[:idx] + injection + html[idx:]
 
 
+def _inject_article_ui(html):
+    if "articleOverlay" in html:
+        return html
+    marker = "</body>"
+    idx = html.rfind(marker)
+    if idx == -1:
+        return html
+    injection = """
+<style>
+#articleOpenBtn{position:fixed;top:14px;right:16px;z-index:9998;display:none;
+  font:13px/1 inherit;padding:8px 14px;border:none;border-radius:999px;
+  background:rgba(128,128,128,0.16);color:inherit;cursor:pointer}
+#articleOpenBtn:hover{background:rgba(128,128,128,0.28)}
+#articleOverlay{position:fixed;inset:0;z-index:9999;display:none;overflow-y:auto;
+  background:#fbfaf8;color:#1b1b1a}
+@media (prefers-color-scheme:dark){#articleOverlay{background:#16181b;color:#dfe2e6}}
+#articleClose{position:fixed;top:16px;right:20px;font:15px/1 inherit;border:none;
+  background:transparent;color:inherit;opacity:.55;cursor:pointer}
+#articleClose:hover{opacity:1}
+#articleDoc{max-width:720px;margin:0 auto;padding:72px 28px 120px;
+  font-family:Georgia,'Iowan Old Style','Times New Roman',serif;font-size:18px;line-height:1.7}
+#articleDoc h1{font-size:34px;line-height:1.2;font-weight:700;margin:0 0 6px}
+#articleDoc .sub{font-style:italic;opacity:.72;margin:0 0 36px;font-size:17px}
+#articleDoc h2{font-size:23px;font-weight:700;margin:42px 0 10px}
+#articleDoc h3{font-size:19px;font-weight:700;font-style:italic;margin:28px 0 6px}
+#articleDoc p{margin:0 0 16px}
+#articleDoc em{font-style:italic}
+#articleDoc strong{font-weight:700}
+#articleDoc ul{margin:0 0 16px;padding-left:24px}
+#articleDoc li{margin:0 0 6px}
+#articleDoc .fields{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;opacity:.78}
+#articleDoc .quiet{opacity:.6;font-size:15px;font-style:italic}
+</style>
+<button id="articleOpenBtn" type="button">Read as article</button>
+<div id="articleOverlay"><button id="articleClose" type="button">close &times;</button>
+<article id="articleDoc"></article></div>
+<script>
+(function(){
+  if (window.__articleRuntime) return;
+  window.__articleRuntime = true;
+  function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){
+    return c==='&'?'&amp;':c==='<'?'&lt;':'&gt;';});}
+  function host(u){try{return new URL(u).host||u;}catch(e){return String(u||'the target');}}
+  function plural(n,w){n=n||0;return n+' '+w+(n===1?'':'s');}
+  function cap(s){s=String(s||'');return s?s[0].toUpperCase()+s.slice(1):s;}
+  var btn=document.getElementById('articleOpenBtn');
+  var overlay=document.getElementById('articleOverlay');
+  var doc=document.getElementById('articleDoc');
+  var closeBtn=document.getElementById('articleClose');
+  btn.addEventListener('click',function(){doc.innerHTML=build();overlay.style.display='block';
+    overlay.scrollTop=0;window.scrollTo(0,0);});
+  closeBtn.addEventListener('click',function(){overlay.style.display='none';});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')overlay.style.display='none';});
+  window.__articleReady=function(){btn.style.display='block';};
+  window.__articleReset=function(){btn.style.display='none';overlay.style.display='none';doc.innerHTML='';};
+
+  function build(){
+    var r=window.__scanResult||{};
+    var rc=window.__scanRecon||{};
+    var sm=window.__scanSummary;
+    var h=host(r.target||r.entered_url);
+    var out=[];
+    out.push('<h1>Security assessment: '+esc(h)+'</h1>');
+    var fw=(r.framework&&(r.framework.name))||'an unrecognised stack';
+    var when=new Date().toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'});
+    var authTxt=r.logged_in?'scanned as an authenticated user':'scanned anonymously';
+    out.push('<p class="sub">An automated assessment of '+esc(h)+', presenting as '+esc(fw)+
+      ', '+authTxt+' on '+esc(when)+'.</p>');
+
+    out.push('<h2>What we did</h2>');
+    out.push('<p>We started by fingerprinting the application to learn what it is built on, then '+
+      'recovered its routes from the JavaScript it ships to the browser rather than guessing at '+
+      'paths. Each route we found was probed directly, we tried to read whatever data it would '+
+      'return, and we ran the engine&rsquo;s vulnerability chains against the live surface.</p>');
+    if (typeof sm==='string'&&sm.trim()) out.push('<p>'+esc(sm.trim())+'</p>');
+
+    out.push('<h2>The target</h2>');
+    var tp='The application at <strong>'+esc(h)+'</strong> presents as <em>'+esc(fw)+'</em>';
+    if (r.framework&&r.framework.score) tp+=' (detection score '+esc(r.framework.score)+')';
+    tp+='.';
+    if (r.api_base) tp+=' Its API is served under <strong>'+esc(r.api_base)+'</strong>';
+    if (r.api_paths_count) tp+=', where we catalogued '+plural(r.api_paths_count,'route')+'';
+    tp+='.';
+    out.push('<p>'+tp+'</p>');
+    out.push('<p>'+(r.logged_in?'We authenticated successfully, so the findings below reflect what a legitimate logged-in user can reach.':'No credentials were used; everything below was reachable without logging in at all.')+'</p>');
+
+    var s=rc.summary||{};
+    if (s.endpoints||s.live){
+      out.push('<h2>What we discovered</h2>');
+      var dp='Of '+plural(s.endpoints||0,'candidate route')+', '+(s.live||0)+' responded as live'+
+        (s.with_data?', and '+s.with_data+' of those handed back data':'')+'.';
+      out.push('<p>'+dp+'</p>');
+      var bc=s.by_category||{};
+      var cats=Object.keys(bc);
+      if (cats.length){
+        var parts=cats.map(function(k){return plural(bc[k],k+' endpoint');});
+        out.push('<p>By their nature these break down as '+parts.join(', ').replace(/,([^,]*)$/,' and$1')+'. '+
+          'Endpoints we consider public or telemetry by design are not treated as weaknesses.</p>');
+      }
+      if (rc.soft_404) out.push('<p class="quiet">The site answers unknown paths with a soft 404 '+
+        '(HTTP '+esc(rc.soft_404.status)+', '+esc(rc.soft_404.len)+' bytes), which we accounted for so '+
+        'phantom pages were never mistaken for real ones.</p>');
+    }
+
+    var ex=r.extracted_rows||[];
+    out.push('<h2>What we were able to read</h2>');
+    if (ex.length){
+      out.push('<p>We pulled records from '+plural(ex.length,'endpoint')+' (every value below is masked):</p>');
+      ex.slice(0,12).forEach(function(e){
+        var keys=(e.rows&&e.rows[0]&&typeof e.rows[0]==='object')?Object.keys(e.rows[0]).slice(0,10):[];
+        var p='From <strong>'+esc(e.endpoint)+'</strong> we read '+(e.extracted||0)+' of '+
+          (e.total_rows||0)+' row(s) ('+esc(e.auth_used||'unauth')+')';
+        if (keys.length) p+=', exposing the fields <span class="fields">'+esc(keys.join(', '))+'</span>';
+        p+='.';
+        out.push('<p>'+p+'</p>');
+      });
+      if (r.total_extracted) out.push('<p class="quiet">'+plural(r.total_extracted,'record')+' read in total.</p>');
+    } else {
+      out.push('<p>No endpoint returned readable records to us. Where data was behind authentication, it stayed there.</p>');
+    }
+
+    var ff=(r.findings||[]).filter(function(f){return f.verdict==='VULNERABLE'||f.verdict==='SUSPICIOUS';});
+    out.push('<h2>Findings</h2>');
+    if (!ff.length){
+      out.push('<p>We did not surface any vulnerable or suspicious behaviour across the surface we '+
+        'exercised. For a target like this that is itself the headline: the endpoints held up, access '+
+        'control behaved, and nothing leaked that should not have.</p>');
+    } else {
+      out.push('<p>We raised '+plural(ff.length,'finding')+'. Each is described below in plain terms.</p>');
+      ff.forEach(function(f){
+        out.push('<h3>'+esc(f.pattern_id||f.id||'Finding')+'</h3>');
+        var verd=f.verdict==='VULNERABLE'?'a confirmed weakness':'a suspicious signal worth a closer look';
+        var fp='This is '+verd;
+        if (f.severity) fp+=', rated <em>'+esc(String(f.severity).toLowerCase())+'</em>';
+        fp+='. '+esc(f.reason||'No further detail was recorded.');
+        out.push('<p>'+fp+'</p>');
+        var note=f.triage_note||(f.evidence&&f.evidence.triage&&f.evidence.triage.note);
+        var conf=f.triage_confidence||(f.evidence&&f.evidence.triage&&f.evidence.triage.confidence);
+        if (note||conf){
+          var cp=[];
+          if (conf) cp.push('our confidence here is <em>'+esc(conf)+'</em>');
+          if (note) cp.push(esc(note));
+          out.push('<p class="quiet">'+cap(cp.join('; '))+'.</p>');
+        }
+      });
+    }
+
+    var idc=(rc.idor&&rc.idor.idor_candidates)||[];
+    if (idc.length){
+      out.push('<h2>Access-control candidates</h2>');
+      out.push('<p>These resources enumerated in a way that may let one user reach another&rsquo;s '+
+        'data. They warrant a manual check with a second account:</p>');
+      out.push('<ul>'+idc.slice(0,20).map(function(x){return '<li class="fields">'+esc(x)+'</li>';}).join('')+'</ul>');
+    }
+
+    out.push('<h2>In summary</h2>');
+    var c=r.counts||{};
+    var concl;
+    if ((c.VULNERABLE||0)>0) concl='We confirmed '+plural(c.VULNERABLE,'vulnerability')+'. These should be fixed before anything else, and re-tested afterwards.';
+    else if ((c.SUSPICIOUS||0)>0) concl='Nothing was outright confirmed, but '+plural(c.SUSPICIOUS,'signal')+' deserve a manual second pass before the target is called clean.';
+    else concl='The target held up to everything we ran. Keep the surface small, keep authentication in front of anything sensitive, and re-run this as the application changes.';
+    out.push('<p>'+concl+'</p>');
+    return out.join('\\n');
+  }
+  window.__articleBuild=build;
+  if (window.__scanResult) btn.style.display='block';
+})();
+</script>
+"""
+    return html[:idx] + injection + html[idx:]
+
+
 PAGE = _inject_credential_ui(PAGE)
 PAGE_CLASSIC = _inject_credential_ui(PAGE_CLASSIC)
+PAGE = _inject_article_ui(PAGE)
+PAGE_CLASSIC = _inject_article_ui(PAGE_CLASSIC)
