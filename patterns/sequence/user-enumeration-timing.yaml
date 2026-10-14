@@ -12,13 +12,25 @@ inputs:
     default: 5
 
 steps:
+  - name: warmup
+    repeat: 3
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        email: "warmup_connection_probe@example.com"
+        username: "warmup_connection_probe@example.com"
+        identifier: "warmup_connection_probe@example.com"
+        password: "wrong"
   - name: invalid_user
     repeat: "{{ inputs.samples }}"
     request:
       method: POST
       url: "{{ inputs.target_url }}"
       json:
+        email: "doesnotexist_xyz@example.com"
         username: "doesnotexist_xyz@example.com"
+        identifier: "doesnotexist_xyz@example.com"
         password: "wrong"
   - name: valid_user
     repeat: "{{ inputs.samples }}"
@@ -26,7 +38,9 @@ steps:
       method: POST
       url: "{{ inputs.target_url }}"
       json:
+        email: "admin@example.com"
         username: "admin@example.com"
+        identifier: "admin@example.com"
         password: "wrong"
 
 oracles:

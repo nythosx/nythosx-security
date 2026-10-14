@@ -339,6 +339,22 @@ def _make_fuzz_values(schema):
     values = []
     if not isinstance(schema, dict):
         return [{"type": "string", "value": "test"}]
+    ex = schema.get("example")
+    if ex is not None:
+        values.append({"type": "spec_example", "value": ex})
+    exs = schema.get("examples")
+    if isinstance(exs, dict):
+        for _k, _v in exs.items():
+            if isinstance(_v, dict) and "value" in _v:
+                values.append({"type": "spec_example", "value": _v["value"]})
+            elif _v is not None:
+                values.append({"type": "spec_example", "value": _v})
+    elif isinstance(exs, list):
+        for _v in exs:
+            if isinstance(_v, dict) and "value" in _v:
+                values.append({"type": "spec_example", "value": _v["value"]})
+            elif _v is not None:
+                values.append({"type": "spec_example", "value": _v})
     stype = schema.get("type", "string")
     if isinstance(stype, list):
         stype = stype[0] if stype else "string"

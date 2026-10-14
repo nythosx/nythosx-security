@@ -93,4 +93,52 @@ def render_chain_svg(chains, width=1100, box_w=160, box_h=48,
     )
 
 
-__all__ = ["render_chain_svg", "VERDICT_COLORS", "CHAIN_VERDICT_STROKE"]
+def render_data_flow_svg(rows, width=900, bar_h=22, gap_y=8,
+                         padding=20, label_w=280):
+    if not rows:
+        return ""
+    bars = []
+    y = padding
+    max_total = max((r.get("total_rows") or 0) for r in rows) or 1
+    track_w = max(120, width - label_w - padding * 3 - 60)
+    for r in rows:
+        label = str(r.get("endpoint") or "?")
+        if len(label) > 38:
+            label = "..." + label[-35:]
+        auth = r.get("auth_used") or "?"
+        total = int(r.get("total_rows") or 0)
+        extracted = int(r.get("extracted") or len(r.get("rows") or []))
+        pct = int((total / max_total) * 100) if max_total else 0
+        color = "#e5484d" if "unauth" in str(auth).lower() else "#58a6ff"
+        bars.append(
+            f'<text x="{padding}" y="{y + 14}" fill="#c9d1d9" '
+            f'font-family="monospace" font-size="11">'
+            f'{label}</text>'
+        )
+        bars.append(
+            f'<rect x="{padding + label_w}" y="{y + 2}" '
+            f'width="{track_w}" height="{bar_h - 6}" '
+            f'fill="#161b22" rx="3"/>'
+        )
+        bars.append(
+            f'<rect x="{padding + label_w}" y="{y + 2}" '
+            f'width="{int(track_w * pct / 100)}" height="{bar_h - 6}" '
+            f'fill="{color}" rx="3"/>'
+        )
+        bars.append(
+            f'<text x="{padding + label_w + track_w + 10}" y="{y + 14}" '
+            f'fill="#8b949e" font-family="monospace" font-size="10">'
+            f'{extracted}/{total} ({auth})</text>'
+        )
+        y += bar_h + gap_y
+    total_h = y + padding
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {width} {total_h}" width="100%" '
+        f'style="background:#0d1117;border-radius:8px;">'
+        + "".join(bars) + '</svg>'
+    )
+
+
+__all__ = ["render_chain_svg", "render_data_flow_svg",
+           "VERDICT_COLORS", "CHAIN_VERDICT_STROKE"]

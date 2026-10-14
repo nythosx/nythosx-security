@@ -59,6 +59,16 @@ class RateLimiter:
     def on_429(self):
         time.sleep(self.on_429_backoff_ms / 1000.0)
 
+    def snapshot(self):
+        with self.lock:
+            return {
+                "global_rps": self.global_rps,
+                "per_endpoint_rps": self.per_endpoint_rps,
+                "burst": self.burst,
+                "global_tokens": round(self.global_bucket.tokens, 2),
+                "endpoint_count": len(self.endpoints),
+            }
+
 
 # --- Shared limiter registry (Confidence Gap #1) ---------------------------
 # A fresh HttpClient (and therefore a fresh RateLimiter) is created for every
@@ -88,3 +98,13 @@ def reset_shared_limiters():
     """Clear the shared registry. Used by tests to isolate state."""
     with _registry_lock:
         _shared_limiters.clear()
+
+def snapshot():
+    with _registry_lock:
+        return {
+            "limiter_count": len(_shared_limiters),
+            "limiters": [
+                {"key": list(k), **v.snapshot()}
+                for k, v in _shared_limiters.items()
+            ],
+        }

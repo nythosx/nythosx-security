@@ -1,0 +1,20 @@
+id: subdomain-takeover
+name: Subdomain Takeover
+severity: high
+tags: [subdomain, takeover, recon, wstg-conf-10, cwe-350]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      follow_redirects: true
+
+oracles:
+  - type: subdomain_takeover
+    verdict: VULNERABLE

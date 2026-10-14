@@ -6,14 +6,13 @@ import pytest
 
 
 def _ensure_claude_agent_sdk():
-    if "claude_agent_sdk" in sys.modules:
+    if getattr(sys.modules.get("claude_agent_sdk"), "_is_test_stub", False):
         return
-    try:
-        import claude_agent_sdk  # noqa: F401
-        return
-    except ImportError:
-        pass
+    for key in list(sys.modules.keys()):
+        if key == "claude_agent_sdk" or key.startswith("sec_checker_tools"):
+            del sys.modules[key]
     mod = types.ModuleType("claude_agent_sdk")
+    mod._is_test_stub = True
 
     def tool(name, description, schema=None):
         def deco(fn):

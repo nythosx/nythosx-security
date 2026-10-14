@@ -126,7 +126,8 @@ def scan(target_url, headers=None, roe_guard=None, change_path=None,
             if current_password is not None:
                 body[current_password_field] = current_password
             r = _post(url, body, headers, timeout, verify, roe_guard)
-            entry = {"path": path, "password": pw, "status": r.get("status")}
+            entry = {"path": path, "password": pw, "status": r.get("status"),
+                     "error": r.get("error")}
             attempts.append(entry)
             if r.get("blocked"):
                 return ScanResult(
@@ -155,9 +156,13 @@ def scan(target_url, headers=None, roe_guard=None, change_path=None,
         )
     statuses = [a["status"] for a in attempts if a["status"] is not None]
     if not statuses:
+        from .util import summarize_failures
+        why = summarize_failures(attempts)
         return ScanResult(
             capability="weak_password_scan", target=target_url,
-            verdict="UNKNOWN", reason="all requests failed",
+            verdict="UNKNOWN",
+            reason=f"all requests failed ({why})" if why else "all requests failed",
+            evidence={"attempts": attempts[:20]},
         )
     if all(s in (404, 405) for s in statuses):
         return ScanResult(

@@ -149,7 +149,105 @@ def confirm_ssrf_callback(target_url, param, oob=None, method="GET",
     return {"confirmed": False, "reason": "no OOB callback"}
 
 
+
+
+def _confirm_bola_harvest(finding, ctx):
+    ev = (finding or {}).get("evidence") or {}
+    records = ev.get("extracted_records") or ev.get("records") or []
+    if not records:
+        return {"confirmed": False,
+                "reason": "no records to confirm"}
+    owners = set()
+    for r in records:
+        if not isinstance(r, dict):
+            continue
+        for k in ("owner", "owner_id", "user_id", "email", "account_id"):
+            if r.get(k) is not None:
+                owners.add(str(r.get(k)))
+                break
+    if len(owners) >= 2:
+        return {"confirmed": True,
+                "reason": f"harvested {len(records)} record(s) across "
+                          f"{len(owners)} distinct owners"}
+    if len(records) >= 2:
+        return {"confirmed": True,
+                "reason": f"harvested {len(records)} record(s) "
+                          f"(single-owner sample)"}
+    return {"confirmed": False,
+            "reason": "single record harvest is not enough to confirm BOLA"}
+
+
+def _confirm_blind_sqli_extract(finding, ctx):
+    ev = (finding or {}).get("evidence") or {}
+    extracted = ev.get("extracted_value") or ev.get("value") or ""
+    if not extracted or not isinstance(extracted, str):
+        return {"confirmed": False, "reason": "no extracted value to confirm"}
+    if len(extracted) < 3:
+        return {"confirmed": False,
+                "reason": f"extracted value too short ({len(extracted)} chars)"}
+    return {"confirmed": True,
+            "reason": f"reconstructed {len(extracted)} character(s) via blind extraction"}
+
+
+def _confirm_graphql_data_dump(finding, ctx):
+    ev = (finding or {}).get("evidence") or {}
+    types = ev.get("dumped_types") or ev.get("types") or []
+    records = ev.get("extracted_records") or ev.get("records") or []
+    if types and records:
+        return {"confirmed": True,
+                "reason": f"dumped {len(types)} type(s), "
+                          f"{len(records)} record(s) extracted"}
+    if types:
+        return {"confirmed": True,
+                "reason": f"schema dump: {len(types)} type(s)"}
+    return {"confirmed": False, "reason": "no schema or records dumped"}
+
+
+def _confirm_blind_xxe_file_read(finding, ctx):
+    ev = (finding or {}).get("evidence") or {}
+    files = ev.get("files_read") or ev.get("files") or []
+    if not files:
+        return {"confirmed": False, "reason": "no files read"}
+    return {"confirmed": True,
+            "reason": f"file read confirmed: {', '.join(str(f) for f in files[:3])}"}
+
+
+def _confirm_llm_prompt_dump(finding, ctx):
+    ev = (finding or {}).get("evidence") or {}
+    prompt = ev.get("system_prompt") or ev.get("leaked_prompt") or ""
+    if not prompt or len(str(prompt)) < 40:
+        return {"confirmed": False,
+                "reason": "no substantive system prompt recovered"}
+    return {"confirmed": True,
+            "reason": f"system prompt recovered ({len(str(prompt))} chars)"}
+
+
+def _confirm_llm_cred_extract(finding, ctx):
+    ev = (finding or {}).get("evidence") or {}
+    creds = ev.get("credentials") or ev.get("leaked_secrets") or []
+    if not creds:
+        return {"confirmed": False, "reason": "no credentials in output"}
+    return {"confirmed": True,
+            "reason": f"{len(creds)} credential(s) recovered"}
+
+
+def _confirm_generic_extraction(finding, ctx):
+    ev = (finding or {}).get("evidence") or {}
+    if ev.get("extracted_data") or ev.get("extracted_records") or \
+            ev.get("records") or ev.get("files_read"):
+        return {"confirmed": True, "reason": "extraction evidence present"}
+    return {"confirmed": False, "reason": "no extraction evidence"}
+
 _DISPATCH = {
+    "bola_harvest": _confirm_bola_harvest,
+    "blind_sqli_extract": _confirm_blind_sqli_extract,
+    "graphql_data_dump": _confirm_graphql_data_dump,
+    "blind_xxe_file_read": _confirm_blind_xxe_file_read,
+    "llm_system_prompt_dump": _confirm_llm_prompt_dump,
+    "llm_credential_extract": _confirm_llm_cred_extract,
+    "unauth_pagination_dump": _confirm_generic_extraction,
+    "mcp_tool_poisoning": _confirm_generic_extraction,
+    "mcp_credential_exposure": _confirm_generic_extraction,
     "auth_bypass": lambda finding, ctx: confirm_auth_bypass(
         ctx.get("target", ""),
         finding.get("evidence", {}).get("forged_token") or "",

@@ -28,11 +28,13 @@ _state = {
     "max_requests": None,
     "max_per_host": None,
     "max_duration_seconds": None,
+    "phase": "chains",
+    "recon_frac": 0.5,
 }
 
 
 def configure(max_requests=None, max_per_host=None,
-              max_duration_seconds=None):
+              max_duration_seconds=None, recon_frac=None):
     """Reset and configure the budget. Idempotent."""
     with _lock:
         _state["enabled"] = True
@@ -42,6 +44,12 @@ def configure(max_requests=None, max_per_host=None,
         _state["max_requests"] = max_requests
         _state["max_per_host"] = max_per_host
         _state["max_duration_seconds"] = max_duration_seconds
+        _state["phase"] = "chains"
+        if recon_frac is not None:
+            try:
+                _state["recon_frac"] = max(0.05, min(0.95, float(recon_frac)))
+            except (TypeError, ValueError):
+                pass
 
 
 def disable():
@@ -68,21 +76,47 @@ def snapshot():
             "max_per_host": _state["max_per_host"],
             "max_duration_seconds": _state["max_duration_seconds"],
             "started_at_monotonic": _state["started_at"],
+            "phase": _state.get("phase", "chains"),
+            "recon_frac": _state.get("recon_frac", 0.5),
+            "effective_max_requests": _effective_max_requests(),
         }
 
 
-def record(url):
+def set_phase(phase):
+    with _lock:
+        _state["phase"] = "recon" if phase == "recon" else "chains"
+
+
+def _effective_max_requests():
+    st = _state
+    max_r = st["max_requests"]
+    if max_r is None:
+        return None
+    if st.get("phase") == "recon":
+        frac = st.get("recon_frac", 0.5)
+        return max(10, int(max_r * frac))
+    return max_r
+
+
+def record(url, weight=1.0):
     """Record one outbound request. Raise BudgetExceeded if any cap hit."""
     if not _state.get("enabled", True):
         return
+    try:
+        weight = float(weight)
+    except (TypeError, ValueError):
+        weight = 1.0
+    if weight <= 0:
+        weight = 1.0
     host = urlparse(str(url)).hostname or ""
     with _lock:
         st = _state
-        if st["max_requests"] is not None and \
-                st["requests"] >= st["max_requests"]:
+        eff = _effective_max_requests()
+        if eff is not None and st["requests"] >= eff:
+            label = ("recon" if st.get("phase") == "recon" else "request")
             raise BudgetExceeded(
-                f"request budget exceeded "
-                f"({st['requests']}/{st['max_requests']})"
+                f"{label} budget exceeded "
+                f"({st['requests']}/{eff}, total cap {st['max_requests']})"
             )
         if st["max_per_host"] is not None:
             cur = st["per_host"].get(host, 0)
@@ -99,8 +133,17 @@ def record(url):
                     f"duration budget exceeded "
                     f"({elapsed:.0f}s/{st['max_duration_seconds']}s)"
                 )
-        st["requests"] += 1
-        st["per_host"][host] = st["per_host"].get(host, 0) + 1
+        st["requests"] += weight
+        st["per_host"][host] = st["per_host"].get(host, 0) + weight
+
+
+def raise_duration_ceiling(seconds):
+    if seconds is None:
+        return
+    with _lock:
+        cur = _state["max_duration_seconds"]
+        if cur is None or seconds > cur:
+            _state["max_duration_seconds"] = seconds
 
 
 def auto_configure_from_configs():
@@ -126,7 +169,39 @@ def auto_configure_from_configs():
     )
 
 
+def snapshot_human():
+    snap = snapshot()
+    max_req = snap.get("max_requests")
+    max_dur = snap.get("max_duration_seconds")
+    started = snap.get("started_at_monotonic")
+    elapsed = None
+    if started is not None:
+        import time as _t
+        elapsed = round(_t.monotonic() - started, 1)
+    reason = None
+    eff = _effective_max_requests()
+    if eff is not None and int(snap.get("requests") or 0) >= int(eff):
+        label = "recon" if snap.get("phase") == "recon" else "request"
+        reason = (f"{label} budget exhausted "
+                  f"({snap.get('requests')}/{eff}, total {max_req})")
+    elif max_dur is not None and elapsed is not None and elapsed > float(max_dur):
+        reason = f"duration budget exhausted ({elapsed}s/{max_dur}s)"
+    return {
+        "requests": snap.get("requests", 0),
+        "max": max_req,
+        "per_host": snap.get("per_host", {}),
+        "max_per_host": snap.get("max_per_host"),
+        "elapsed_seconds": elapsed,
+        "max_duration_seconds": max_dur,
+        "reason": reason,
+        "phase": snap.get("phase", "chains"),
+        "recon_frac": snap.get("recon_frac", 0.5),
+        "effective_max_requests": snap.get("effective_max_requests"),
+    }
+
+
 __all__ = [
     "BudgetExceeded", "configure", "disable", "enable", "is_configured",
-    "record", "snapshot", "auto_configure_from_configs",
+    "record", "set_phase", "snapshot", "snapshot_human",
+    "auto_configure_from_configs",
 ]

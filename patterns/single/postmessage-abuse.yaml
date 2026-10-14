@@ -1,0 +1,16 @@
+id: postmessage-abuse
+name: PostMessage Origin Validation Missing
+severity: medium
+tags: [postmessage, client-side, wstg-clnt-11, cwe-346]
+inputs:
+  target_url:
+    type: string
+    required: true
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+oracles:
+  - type: postmessage_abuse
+    verdict: SUSPICIOUS

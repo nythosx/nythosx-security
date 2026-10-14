@@ -1,0 +1,20 @@
+id: access-bypass
+name: 403/401 Access Control Bypass
+severity: high
+tags: [access-control, wstg-athz-02, cwe-284, cwe-863]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      follow_redirects: false
+
+oracles:
+  - type: access_bypass_scan
+    verdict: VULNERABLE

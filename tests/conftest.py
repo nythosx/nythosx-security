@@ -72,3 +72,43 @@ def mock_chains():
             'missing': [], 'steps': [], 'narrative_text': 'Step 1 -> Step 2',
         },
     ]
+
+
+@pytest.fixture(autouse=True)
+def _autouse_permissive_roe(monkeypatch):
+    """Tests that hit 127.0.0.1 servers need it in ROE scope.
+
+    Patches engine.roe_guard.load_roe, which is the binding every
+    _http.Client() constructor reads. Tests with their own permissive_roe
+    fixture, or tests that construct ROEGuard(roe={...}) directly, are
+    unaffected.
+    """
+    from engine import roe_guard as _rg
+    monkeypatch.setattr(_rg, "load_roe", lambda: {
+        "enabled": True,
+        "scope": {
+            "in_scope": ["127.0.0.1", "localhost", "::1"],
+            "out_of_scope": [],
+            "allowed_methods": ["GET", "POST", "PUT", "PATCH",
+                                "DELETE", "OPTIONS", "HEAD"],
+            "forbidden_paths": [],
+        },
+    })
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_http_state():
+    """Reset the shared request budget and rate limiter before each test.
+
+    Without this, budget.record() accumulates across the whole pytest run.
+    Once it crosses configs/roe.yaml's max_requests_per_scan (150), every
+    subsequent test that makes an HTTP call sees BudgetExceeded -> error ->
+    status None, which is exactly the pattern seen mid-suite.
+    """
+    from engine import budget as _budget, ratelimit as _rl
+    from engine import http as _http
+    _http._configured = True
+    _budget.configure(max_requests=None, max_per_host=None,
+                      max_duration_seconds=None)
+    _rl.reset_shared_limiters()
+    yield

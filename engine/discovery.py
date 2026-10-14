@@ -8,6 +8,14 @@ from . import progress
 from . import http as _http
 
 
+def _budget_dead():
+    try:
+        from . import budget
+        return budget.snapshot_human().get("reason") is not None
+    except Exception:
+        return False
+
+
 def fetch(url, headers=None, timeout=15, method="GET", json_body=None, data=None,
           follow=True):
     try:
@@ -298,6 +306,148 @@ def crawl_js_for_paths(base_url, js_urls, adapter, max_bundles=40,
     return sorted(all_paths), fetched
 
 
+_ID_LEAF_RE = re.compile(r'^(?:[0-9]+|[0-9a-fA-F]{8,}|[0-9a-fA-F-]{20,})$')
+
+_MISS_VERDICTS = ("not_found", "catch_all", "unreachable")
+_FAMILY_SKIP_AFTER = 3
+
+
+def _path_family(path):
+    # API-ish paths are where the real, heterogeneous endpoints live (one
+    # missing /api/v1/x says nothing about /api/v1/y), so each gets its own
+    # family and is never pruned. Everything else (e.g. /admin/*, /_next/*)
+    # is grouped by its first segment — those tend to exist or not exist as
+    # a whole namespace, so repeated misses there are a real signal.
+    pl = path.lower()
+    if pl.startswith(("/api", "/v1", "/v2", "/rest")) or "graphql" in pl:
+        return path
+    parts = [p for p in path.strip("/").split("/") if p]
+    return parts[0] if parts else "/"
+
+
+def _looks_like_id_leaf(path):
+    leaf = path.rstrip("/").rsplit("/", 1)[-1]
+    return bool(_ID_LEAF_RE.match(leaf))
+
+
+def _probe_one(origin, path, neg, timeout):
+    url = urljoin(origin + "/", path.lstrip("/"))
+    r = fetch(url, timeout=timeout, follow=True)
+    if r is None:
+        return {"path": path, "url": url, "status": None, "verdict": "unreachable"}
+    body = r.text or ""
+    ct = r.headers.get("Content-Type", "").lower()
+    json_resp = is_json_response(r)
+    catch_all = (
+        neg is not None and r.status_code == neg["status"]
+        and "text/html" in ct and not json_resp
+        and abs(len(body) - neg["size"]) <= max(80, int(neg["size"] * 0.15))
+    )
+    if r.status_code == 404:
+        verdict = "not_found"
+    elif catch_all:
+        verdict = "catch_all"
+    elif json_resp:
+        verdict = "live_api"
+    elif r.status_code in (401, 403):
+        verdict = "auth_required"
+    elif 200 <= r.status_code < 300:
+        verdict = "exists"
+    else:
+        verdict = "other"
+    return {"path": path, "url": url, "status": r.status_code,
+            "verdict": verdict, "json": json_resp, "size": len(body)}
+
+
+def probe_paths(base_url, paths, limit=80, timeout=8):
+    """HTTP-probe each JS-extracted candidate path for real.
+
+    extract_api_paths_from_js only finds *string literals* that look like
+    API paths — plenty of those are webpack chunk names or dead code, not
+    real backend routes. This turns each candidate into a verified result
+    (status, verdict) instead of a guess, and is itself subject to ROE /
+    rate-limit / budget enforcement via discovery.fetch -> http.Client.
+
+    Two heuristics make this cheaper and more useful than a flat probe:
+    - Family pruning: paths are grouped by their first two segments
+      (e.g. "/admin/login" -> "admin/login", "/api/v1/x" -> "api/v1"). After
+      _FAMILY_SKIP_AFTER consecutive misses (404 / catch-all / unreachable)
+      in the same family, the rest of that family is skipped without an
+      HTTP request — one bad guess under /admin/* makes the next ones
+      unlikely too, and this keeps the request budget for paths that still
+      have a real chance.
+    - ID follow-up: a path that resolves (200/JSON, not already ID-shaped)
+      gets one extra probe at "<path>/1" to check for a nested detail route
+      (list endpoint -> single-resource endpoint), which is exactly the
+      shape IDOR-style findings need a real URL for.
+    """
+    import random
+    import string as _string
+
+    parsed = urlparse(base_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    neg = None
+    rand_path = ("/zzz-" + "".join(
+        random.choices(_string.ascii_lowercase + _string.digits, k=20)))
+    try:
+        r = fetch(origin + rand_path, timeout=timeout)
+    except Exception:
+        r = None
+    if r is not None:
+        body = r.text or ""
+        neg = {
+            "status": r.status_code,
+            "is_html": "text/html" in r.headers.get("Content-Type", "").lower(),
+            "size": len(body),
+        }
+
+    uniq = sorted(set(p for p in paths if p))[:limit]
+    total = len(uniq)
+    results = []
+    family_misses = {}
+    skipped_families = set()
+
+    def _emit(entry):
+        results.append(entry)
+        try:
+            progress.emit(progress.active_job(), "endpoint_probe", entry)
+        except Exception:
+            pass
+
+    for i, path in enumerate(uniq, 1):
+        if _budget_dead():
+            results.append({"path": path,
+                            "url": urljoin(origin + "/", path.lstrip("/")),
+                            "status": None, "verdict": "budget_exhausted",
+                            "reason": "duration or request budget exhausted"})
+            continue
+        fam = _path_family(path)
+        if family_misses.get(fam, 0) >= _FAMILY_SKIP_AFTER:
+            if fam not in skipped_families:
+                skipped_families.add(fam)
+                progress.activity(
+                    f"No luck under /{fam} after {_FAMILY_SKIP_AFTER} tries "
+                    "— skipping similar paths", stage="discovery", i=i, n=total)
+            results.append({"path": path, "url": urljoin(origin + "/", path.lstrip("/")),
+                             "status": None, "verdict": "skipped",
+                             "reason": f"{_FAMILY_SKIP_AFTER} consecutive misses under /{fam}"})
+            continue
+        progress.activity(f"Probing endpoint {path}", stage="discovery", i=i, n=total)
+        entry = _probe_one(origin, path, neg, timeout)
+        family_misses[fam] = (family_misses.get(fam, 0) + 1
+                              if entry["verdict"] in _MISS_VERDICTS else 0)
+        _emit(entry)
+        if entry["verdict"] in ("live_api", "exists") and not _looks_like_id_leaf(path):
+            id_path = path.rstrip("/") + "/1"
+            progress.activity(f"{path} looks real — trying {id_path} for a detail route",
+                              stage="discovery", i=i, n=total)
+            id_entry = _probe_one(origin, id_path, neg, timeout)
+            id_entry["id_guess_for"] = path
+            _emit(id_entry)
+    return results
+
+
 def _extract_token(body, token_paths):
     import json
     try:
@@ -320,11 +470,125 @@ def _extract_token(body, token_paths):
     return None
 
 
+_DEFAULT_LOGIN_PATHS = [
+    "/api/login", "/api/auth/login", "/api/v1/login", "/api/v1/auth/login",
+    "/login", "/signin", "/sign-in", "/sign_in",
+    "/auth/login", "/auth/signin", "/account/login", "/user/login",
+    "/users/sign_in", "/wp-login.php", "/admin/login", "/session/new",
+    "/session", "/sessions",
+]
+
+_LOGIN_LINK_RE = re.compile(r"\b(log[\s_-]?in|sign[\s_-]?in)\b", re.I)
+_LOGOUT_WORD_RE = re.compile(r"\b(log[\s_-]?out|sign[\s_-]?out)\b", re.I)
+
+
+def _find_login_links(base_url, timeout=8):
+    """Follow the site's own navigation to its login page instead of only
+    guessing path strings — a real "Sign in" link/button is a stronger
+    signal than any fixed wordlist, and works on any target's own layout."""
+    r = fetch(base_url, timeout=timeout, follow=True)
+    if not r or not is_html(r):
+        return []
+    try:
+        soup = BeautifulSoup(r.text or "", "lxml")
+    except Exception:
+        return []
+    base = str(r.url)
+    found = []
+    seen = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith(("mailto:", "tel:", "javascript:", "#")):
+            continue
+        text = a.get_text(" ", strip=True) or ""
+        if _LOGOUT_WORD_RE.search(text) or _LOGOUT_WORD_RE.search(href):
+            continue
+        if _LOGIN_LINK_RE.search(text) or _LOGIN_LINK_RE.search(href):
+            abs_url = urljoin(base, href)
+            if abs_url not in seen:
+                seen.add(abs_url)
+                found.append(abs_url)
+    return found
+
+
+def _extract_login_form(html, page_url):
+    """Parse a real <form> containing a password field instead of guessing
+    field names — picks up the actual field names and any hidden/CSRF
+    tokens the server expects, generically, on whatever markup the target
+    happens to use."""
+    try:
+        soup = BeautifulSoup(html or "", "lxml")
+    except Exception:
+        return None
+    for form in soup.find_all("form"):
+        pwd = form.find("input", attrs={"type": re.compile("^password$", re.I)})
+        if not pwd or not pwd.get("name"):
+            continue
+        hidden = {}
+        user_field = None
+        for inp in form.find_all("input"):
+            name = inp.get("name")
+            if not name:
+                continue
+            itype = (inp.get("type") or "text").lower()
+            if itype == "password":
+                continue
+            if itype == "hidden":
+                hidden[name] = inp.get("value", "")
+            elif user_field is None and itype in ("text", "email", "tel"):
+                user_field = name
+        if not user_field:
+            continue
+        action = urljoin(page_url, form.get("action") or page_url)
+        method = (form.get("method") or "POST").upper()
+        return {"action": action, "method": method,
+                "username_field": user_field, "password_field": pwd["name"],
+                "hidden": hidden}
+    return None
+
+
+def _try_html_login(page_url, username, password, timeout=8, verify=False):
+    """GET the candidate page, parse its real login form (if any), then POST
+    to it reusing the SAME client so any session/CSRF cookie set on the GET
+    rides along on the POST — two separate short-lived clients would drop
+    that cookie and make every CSRF-protected form look broken."""
+    try:
+        with _http.Client(timeout=timeout, verify=verify,
+                          follow_redirects=True) as c:
+            get_r = c.get(page_url)
+            if "text/html" not in get_r.headers.get("content-type", "").lower():
+                return None
+            form = _extract_login_form(get_r.text or "", str(get_r.url))
+            if not form:
+                return None
+            payload = dict(form["hidden"])
+            payload[form["username_field"]] = username
+            payload[form["password_field"]] = password
+            post_r = c.request(form["method"], form["action"], data=payload,
+                               headers={"Referer": str(get_r.url)},
+                               follow_redirects=False)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+    location = post_r.headers.get("location", "")
+    still_has_form = _extract_login_form(post_r.text or "", str(post_r.url)) is not None
+    redirected_away = (post_r.status_code in (301, 302, 303, 307, 308)
+                      and not _LOGIN_LINK_RE.search(location))
+    cookies = dict(post_r.cookies)
+    success = bool(cookies) and (redirected_away or not still_has_form)
+    return {
+        "url": form["action"], "path": urlparse(form["action"]).path,
+        "fields": {form["username_field"]: username,
+                  "password_field": form["password_field"]},
+        "type": "html_form", "status": post_r.status_code,
+        "note": "success" if success else "endpoint exists, credentials rejected",
+        "token": None, "cookies": cookies, "raw": (post_r.text or "")[:500],
+    }
+
+
 def find_login_endpoint(base_url, adapter, discovered_paths=None, username="", password=""):
     auth_cfg = adapter.get("auth", {}) or {}
-    candidates = list(auth_cfg.get("login_paths") or [
-        "/api/login", "/api/auth/login", "/login", "/auth/login",
-    ])
+    candidates = list(auth_cfg.get("login_paths") or _DEFAULT_LOGIN_PATHS)
     field_candidates = list(auth_cfg.get("login_fields") or [
         "email", "username", "identifier",
     ])
@@ -337,12 +601,25 @@ def find_login_endpoint(base_url, adapter, discovered_paths=None, username="", p
                 if p not in candidates:
                     candidates.insert(0, p)
 
+    for link in _find_login_links(base_url):
+        if link not in candidates:
+            candidates.insert(0, link)
+
     probe_delay_ms = int((auth_cfg.get("probe_delay_ms") or 200))
     best = None
     for pidx, path in enumerate(candidates, 1):
-        url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+        url = path if path.startswith(("http://", "https://")) else \
+            urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
         progress.activity(f"Trying login endpoint {path}",
                           stage="login", i=pidx, n=len(candidates))
+
+        html_result = _try_html_login(url, username, password, timeout=8)
+        if html_result and not html_result.get("error"):
+            if html_result["note"] == "success":
+                return html_result
+            if best is None:
+                best = html_result
+
         for field in field_candidates:
             for ptype in ("json", "form"):
                 if probe_delay_ms > 0:
@@ -399,3 +676,69 @@ def extract_websocket_urls(url_or_html):
         from urllib.parse import urljoin as _urljoin
         return sorted(_urljoin(base, u) if u.startswith("ws") else u for u in found)
     return sorted(found)
+
+
+_ROBOTS_DISALLOW_RE = re.compile(r"^\s*Disallow:\s*(\S+)", re.M | re.I)
+_SITEMAP_LOC_RE = re.compile(r"<loc>([^<]+)</loc>", re.I)
+
+
+def extract_from_robots(base_url, timeout=8):
+    """Return paths discovered in robots.txt Disallow lines and sitemap.xml."""
+    from urllib.parse import urlparse as _urlparse
+    out = set()
+    robots_url = urljoin(base_url.rstrip("/") + "/", "robots.txt")
+    r = fetch(robots_url, timeout=timeout, follow=True)
+    if r is not None and r.status_code == 200:
+        for m in _ROBOTS_DISALLOW_RE.finditer(r.text or ""):
+            p = m.group(1).strip()
+            if p and p != "/" and not p.startswith(("http://", "https://")):
+                out.add(p)
+    sitemap_url = urljoin(base_url.rstrip("/") + "/", "sitemap.xml")
+    r = fetch(sitemap_url, timeout=timeout, follow=True)
+    if r is not None and r.status_code == 200:
+        for m in _SITEMAP_LOC_RE.finditer(r.text or ""):
+            p = _urlparse(m.group(1)).path
+            if p and p != "/":
+                out.add(p)
+    return sorted(out)
+
+
+def extract_all_forms(url, timeout=8):
+    """Return every HTML form on the page as a structured dict.
+
+    Unlike _extract_login_form (which is login-specific), this returns all
+    forms so the fuzzer and mass-assignment probes can use real fields
+    instead of guessing.
+    """
+    r = fetch(url, timeout=timeout, follow=True)
+    if r is None or not is_html(r):
+        return []
+    try:
+        soup = BeautifulSoup(r.text or "", "lxml")
+    except Exception:
+        return []
+    base = str(r.url)
+    out = []
+    for form in soup.find_all("form"):
+        action = form.get("action") or ""
+        method = (form.get("method") or "GET").upper()
+        action_url = urljoin(base, action) if action else base
+        fields = {}
+        for inp in form.find_all(["input", "textarea", "select"]):
+            name = inp.get("name")
+            if not name:
+                continue
+            itype = (inp.get("type") or "text").lower()
+            if itype == "submit":
+                continue
+            fields[name] = {
+                "type": itype,
+                "value": inp.get("value", ""),
+            }
+        if fields:
+            out.append({
+                "action": action_url,
+                "method": method,
+                "fields": fields,
+            })
+    return out

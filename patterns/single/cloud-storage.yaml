@@ -1,0 +1,20 @@
+id: cloud-storage
+name: Cloud Storage Bucket Enumeration
+severity: high
+tags: [cloud, recon, s3, wstg-conf-11, cwe-732]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      follow_redirects: false
+
+oracles:
+  - type: cloud_storage_enum
+    verdict: VULNERABLE

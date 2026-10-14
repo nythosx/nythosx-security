@@ -9,6 +9,7 @@ from .roe_guard import ROEGuard, ROEViolation
 from . import progress
 from .facts import FactStore
 from .scoring import rank_chains, load_history
+from . import hooks as _hooks
 
 ROOT = Path(__file__).parent.parent.absolute()
 
@@ -71,7 +72,7 @@ def _classify_unknown(result):
 class ChainOrchestrator:
     def __init__(self, target, roe_guard=None, engine_cfg=None, job_id=None,
                  max_budget_sec=900, verbose=False, kill_on_vuln=False,
-                 allow_destructive=False):
+                 allow_destructive=False, credentials=None, triage_brain=None):
         self.target = target.rstrip("/")
         self.job_id = job_id
         self.engine_cfg = engine_cfg if engine_cfg is not None else load_engine()
@@ -81,11 +82,14 @@ class ChainOrchestrator:
         self.verbose = verbose
         self.kill_on_vuln = kill_on_vuln
         self.allow_destructive = bool(allow_destructive)
+        self.credentials = credentials if isinstance(credentials, dict) else {}
+        self.triage_brain = triage_brain
         self.stopped_reason = None
         self.started = time.monotonic()
         try:
             from . import budget as _budget
             _budget.auto_configure_from_configs()
+            _budget.raise_duration_ceiling(max_budget_sec)
         except Exception:
             pass
 
@@ -102,8 +106,10 @@ class ChainOrchestrator:
             "js_urls": [],
             "api_paths": [],
             "live_paths": [],
+            "endpoint_probes": [],
             "errors": [],
         }
+        self.diagnostics = []
 
         try:
             self.roe_guard.check_url(self.target, "GET")
@@ -117,6 +123,25 @@ class ChainOrchestrator:
     def _activity(self, msg, stage=None):
         if self.job_id:
             progress.activity(msg, stage=stage)
+
+    def _warn(self, code, detail, **extra):
+        entry = {"code": code, "detail": detail}
+        entry.update(extra)
+        self.diagnostics.append({"severity": "warning", **entry})
+        self._emit("warning", entry)
+        if not self.job_id:
+            import sys as _sys
+            _sys.stderr.write(f"[sec-checker] warning {code}: {detail}\n")
+
+    def _diag(self, category, severity, detail, **extra):
+        entry = {"category": category, "severity": severity, "detail": detail}
+        entry.update(extra)
+        self.diagnostics.append(entry)
+        self._emit("diagnostic", entry)
+        if not self.job_id:
+            import sys as _sys
+            _sys.stderr.write(
+                f"[sec-checker] {severity} {category}: {detail}\n")
 
     def _budget_left(self):
         return self.max_budget_sec - (time.monotonic() - self.started)
@@ -146,6 +171,14 @@ class ChainOrchestrator:
         if self._budget_left() <= 0:
             return True
         return self._http_budget_exceeded()
+
+    def _budget_dead(self):
+        try:
+            from . import budget as _b
+            snap = _b.snapshot_human()
+            return snap.get("reason") is not None
+        except Exception:
+            return False
 
     def _stop_condition(self):
         if self._budget_exceeded():
@@ -189,6 +222,13 @@ class ChainOrchestrator:
 
     def run_recon(self):
         from . import discovery, api_discovery
+        from .recon import wayback as _wayback
+
+        try:
+            from . import budget as _b
+            _b.set_phase("recon")
+        except Exception:
+            pass
 
         self._emit("phase", {"name": "recon", "status": "running"})
         self._activity("Fingerprinting framework", stage="recon")
@@ -252,6 +292,57 @@ class ChainOrchestrator:
         except Exception as e:
             self.recon["errors"].append(f"js_extraction: {e}")
 
+        if self._budget_dead():
+            self._warn("budget_exceeded",
+                       "recon aborted after JS extraction: duration or request budget exhausted")
+            self.recon["errors"].append("recon aborted: budget exhausted")
+            self._emit("phase", {"name": "recon", "status": "done"})
+            return
+
+        self._activity("Verifying candidate API paths", stage="recon")
+        try:
+            if self.recon.get("api_paths"):
+                probes = discovery.probe_paths(api_base, self.recon["api_paths"])
+                self.recon["endpoint_probes"] = probes
+                live = [p for p in probes
+                        if p["verdict"] in ("live_api", "exists", "auth_required")]
+                self.add_fact("verified_endpoint_count", len(live),
+                              source="endpoint_probe")
+        except Exception as e:
+            self.recon["errors"].append(f"candidate_path_probe: {e}")
+
+        self._activity("Querying CT logs", stage="recon")
+        try:
+            from .recon import ct_logs as _ct
+            ct = _ct.harvest(self.target)
+            if ct and ct.get("count"):
+                self.add_fact("ct_subdomain_count", ct["count"],
+                              source="ct_logs")
+                live = ct.get("live") or []
+                if live:
+                    self.add_fact("live_subdomains",
+                                  [x["name"] for x in live][:50],
+                                  source="ct_logs")
+        except Exception as e:
+            self.recon["errors"].append(f"ct_logs: {e}")
+
+        self._activity("Harvesting historic URLs", stage="recon")
+        try:
+            wb = _wayback.harvest(self.target)
+            if wb:
+                self.recon["historic"] = wb
+                self.add_fact("has_historic_paths", True, source="wayback")
+                self.add_fact("historic_path_count", len(wb.get("paths") or []),
+                              source="wayback")
+                if wb.get("params"):
+                    self.add_fact("historic_params", wb["params"][:50],
+                                  source="wayback")
+                for p in (wb.get("priority_paths") or [])[:30]:
+                    if p not in self.recon["api_paths"]:
+                        self.recon["api_paths"].append(p)
+        except Exception as e:
+            self.recon["errors"].append(f"wayback: {e}")
+
         self._activity("Probing common endpoints", stage="recon")
         try:
             self._probe_endpoint_facts(api_base, adapter or {})
@@ -269,6 +360,22 @@ class ChainOrchestrator:
             self._attempt_login(api_base, adapter or {})
         except Exception as e:
             self.recon["errors"].append(f"login: {e}")
+
+        if self._budget_dead():
+            self._warn("budget_exceeded",
+                       "recon aborted before banking probe: budget exhausted")
+            self._emit("phase", {"name": "recon", "status": "done"})
+            return
+
+        self._activity("Probing banking-specific paths", stage="recon")
+        try:
+            from . import banking_recon
+            banking_recon.probe_banking_paths(self)
+        except ImportError:
+            pass
+        except Exception as e:
+            self.recon["errors"].append(f"banking_recon: {e}")
+            self._diag("recon", "warning", f"banking_recon failed: {e}")
 
         self._emit("phase", {"name": "recon", "status": "done"})
 
@@ -411,18 +518,60 @@ class ChainOrchestrator:
         from . import discovery
 
         creds = {}
-        try:
-            targets = load_targets().get("targets", {})
-            for name, spec in targets.items():
-                if spec.get("url", "").startswith(api_base):
-                    creds = spec.get("auth", {})
-                    break
-        except Exception:
-            pass
+        source = "targets.yaml"
+        if isinstance(self.credentials, dict) and self.credentials:
+            creds = dict(self.credentials)
+            source = "ui"
+        if not creds:
+            try:
+                targets = load_targets().get("targets", {})
+                for name, spec in targets.items():
+                    if spec.get("url", "").startswith(api_base):
+                        creds = spec.get("auth", {})
+                        break
+            except Exception:
+                pass
+
+        direct_token = creds.get("token")
+        if isinstance(direct_token, str) and len(direct_token) > 15:
+            self.set_context("jwt_token", direct_token)
+            self.set_context("jwt_token_source", source)
+            self.add_fact("has_jwt_token", True, source="login")
+            self._diag("auth", "info",
+                       f"using provided bearer token from {source}")
+            return
 
         username = creds.get("username", "")
         password = creds.get("password", "")
         if not (username and password):
+            self._warn("auth_skipped",
+                       f"credentials from {source} missing username or password",
+                       api_base=api_base)
+            return
+
+        login_url_override = creds.get("login_url")
+        if login_url_override:
+            from . import auth_flow
+            result = auth_flow.perform_login(
+                login_url_override, username, password,
+                login_type=creds.get("login_type", "json"),
+                username_field=creds.get("username_field", "email"),
+                password_field=creds.get("password_field", "password"),
+                token_path=creds.get("token_path", "token"),
+                token_header=creds.get("token_header", "Authorization"),
+                token_prefix=creds.get("token_prefix", "Bearer "),
+            )
+            if result.get("token"):
+                self.set_context("jwt_token", result["token"])
+                self.set_context("jwt_token_source", source)
+                self.set_context("login_info", result)
+                self.add_fact("has_jwt_token", True, source="login")
+                self._diag("auth", "info",
+                           f"authenticated via {login_url_override}")
+                return
+            self._warn("auth_failed",
+                       f"login at {login_url_override} did not yield a token",
+                       api_base=api_base, status=result.get("status"))
             return
 
         api_paths = list(self.get_fact("api_paths", []) or [])
@@ -436,6 +585,10 @@ class ChainOrchestrator:
             self.set_context("jwt_token_source", "login")
             self.set_context("login_info", login_info)
             self.add_fact("has_jwt_token", True, source="login")
+        else:
+            self._warn("auth_failed",
+                       "login attempt did not yield a usable token",
+                       api_base=api_base)
 
     def select_chains(self, chains=None):
         if chains is None:
@@ -512,14 +665,22 @@ class ChainOrchestrator:
             if self._stop_condition():
                 if not result["reason"]:
                     result["reason"] = self.stopped_reason or "stopped"
+                if self.stopped_reason and "budget" in self.stopped_reason.lower():
+                    self._warn("budget_exceeded", self.stopped_reason,
+                               chain=chain_id, step=step.get("id"))
                 break
 
             if self._step_should_skip(step):
-                result["steps"].append({
+                skip_entry = {
                     "id": step["id"],
                     "verdict": "SKIP",
                     "reason": "precondition not met",
-                })
+                }
+                result["steps"].append(skip_entry)
+                if len(result["steps"]) == 1:
+                    self._warn("chain_precondition_skip",
+                               f"first step '{step['id']}' precondition not met",
+                               chain=chain_id, step=step["id"])
                 continue
 
             if self._step_skipped_by_previous(step, result["steps"]):
@@ -531,6 +692,15 @@ class ChainOrchestrator:
                 continue
 
             step_result = self._execute_step(chain_id, step)
+            if (step_result.get("verdict") == "VULNERABLE"
+                    and "confirmation_status" not in step_result
+                    and self._is_idempotent_tool(step["tool"])
+                    and not self._budget_exceeded()):
+                step_result = self._confirm_step(chain_id, step, step_result)
+            if (step_result.get("verdict") == "SUSPICIOUS"
+                    and self.triage_brain is not None
+                    and not self._budget_exceeded()):
+                step_result = self._triage_suspicious(chain_id, step, step_result)
             result["steps"].append(step_result)
             self.attempts.append({
                 "chain": chain_id,
@@ -565,11 +735,17 @@ class ChainOrchestrator:
                     else:
                         kind = "ambiguous"
                 step_result["unknown_kind"] = kind
+                try:
+                    _hooks.fire_post_unknown(self, chain_id, step, step_result)
+                except Exception:
+                    pass
                 if kind == "unreachable":
                     result["verdict"] = "UNKNOWN"
                     result["reason"] = (f"chain aborted: step '{step['id']}' "
                                         f"could not reach target")
                     result["aborted"] = True
+                    self._warn("chain_aborted", result["reason"],
+                               chain=chain_id, step=step["id"])
                     break
                 if kind == "ambiguous":
                     result["reduced_confidence"] = True
@@ -602,6 +778,10 @@ class ChainOrchestrator:
             "reason": result["reason"][:200],
             "duration_ms": result["duration_ms"],
         })
+        try:
+            _hooks.fire_post_chain(self, result)
+        except Exception:
+            pass
         self.chain_results.append(result)
         return result
 
@@ -657,11 +837,15 @@ class ChainOrchestrator:
                           "reason": "tool returned non-dict"}
             result["duration_ms"] = round(
                 (time.monotonic() - start) * 1000, 1)
+            _ev = result.get("evidence") or {}
             self._emit("step_done", {
                 "chain": chain_id,
                 "step": step_id,
                 "verdict": result.get("verdict", "UNKNOWN"),
                 "duration_ms": result["duration_ms"],
+                "reason": result.get("reason", ""),
+                "evidence": _ev,
+                "payload": _ev.get("payload") or _ev.get("sent"),
             })
             return result
         except Exception as e:
@@ -1256,8 +1440,405 @@ class ChainOrchestrator:
             return {"verdict": "UNKNOWN", "reason": f"{type(e).__name__}: {e}"}
         return self._normalize_scanner_result(r)
 
+    def _tool_cve_correlation(self, args):
+        from . import cve_lookup
+        product = (args.get("product")
+                   or self.get_fact("powered_product")
+                   or self.get_fact("server_product"))
+        version = (args.get("version")
+                   or self.get_fact("powered_version")
+                   or self.get_fact("server_version"))
+        if not product or not version:
+            return {"verdict": "UNKNOWN",
+                    "reason": "no version facts available",
+                    "evidence": {}}
+        hits = cve_lookup.lookup(product, version)
+        if not hits:
+            return {"verdict": "PASS",
+                    "reason": f"no CVEs for {product} {version}"}
+        critical = [h for h in hits
+                    if h.get("severity") in ("critical", "high")]
+        if critical:
+            return {
+                "verdict": "VULNERABLE",
+                "reason": (f"{len(critical)} high/critical CVE(s) for "
+                           f"{product} {version}: "
+                           + ", ".join(h["id"] for h in critical[:3])),
+                "evidence": {"product": product, "version": version,
+                             "cves": hits,
+                             "summary": cve_lookup.summarize(hits)},
+            }
+        return {
+            "verdict": "SUSPICIOUS",
+            "reason": (f"{len(hits)} CVE(s) for {product} {version}, "
+                       f"none critical/high"),
+            "evidence": {"product": product, "version": version,
+                         "cves": hits},
+        }
+
+    def _tool_deserialization(self, args):
+        from . import deserialization
+        url = args.get("url") or self.target
+        method = args.get("method", "POST")
+        r = deserialization.scan(url, method=method, roe_guard=self.roe_guard)
+        return {"verdict": r["verdict"], "reason": r.reason,
+                "evidence": r.evidence or {}}
+
+    def _tool_graphql_schema(self, args):
+        from . import graphql_schema
+        endpoint = (args.get("url")
+                    or self.get_context("graphql_url")
+                    or self.target)
+        r = graphql_schema.scan(endpoint, roe_guard=self.roe_guard)
+        if r["verdict"] in ("SUSPICIOUS", "VULNERABLE"):
+            fields = (r.evidence or {}).get("discovered_fields") or []
+            if fields:
+                self.set_context("graphql_root_fields", fields)
+                self.add_fact("graphql_field_count", len(fields),
+                              source="graphql_schema")
+        return {"verdict": r["verdict"], "reason": r.reason,
+                "evidence": r.evidence or {}}
+
+    def _tool_sourcemap_mine(self, args):
+        from .recon import sourcemaps
+        js_urls = args.get("js_urls")
+        if isinstance(js_urls, str):
+            js_urls = [u.strip() for u in js_urls.split(",") if u.strip()]
+        if not js_urls:
+            js_urls = list(self.recon.get("js_urls") or [])
+        if not js_urls:
+            return {"verdict": "UNKNOWN",
+                    "reason": "no JS URLs available to mine"}
+        r = sourcemaps.mine(js_urls, roe_guard=self.roe_guard)
+        maps = r.get("maps_found") or []
+        if not maps:
+            return {"verdict": "PASS",
+                    "reason": (f"no readable source maps across "
+                               f"{min(len(js_urls), 20)} JS bundle(s)"),
+                    "evidence": {"errors": r.get("errors") or []}}
+        total_params = set()
+        total_paths = set()
+        for m in maps:
+            total_params.update(m.get("params") or [])
+            total_paths.update(m.get("paths") or [])
+        if total_params or total_paths:
+            self.set_context("sourcemap_params", sorted(total_params))
+            self.set_context("sourcemap_paths", sorted(total_paths))
+            self.add_fact("sourcemap_params_count", len(total_params),
+                          source="sourcemap")
+            for p in sorted(total_paths)[:30]:
+                if p not in self.recon["api_paths"]:
+                    self.recon["api_paths"].append(p)
+        return {
+            "verdict": "SUSPICIOUS",
+            "reason": (f"{len(maps)} source map(s) exposed — recovered "
+                       f"{len(total_params)} param(s) and "
+                       f"{len(total_paths)} path(s)"),
+            "evidence": {"maps": maps[:10],
+                         "total_params": len(total_params),
+                         "total_paths": len(total_paths)},
+        }
+
+    def _tool_ct_subdomain(self, args):
+        from .recon import ct_logs
+        domain = args.get("domain") or self.target
+        r = ct_logs.harvest(domain)
+        if not r:
+            return {"verdict": "UNKNOWN",
+                    "reason": "crt.sh unreachable or returned no certificates",
+                    "evidence": {}}
+        count = r.get("count") or 0
+        live = r.get("live") or []
+        if count:
+            self.set_context("ct_subdomains", r.get("subdomains"))
+            self.add_fact("ct_subdomain_count", count, source="ct_logs")
+            if live:
+                self.add_fact("live_subdomains",
+                              [x["name"] for x in live][:50],
+                              source="ct_logs")
+        return {
+            "verdict": "SUSPICIOUS" if count > 0 else "PASS",
+            "reason": (f"{count} subdomain(s) from CT logs, "
+                       f"{len(live)} resolve"),
+            "evidence": {
+                "count": count,
+                "subdomains": (r.get("subdomains") or [])[:50],
+                "live": live[:30],
+            },
+        }
+
+    def _tool_subdomain_takeover(self, args):
+        from . import subdomain_takeover
+        subs = args.get("subdomains") or self.get_context("live_subdomains") or []
+        urls = []
+        for s in subs:
+            name = s.get("name") if isinstance(s, dict) else str(s)
+            if name:
+                urls.append("https://" + name)
+        if not urls:
+            return {"verdict": "UNKNOWN",
+                    "reason": "no subdomains available to check"}
+        r = subdomain_takeover.scan(urls, roe_guard=self.roe_guard)
+        if r["verdict"] == "VULNERABLE":
+            self.add_fact("has_subdomain_takeover", True,
+                          source="subdomain_takeover")
+        return {"verdict": r["verdict"], "reason": r.reason,
+                "evidence": r.evidence or {}}
+
+    def _tool_cloud_storage(self, args):
+        from . import cloud_storage
+        domain = args.get("domain") or self.target
+        r = cloud_storage.scan(domain)
+        if r["verdict"] == "VULNERABLE":
+            self.add_fact("has_public_bucket", True, source="cloud_storage")
+        return {"verdict": r["verdict"], "reason": r.reason,
+                "evidence": r.evidence or {}}
+
+    def _tool_hpp(self, args):
+        from .injection import hpp
+        url = args.get("url") or self.target
+        params = args.get("params")
+        if isinstance(params, str):
+            params = [p.strip() for p in params.split(",") if p.strip()]
+        r = hpp.scan(url, params=params, roe_guard=self.roe_guard)
+        if r["verdict"] == "SUSPICIOUS":
+            self.add_fact("has_hpp_signal", True, source="hpp")
+        return {"verdict": r["verdict"], "reason": r.reason,
+                "evidence": r.evidence or {}}
+
+    _NON_IDEMPOTENT_TOOLS = {"second_order_check", "timing_injection"}
+
+    def _is_idempotent_tool(self, tool_name):
+        if tool_name in self._NON_IDEMPOTENT_TOOLS:
+            return False
+        cap_name = self._TOOL_CAPABILITY_NAMES.get(tool_name, tool_name)
+        try:
+            from . import registry
+            cap = registry.get(cap_name)
+            if cap is None:
+                return False
+            return bool(cap.idempotent) and not cap.destructive
+        except Exception:
+            return False
+
+    def _confirm_step(self, chain_id, step, original):
+        import time as _t
+        _t.sleep(0.4)
+        try:
+            retry = self._dispatch_tool(step["tool"], step.get("args", {}))
+        except Exception as e:
+            retry = {"verdict": "UNKNOWN", "reason": f"confirmation error: {e}"}
+        if not isinstance(retry, dict):
+            retry = {"verdict": "UNKNOWN"}
+        rv = retry.get("verdict")
+        if rv == "VULNERABLE":
+            original["confirmation_status"] = "confirmed"
+            original["confirmation_retry_verdict"] = rv
+        else:
+            original["confirmation_status"] = "unconfirmed"
+            original["confirmation_retry_verdict"] = rv or "UNKNOWN"
+            original["verdict"] = "SUSPICIOUS"
+            original["reason"] = ("[unconfirmed: retry returned "
+                                  + str(rv) + "] " + (original.get("reason") or ""))
+        return original
+
+    def _tool_framework_probe(self, args):
+        from .frameworks import scan_all
+        base = args.get("base_url") or self.target
+        adapter_id = args.get("adapter") or self.get_fact("framework")
+        neg_fp = self.recon.get("soft_404") if isinstance(self.recon, dict) else None
+        r = scan_all(base, adapter_id=adapter_id, roe_guard=self.roe_guard,
+                     neg_fp=neg_fp)
+        findings = r.get("findings") or []
+        if findings:
+            severities = {f.get("severity", "medium") for f in findings}
+            worst = ("critical" if "critical" in severities else
+                     "high" if "high" in severities else "medium")
+            self.add_fact("framework_findings", len(findings),
+                          source="framework_probe")
+            return {
+                "verdict": "VULNERABLE",
+                "reason": (f"{len(findings)} framework surface finding(s): "
+                           + ", ".join(f["probe"] for f in findings[:4])),
+                "evidence": {
+                    "severity": worst,
+                    "findings": findings,
+                    "modules_run": r.get("modules_run"),
+                    "probes_count": len(r.get("probes") or []),
+                },
+            }
+        live = [p for p in (r.get("probes") or [])
+                if p.get("status") is not None]
+        if not live and r.get("errors"):
+            return {"verdict": "UNKNOWN",
+                    "reason": "; ".join(r["errors"][:2]),
+                    "evidence": {}}
+        return {"verdict": "PASS",
+                "reason": (f"no framework surface findings across "
+                           f"{len(live)} probe(s)")}
+
+    def _tool_timing_robust(self, args):
+        from .stats import payload_is_slower_than_baseline
+        from . import oracles_timing as _ot
+        kind = (args.get("kind") or "sqli").lower()
+        url = args.get("url") or self.target
+        param = args.get("param")
+        if not param:
+            return {"verdict": "UNKNOWN",
+                    "reason": "no param provided for robust timing probe"}
+        baseline_samples = int(args.get("baseline_samples") or 10)
+        payload_samples = int(args.get("payload_samples") or 10)
+        delay_seconds = int(args.get("delay_seconds") or 4)
+        baselines = []
+        for _ in range(baseline_samples):
+            r = _ot._send(url, args.get("method", "GET"),
+                          params={param: "1"},
+                          timeout=args.get("timeout", 15),
+                          roe_guard=self.roe_guard)
+            if r.get("blocked"):
+                return {"verdict": "UNKNOWN", "reason": r["error"],
+                        "evidence": {}}
+            if r.get("status") is not None:
+                baselines.append(r.get("elapsed_ms", 0.0))
+        if len(baselines) < 3:
+            return {"verdict": "UNKNOWN",
+                    "reason": "baseline requests did not complete",
+                    "evidence": {}}
+        payloads = []
+        if kind == "sqli":
+            payload = f"' OR SLEEP({delay_seconds})-- -"
+        elif kind == "ssti":
+            payload = "{{ ''.join([str(i) for i in range(20000000)]) }}"
+        else:
+            return {"verdict": "UNKNOWN",
+                    "reason": f"unknown timing kind: {kind}"}
+        for _ in range(payload_samples):
+            r = _ot._send(url, args.get("method", "GET"),
+                          params={param: payload},
+                          timeout=args.get("timeout", 15) + delay_seconds + 3,
+                          roe_guard=self.roe_guard)
+            if r.get("blocked"):
+                return {"verdict": "UNKNOWN", "reason": r["error"],
+                        "evidence": {}}
+            if r.get("status") is not None:
+                payloads.append(r.get("elapsed_ms", 0.0))
+        if len(payloads) < 3:
+            return {"verdict": "UNKNOWN",
+                    "reason": "payload requests did not complete",
+                    "evidence": {"baseline_samples": baselines}}
+        decision, ev = payload_is_slower_than_baseline(baselines, payloads)
+        ev["kind"] = kind
+        ev["param"] = param
+        if decision:
+            return {"verdict": "SUSPICIOUS",
+                    "reason": (f"robust timing oracle: {kind} on param "
+                               f"'{param}' (delta={ev['delta_ms']:.0f}ms)"),
+                    "evidence": ev}
+        return {"verdict": "PASS",
+                "reason": (f"no robust timing signal ({kind} on '{param}'; "
+                           f"delta={ev['delta_ms']:.0f}ms)"),
+                "evidence": ev}
+
+    def _tool_differential(self, args):
+        from . import differential
+        endpoints = args.get("endpoints")
+        if isinstance(endpoints, str):
+            endpoints = [e.strip() for e in endpoints.split(",") if e.strip()]
+        base = args.get("base_url") or self.target
+        r = differential.scan(
+            base, endpoints=endpoints or None,
+            signup_base=args.get("signup_base"),
+            roe_guard=self.roe_guard,
+        )
+        return {"verdict": r["verdict"], "reason": r.reason,
+                "evidence": r.evidence or {}}
+
+    def _tool_wayback(self, args):
+        from .recon import wayback
+        base = args.get("base_url") or self.target
+        result = wayback.harvest(base)
+        if not result:
+            return {"verdict": "PASS",
+                    "reason": "no historic URLs found in Wayback/CommonCrawl",
+                    "evidence": {}}
+        count = len(result.get("paths") or [])
+        priority = len(result.get("priority_paths") or [])
+        self.set_context("historic_paths", result.get("paths"))
+        self.set_context("historic_params", result.get("params"))
+        self.add_fact("historic_path_count", count, source="wayback")
+        if result.get("params"):
+            self.add_fact("historic_params", result["params"][:50],
+                          source="wayback")
+        return {
+            "verdict": "SUSPICIOUS" if priority else "PASS",
+            "reason": (f"{count} historic path(s), {priority} priority "
+                       f"({', '.join(result.get('sources') or [])})"),
+            "evidence": {
+                "total_urls_seen": result.get("total_urls_seen"),
+                "priority_paths": result.get("priority_paths", [])[:20],
+                "params": result.get("params", [])[:30],
+                "sources": result.get("sources"),
+            },
+        }
+
+    def _tool_access_bypass(self, args):
+        from .injection import access_bypass
+        url = args.get("url") or ""
+        if not url:
+            base = self.target if self.target.endswith("/") else self.target + "/"
+            url = base + "admin"
+        r = access_bypass.scan(url, roe_guard=self.roe_guard)
+        return {"verdict": r["verdict"], "reason": r.reason,
+                "evidence": r.evidence or {}}
+
+    def _tool_cache_deception(self, args):
+        from .injection import cache_deception
+        url = args.get("url") or ""
+        if not url:
+            base = self.target.rstrip("/")
+            url = base + "/api/me"
+        r = cache_deception.scan(url, roe_guard=self.roe_guard)
+        return {"verdict": r["verdict"], "reason": r.reason,
+                "evidence": r.evidence or {}}
+
+    _TOOL_CAPABILITY_NAMES = {
+        "cloud_storage": "cloud_storage_enum",
+        "hpp": "hpp_scan",
+        "deserialization": "deserialization_scan",
+        "graphql_schema": "graphql_schema_walk",
+        "differential": "differential_scan",
+        "wayback": "wayback_mining",
+        "access_bypass": "access_bypass_scan",
+        "cache_deception": "cache_deception_scan",
+        "ssrf_cloud": "ssrf_cloud_scan",
+        "bizlogic_price": "bizlogic_scan",
+        "bizlogic_coupon": "bizlogic_scan",
+        "race_coupon": "bizlogic_scan",
+        "skip_workflow_step": "bizlogic_scan",
+        "blind_ssrf": "ssrf_scan",
+        "blind_xss": "xss_scan",
+        "oauth_redirect": "oauth_redirect_uri_scan",
+        "oauth_state": "oauth_state_scan",
+        "oauth_pkce": "oauth_pkce_scan",
+        "lockout_scan": "lockout_probe",
+    }
+
     _TOOL_HANDLERS = {
         "jwt_attack": _tool_jwt_attack,
+        "subdomain_takeover": _tool_subdomain_takeover,
+        "cloud_storage": _tool_cloud_storage,
+        "hpp": _tool_hpp,
+        "deserialization": _tool_deserialization,
+        "graphql_schema": _tool_graphql_schema,
+        "sourcemap_mine": _tool_sourcemap_mine,
+        "ct_subdomain": _tool_ct_subdomain,
+        "framework_probe": _tool_framework_probe,
+        "timing_robust": _tool_timing_robust,
+        "differential": _tool_differential,
+        "wayback": _tool_wayback,
+        "cve_correlation": _tool_cve_correlation,
+        "access_bypass": _tool_access_bypass,
+        "cache_deception": _tool_cache_deception,
         "graphql_scan": _tool_graphql_scan,
         "ssrf_cloud": _tool_ssrf_cloud,
         "race_scan": _tool_race_scan,
@@ -1307,6 +1888,37 @@ class ChainOrchestrator:
                             else f"<{type(value).__name__}>")
                 self.add_fact(key, fact_val, source=step["id"])
 
+    def _triage_suspicious(self, chain_id, step, result):
+        try:
+            decision = self.triage_brain.triage_response(
+                baseline=None,
+                candidate={"status": 0, "body_len": 0,
+                            "reason": result.get("reason", "")},
+                context={"tool": step.get("tool"),
+                         "chain": chain_id,
+                 "evidence": result.get("evidence") or {}},
+            )
+        except Exception as e:
+            self._diag("triage", "warning",
+                       f"LLM triage failed: {type(e).__name__}: {e}")
+            return result
+        if decision is None:
+            return result
+        escalate = bool(getattr(decision, "escalate", False))
+        reason = getattr(decision, "reason", "") or ""
+        if not escalate and reason:
+            result["verdict"] = "PASS"
+            result["triage_override"] = True
+            result["triage_reason"] = reason[:300]
+            self._diag("triage", "info",
+                       f"{step.get('tool')}: LLM rejected SUSPICIOUS "
+                       f"({reason[:120]})")
+        else:
+            result["triage_confirmed"] = True
+            if reason:
+                result["triage_reason"] = reason[:300]
+        return result
+
     def _record_finding(self, chain_id, step, result):
         confidence = result.get("confidence")
         if confidence is None:
@@ -1326,6 +1938,25 @@ class ChainOrchestrator:
             "confidence": confidence,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
+        try:
+            from . import ledger as _ledger
+            _ledger.record_finding(
+                pattern_id=f"chain-{step['tool']}",
+                target=self.target,
+                verdict="VULNERABLE",
+                severity=(result.get("evidence") or {}).get("severity", "high"),
+                reason=result.get("reason", ""),
+                evidence_path="",
+                evidence_json=result.get("evidence") or {},
+                category="chain",
+                duration_ms=float(result.get("duration_ms", 0.0) or 0.0),
+            )
+        except Exception:
+            pass
+        try:
+            _hooks.fire_post_finding(self, chain_id, step, result)
+        except Exception:
+            pass
 
     def _step_confidence(self, step, result):
         v = result.get("verdict", "UNKNOWN")
@@ -1336,12 +1967,18 @@ class ChainOrchestrator:
             "UNKNOWN": 0.3,
         }.get(v, 0.5)
 
-    def run(self, chains=None):
+    def run(self, chains=None, parallel=False):
         try:
             self.run_recon()
         except Exception as e:
             self._emit("error", {"message": f"recon failed: {e}"})
             return self._final_report()
+
+        try:
+            from . import budget as _b
+            _b.set_phase("chains")
+        except Exception:
+            pass
 
         executed_ids = set()
         seen_plan = []
@@ -1355,14 +1992,58 @@ class ChainOrchestrator:
                     seen_plan.append(c["id"])
             self._emit("plan", {"chains": [c["id"] for c in pending],
                                  "iteration": len(executed_ids)})
-            for chain in pending:
-                if self._stop_condition():
-                    break
-                executed_ids.add(chain["id"])
-                self.execute_chain(chain)
+            if parallel and len(pending) > 1:
+                self._run_pending_parallel(pending)
+                for c in pending:
+                    executed_ids.add(c["id"])
+            else:
+                for chain in pending:
+                    if self._stop_condition():
+                        break
+                    executed_ids.add(chain["id"])
+                    try:
+                        allowed = _hooks.fire_pre_chain(self, chain)
+                    except Exception:
+                        allowed = True
+                    if not allowed:
+                        self._emit("chain_skip",
+                                    {"id": chain["id"],
+                                     "reason": "pre_chain hook"})
+                        continue
+                    try:
+                        self.execute_chain(chain)
+                    except Exception as e:
+                        self._diag("sequential", "warning",
+                                   f"chain {chain.get('id')} raised "
+                                   f"{type(e).__name__}: {e}")
 
         self.plan = seen_plan
         return self._final_report()
+
+    def _run_pending_parallel(self, chains, max_workers=4):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        workers = max(1, min(int(max_workers), len(chains)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {}
+            for chain in chains:
+                try:
+                    allowed = _hooks.fire_pre_chain(self, chain)
+                except Exception:
+                    allowed = True
+                if not allowed:
+                    self._emit("chain_skip",
+                                {"id": chain["id"],
+                                 "reason": "pre_chain hook"})
+                    continue
+                futures[pool.submit(self.execute_chain, chain)] = chain
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception as e:
+                    chain = futures[fut]
+                    self._diag("parallel", "warning",
+                               f"chain {chain.get('id')} raised "
+                               f"{type(e).__name__}: {e}")
 
     def _final_report(self):
         rank = {"VULNERABLE": 3, "SUSPICIOUS": 2, "PASS": 1, "UNKNOWN": 0}
@@ -1399,6 +2080,8 @@ class ChainOrchestrator:
             "findings": self.findings,
             "attempts_count": len(self.attempts),
             "coverage": coverage,
+            "stopped_reason": self.stopped_reason,
+            "diagnostics": self.diagnostics,
         }
 
 

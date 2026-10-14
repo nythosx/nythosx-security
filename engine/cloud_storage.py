@@ -1,0 +1,206 @@
+"""Cloud storage enumeration.
+
+Derives candidate bucket names from a domain (base, base-backup, base-prod,
+etc.), then probes S3 / GCS / Azure endpoints. Classifies each response:
+
+  * public  — 200 with a listing body (severe)
+  * private — 403, bucket exists but not readable
+  * available — 404 NoSuchBucket → anyone can register it
+  * exists  — 200 with non-listing body (default page)
+  * unknown — other response
+
+The bucket endpoints are third-party services, NOT the scan target.
+ROE does not apply here (same exception class as engine/sca.py and
+engine/cve_lookup.py).
+"""
+from __future__ import annotations
+
+from urllib.parse import urlparse
+
+import httpx
+
+from .config import load_engine
+from .contract import Capability, ScanResult
+
+
+CAPABILITY = Capability(
+    name="cloud_storage_enum",
+    description=("Enumerate cloud storage buckets derived from a domain "
+                 "and classify each as public / private / available."),
+    category="recon",
+    cost="medium",
+    destructive=False,
+    idempotent=True,
+)
+
+
+BASE_SUFFIXES = [
+    "",
+    "-backup", "-backups",
+    "-prod", "-production",
+    "-dev", "-development",
+    "-staging", "-stage", "-test",
+    "-assets", "-static", "-media",
+    "-uploads", "-files", "-images",
+    "-logs", "-data", "-dump", "-dumps",
+    "-public", "-private",
+    "-cdn", "-web", "-app",
+]
+
+
+DEFAULT_ENDPOINTS = [
+    {"provider": "s3",    "url_template": "https://{bucket}.s3.amazonaws.com/"},
+    {"provider": "s3",    "url_template": "https://s3.amazonaws.com/{bucket}/"},
+    {"provider": "gcs",   "url_template": "https://storage.googleapis.com/{bucket}/"},
+    {"provider": "azure", "url_template": "https://{bucket}.blob.core.windows.net/"},
+]
+
+
+AVAILABLE_MARKERS = [
+    "nosuchbucket", "the specified bucket does not exist",
+    "no such bucket",
+]
+
+PUBLIC_LISTING_MARKERS = [
+    "<listbucketresult",
+    "<contents>",
+    "<key>",
+    '"items":',
+]
+
+
+def _verify_tls():
+    try:
+        cfg = load_engine() or {}
+        return bool(cfg.get("http", {}).get("verify_tls", True))
+    except Exception:
+        return True
+
+
+def _base_name(domain):
+    if "://" in domain:
+        domain = urlparse(domain).hostname or domain
+    parts = [p for p in domain.split(".") if p]
+    if not parts:
+        return ""
+    if len(parts) >= 2:
+        return parts[-2]
+    return parts[0]
+
+
+def candidate_buckets(domain):
+    base = _base_name(domain)
+    if not base:
+        return []
+    out = []
+    for suffix in BASE_SUFFIXES:
+        out.append(base + suffix)
+    seen = set()
+    result = []
+    for b in out:
+        if b and b not in seen:
+            seen.add(b)
+            result.append(b)
+    return result
+
+
+def classify(status, body):
+    if status is None:
+        return "unreachable"
+    low = (body or "").lower()
+    if status == 404:
+        if any(m in low for m in AVAILABLE_MARKERS):
+            return "available"
+        return "not_found"
+    if status in (401, 403):
+        return "private"
+    if status == 200:
+        if any(m in low for m in PUBLIC_LISTING_MARKERS):
+            return "public"
+        return "exists"
+    return "unknown"
+
+
+def _probe(url, timeout, verify):
+    try:
+        with httpx.Client(timeout=timeout, verify=verify,
+                          follow_redirects=False) as c:
+            r = c.get(url)
+        return {"url": url, "status": r.status_code,
+                "body": (r.text or "")[:10000]}
+    except httpx.ConnectError as e:
+        return {"url": url, "status": None,
+                "error": f"connection error: {e}"}
+    except httpx.TimeoutException:
+        return {"url": url, "status": None, "error": "timeout"}
+    except Exception as e:
+        return {"url": url, "status": None,
+                "error": f"{type(e).__name__}: {e}"}
+
+
+def scan(domain, timeout=8, endpoints=None, max_buckets=None):
+    verify = _verify_tls()
+    buckets = candidate_buckets(domain)
+    if max_buckets:
+        buckets = buckets[:max_buckets]
+    if not buckets:
+        return ScanResult(
+            capability="cloud_storage_enum", target=domain,
+            verdict="UNKNOWN", reason="could not derive bucket names",
+        )
+    eps = endpoints or DEFAULT_ENDPOINTS
+    results = []
+    for bucket in buckets:
+        for ep in eps:
+            url = ep["url_template"].format(bucket=bucket, account=bucket)
+            r = _probe(url, timeout, verify)
+            if r.get("status") is None:
+                continue
+            classification = classify(r["status"], r.get("body"))
+            if classification in ("not_found", "unreachable"):
+                continue
+            results.append({
+                "bucket": bucket,
+                "provider": ep["provider"],
+                "url": url,
+                "status": r["status"],
+                "classification": classification,
+            })
+    public = [r for r in results if r["classification"] == "public"]
+    available = [r for r in results if r["classification"] == "available"]
+    private = [r for r in results if r["classification"] == "private"]
+    if public:
+        return ScanResult(
+            capability="cloud_storage_enum", target=domain,
+            verdict="VULNERABLE", severity="high",
+            reason=(f"{len(public)} publicly listable bucket(s): "
+                    + ", ".join(r["bucket"] for r in public[:5])),
+            evidence={"public": public, "available": available,
+                      "private": private},
+        )
+    if available:
+        return ScanResult(
+            capability="cloud_storage_enum", target=domain,
+            verdict="SUSPICIOUS", severity="medium",
+            reason=(f"{len(available)} available bucket name(s) — a subdomain "
+                    f"or application referencing them may be takeover-able: "
+                    + ", ".join(r["bucket"] for r in available[:5])),
+            evidence={"public": public, "available": available,
+                      "private": private},
+        )
+    if private:
+        return ScanResult(
+            capability="cloud_storage_enum", target=domain,
+            verdict="PASS", severity="low",
+            reason=(f"{len(private)} private bucket(s), none public"),
+            evidence={"private": private},
+        )
+    return ScanResult(
+        capability="cloud_storage_enum", target=domain,
+        verdict="PASS", severity="low",
+        reason=f"no matching buckets across {len(buckets)} candidate(s)",
+    )
+
+
+__all__ = ["scan", "CAPABILITY", "candidate_buckets", "classify",
+           "DEFAULT_ENDPOINTS"]

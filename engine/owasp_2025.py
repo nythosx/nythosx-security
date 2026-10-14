@@ -604,3 +604,91 @@ for _k, _v in _PHASE3_PATTERN_MAP.items():
 for _pfx, _code in _PHASE3_PREFIX_MAP:
     if not any(p[0] == _pfx for p in PREFIX_MAP):
         PREFIX_MAP.append((_pfx, _code))
+
+
+_PHASE4_PATTERN_MAP = {
+    "access-bypass": "A01",
+    "cache-deception": "A01",
+    "cve-correlation": "A03",
+}
+
+for _k, _v in _PHASE4_PATTERN_MAP.items():
+    PATTERN_MAP.setdefault(_k, _v)
+
+
+_PHASE5_PATTERN_MAP = {
+    "differential-auth": "A01",
+    "wayback-mining": "A02",
+}
+
+for _k, _v in _PHASE5_PATTERN_MAP.items():
+    PATTERN_MAP.setdefault(_k, _v)
+
+
+_PHASE6_PATTERN_MAP = {
+    "framework-surface": "A05",
+    "timing-robust": "A05",
+}
+
+for _k, _v in _PHASE6_PATTERN_MAP.items():
+    PATTERN_MAP.setdefault(_k, _v)
+
+
+_PHASE7_PATTERN_MAP = {
+    "deserialization": "A08",
+    "graphql-schema-walk": "A01",
+    "sourcemap-mining": "A02",
+    "ct-subdomain": "A02",
+}
+
+for _k, _v in _PHASE7_PATTERN_MAP.items():
+    PATTERN_MAP.setdefault(_k, _v)
+
+
+_PHASE8_PATTERN_MAP = {
+    "subdomain-takeover": "A08",
+    "cloud-storage": "A01",
+    "hpp-scan": "A05",
+}
+
+for _k, _v in _PHASE8_PATTERN_MAP.items():
+    PATTERN_MAP.setdefault(_k, _v)
+
+
+_PHASE2_NEW_PATTERN_MAP = {
+    "bola-harvest": "A01",
+    "unauth-pagination-dump": "A01",
+    "graphql-data-dump": "A01",
+    "blind-sqli-extract": "A05",
+    "blind-xxe-file-read": "A05",
+    "llm-system-prompt-dump": "A01",
+    "llm-tool-list-dump": "A01",
+    "llm-credential-extract": "A02",
+    "mcp-tool-poisoning": "A05",
+    "mcp-credential-exposure": "A02",
+    "ci-cd-config-exposure": "A03",
+    "npmrc-exposure": "A03",
+    "firebase-misconfig": "A02",
+    "session-fixation": "A07",
+    "postmessage-abuse": "A05",
+}
+
+for _k, _v in _PHASE2_NEW_PATTERN_MAP.items():
+    PATTERN_MAP.setdefault(_k, _v)
+
+
+_PHASE2_NEW_PREFIXES = [
+    ("bola-", "A01"),
+    ("blind-sqli", "A05"),
+    ("blind-xxe", "A05"),
+    ("mcp-", "A05"),
+    ("ci-cd-", "A03"),
+    ("npmrc-", "A03"),
+    ("firebase-", "A02"),
+    ("session-fixation", "A07"),
+    ("postmessage-", "A05"),
+]
+
+for _pfx, _code in _PHASE2_NEW_PREFIXES:
+    if not any(p[0] == _pfx for p in PREFIX_MAP):
+        PREFIX_MAP.append((_pfx, _code))

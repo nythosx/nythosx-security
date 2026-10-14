@@ -1,0 +1,26 @@
+id: unauth-pagination-dump
+name: Unauthenticated Paginated Data Dump
+severity: critical
+tags: [access-control, data-extraction, pagination, wstg-athz-04, cwe-639]
+inputs:
+  target_url:
+    type: string
+    required: true
+  max_pages:
+    type: int
+    default: 50
+steps:
+  - name: first_page
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+  - name: follow_cursor
+    repeat: "{{ inputs.max_pages }}"
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      params:
+        page: "{{ loop_index }}"
+oracles:
+  - type: unauth_pagination_dump
+    verdict: VULNERABLE

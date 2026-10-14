@@ -2,6 +2,14 @@ import time
 from pathlib import Path
 from urllib.parse import urljoin
 from .http_client import HttpClient
+from . import budget as _budget
+
+
+def _budget_dead():
+    try:
+        return _budget.snapshot_human().get("reason") is not None
+    except Exception:
+        return False
 
 ROOT = Path(__file__).parent.parent.absolute()
 WORDLIST_DIR = ROOT / "wordlists"
@@ -24,6 +32,8 @@ def _enumerate_routes_impl(base_url, wordlist="common_paths", headers=None, cook
     results = []
     try:
         for i, path in enumerate(paths):
+            if _budget_dead():
+                break
             url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
             r = client.request("GET", url)
             status = r.get("status")

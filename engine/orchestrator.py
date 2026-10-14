@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import (api_discovery, auth_flow, discovery, evidence, executor,
-               ledger, loader, oracle, progress, report)
+               ledger, loader, oracle, progress)
 from . import coverage as coverage_mod
 from .config import discovery_config, load_engine, save_session
 from .contract import (SEVERITY_RANK, VERDICT_RANK, ScanBudget, ScanResult)
@@ -54,8 +54,26 @@ class Orchestrator:
         self._negative_baseline = None
         self._scan_target = ""
 
+    def _annotate_with_triage(self, brain, results):
+        for r in results or []:
+            v = _vstr(getattr(r, "verdict", None))
+            if v not in ("VULNERABLE", "SUSPICIOUS"):
+                continue
+            try:
+                decision = brain.triage(r)
+            except Exception:
+                continue
+            if decision is None:
+                continue
+            breakdown = getattr(r, "confidence_breakdown", None)
+            if isinstance(breakdown, dict):
+                breakdown["llm_triage"] = {
+                    "escalate": bool(getattr(decision, "escalate", False)),
+                    "reason": str(getattr(decision, "reason", "") or "")[:500],
+                }
+
     def run(self, target, profile="standard", brain=None, job_id=None,
-            initial_state=None, allow_destructive=None):
+            initial_state=None, allow_destructive=None, credentials=None):
         from .brains.rule_based import RuleBasedBrain
         from . import budget as _budget
         try:
@@ -73,6 +91,9 @@ class Orchestrator:
             state = ScanState(target=target, budget=self._budget_for(profile))
             self._recon(state, job_id)
         self._scan_target = target
+
+        if credentials:
+            self._apply_login(state, credentials, job_id)
 
         max_workers = int(
             ((self.cfg.get("concurrency") or {}).get("max_workers", 8))
@@ -104,6 +125,8 @@ class Orchestrator:
                 if cap:
                     state.executed_capabilities.add(cap)
                     state.mark_visited(cap, target)
+
+            self._annotate_with_triage(brain, results)
 
             try:
                 state.chains = resolve_chains(state.findings)
@@ -220,6 +243,67 @@ class Orchestrator:
             if not state.is_visited(h.capability, h.target or state.target)
         ]
 
+    _CAP_ENDPOINT_KEYWORDS = {
+        "auth-bypass-probe": ("admin", "me"),
+        "rate-limit-absent": ("login", "signin"),
+        "user-enumeration-timing": ("login", "signin"),
+        "jwt-analysis": ("auth", "login"),
+        "jwt-weak-secret": ("auth", "login"),
+        "graphql-deep-security": ("graphql",),
+        "graphql-introspection": ("graphql",),
+        "openapi-fuzz": ("openapi", "swagger"),
+        "idor-sequential": None,
+        "authed-idor": None,
+        "mass-assignment": None,
+    }
+    _ENDPOINT_SKIP_LAST_SEGMENTS = {"login", "logout", "me", "health", "ping"}
+
+    @staticmethod
+    def _api_rank(path):
+        return 0 if "/api/" in path.lower() or path.lower().startswith("api/") else 1
+
+    def _resolve_target_for_capability(self, capability, state):
+        if capability not in self._CAP_ENDPOINT_KEYWORDS:
+            return None
+        endpoints = state.discovered_endpoints or []
+        if not endpoints:
+            return None
+        keywords = self._CAP_ENDPOINT_KEYWORDS[capability]
+        candidates = []
+        for ep in endpoints:
+            segs = [s for s in str(ep).lower().split("/") if s]
+            if not segs:
+                continue
+            if keywords is None:
+                if segs[-1] in self._ENDPOINT_SKIP_LAST_SEGMENTS or segs[-1].isdigit():
+                    continue
+                candidates.append(ep)
+            elif any(k in segs for k in keywords):
+                candidates.append(ep)
+        if not candidates:
+            return None
+        suffix = ""
+        try:
+            pattern = loader.load_pattern(capability)
+            suffix = (pattern or {}).get("endpoint_suffix", "") or ""
+        except Exception:
+            suffix = ""
+        if suffix:
+            exact = [c[:-len(suffix)] for c in candidates
+                     if c.lower().endswith(suffix.lower())]
+            exact = [c for c in exact if c]
+            pool_candidates = exact or candidates
+        else:
+            pool_candidates = candidates
+        unvisited = [c for c in pool_candidates
+                    if not state.is_visited(capability, state.target.rstrip("/") + c)]
+        pool = unvisited or pool_candidates
+        if not pool:
+            return None
+        pool.sort(key=lambda c: (self._api_rank(c), len(c)))
+        ep = pool[0]
+        return ep if ep.startswith(("http://", "https://")) else state.target.rstrip("/") + ep
+
     def _fan_out(self, hypotheses, state, job_id, max_workers):
         results = []
         if not hypotheses:
@@ -229,6 +313,10 @@ class Orchestrator:
             futures = {}
             for h in hypotheses:
                 tgt = h.target or state.target
+                if tgt == state.target:
+                    resolved = self._resolve_target_for_capability(h.capability, state)
+                    if resolved:
+                        tgt = resolved
                 futures[pool.submit(self._safe_run, h.capability, tgt,
                                      h.params)] = h
             for fut in as_completed(futures):
@@ -391,6 +479,57 @@ class Orchestrator:
         ev = r.get("evidence") if hasattr(r, "get") else getattr(r, "evidence", {})
         return rv, reason, ev
 
+    def _apply_login(self, state, credentials, job_id=None):
+        username = credentials.get("username", "")
+        password = credentials.get("password", "")
+        if not (username and password):
+            return
+        self._emit(job_id, "phase", {"name": "login", "status": "running"})
+        adapter = (state.framework or {}).get("adapter") or {}
+        auth_cfg = adapter.get("auth", {}) or {}
+        default_header = auth_cfg.get("default_header", "Authorization")
+        default_prefix = auth_cfg.get("default_prefix", "Bearer ")
+        login_url_override = credentials.get("login_url")
+        auth_headers = {}
+        auth_cookies = {}
+        login_url = ""
+        try:
+            if login_url_override:
+                result = auth_flow.perform_login(
+                    login_url_override, username, password,
+                    login_type=credentials.get("login_type", "json"),
+                    username_field=credentials.get("username_field", "email"),
+                    password_field=credentials.get("password_field", "password"),
+                    token_path=credentials.get("token_path", "token"),
+                    token_header=default_header,
+                    token_prefix=default_prefix,
+                )
+                if result.get("token"):
+                    auth_headers[default_header] = f"{default_prefix}{result['token']}"
+                auth_cookies.update(result.get("cookies") or {})
+                login_url = login_url_override
+            else:
+                login_info = discovery.find_login_endpoint(
+                    getattr(state, "api_base", None) or state.target,
+                    adapter, state.api_paths or [], username, password,
+                )
+                if login_info and login_info.get("token"):
+                    tok = login_info["token"]
+                    auth_headers[default_header] = f"{default_prefix}{tok['token']}"
+                    auth_cookies.update(login_info.get("cookies") or {})
+                    login_url = login_info.get("path", "")
+                elif (login_info and login_info.get("note") == "success"
+                        and login_info.get("cookies")):
+                    auth_cookies.update(login_info["cookies"])
+                    login_url = login_info.get("path", "")
+        except Exception:
+            pass
+        self._default_headers = auth_headers
+        self._default_cookies = auth_cookies
+        ok = bool(auth_headers or auth_cookies)
+        self._emit(job_id, "login", {"ok": ok, "url": login_url})
+        self._emit(job_id, "phase", {"name": "login", "status": "done"})
+
     def _recon(self, state, job_id=None):
         from . import api_discovery
         from .config import discovery_config
@@ -419,6 +558,7 @@ class Orchestrator:
             state.api_source = disc.get("source", "unknown")
             state.catch_all = bool(disc.get("catch_all"))
             state.soft_404 = disc.get("soft_404")
+            self._negative_baseline = state.soft_404
             state.port_scan = disc.get("port_scan") or []
         except Exception:
             state.api_base = state.target
@@ -466,6 +606,10 @@ class Orchestrator:
                         skip_discovery=False, api_override=None,
                         adapter_override=None, auto_baseline=False,
                         job_id=None, allow_destructive=None):
+        """Legacy parallel-pattern fan-out. Superseded by auto.run_auto,
+        which routes through ChainOrchestrator. Kept for reference and
+        manual invocation; not called by the CLI or web UI anymore.
+        """
         if allow_destructive is not None:
             self.allow_destructive = bool(allow_destructive)
         return _run_auto_compat(
@@ -562,6 +706,7 @@ def _run_auto_compat(orc, url, min_severity, credentials, skip_discovery,
 
     js_urls = []
     api_paths = []
+    endpoint_probes = []
     if not skip_discovery:
         console.print("[bold]Extracting JS bundles...[/bold]")
         js_urls = discovery.extract_js_urls(url)
@@ -574,6 +719,14 @@ def _run_auto_compat(orc, url, min_severity, credentials, skip_discovery,
             console.print(f"  Extracted {len(api_paths)} candidate API paths")
             emit("js_done", {"count": len(bundles), "size_kb": total_kb,
                              "paths": len(api_paths)})
+            if api_paths:
+                console.print(f"[bold]Probing {min(len(api_paths), 80)} "
+                              "candidate endpoints...[/bold]")
+                endpoint_probes = discovery.probe_paths(api_base or url, api_paths)
+                live_n = sum(1 for p in endpoint_probes
+                            if p["verdict"] in ("live_api", "exists", "auth_required"))
+                console.print(f"  {live_n}/{len(endpoint_probes)} are real, "
+                              "distinct endpoints (rest: 404 / catch-all / blocked)")
         console.print()
     emit("phase", {"name": "discovery", "status": "done"})
 
@@ -740,12 +893,37 @@ def _run_auto_compat(orc, url, min_severity, credentials, skip_discovery,
             if out:
                 verdict = out["result"]["verdict"]
                 reason = out["result"].get("reason") or ""
+                evidence = out["result"].get("evidence") or {}
+                steps_ctx = (out.get("context") or {}).get("steps") or []
+                req_str = None
+                resp_str = None
+                for s in steps_ctx:
+                    if s.get("status") is None:
+                        continue
+                    if not req_str and s.get("url"):
+                        method = (s.get("method") or "GET").upper()
+                        hdrs = s.get("headers") or {}
+                        hlines = "\n".join(
+                            f"{k}: {v}" for k, v in list(hdrs.items())[:6]
+                        )
+                        req_str = f"{method} {s['url']}"
+                        if hlines:
+                            req_str = req_str + "\n" + hlines
+                    if not resp_str:
+                        body = (s.get("body") or "")[:400]
+                        resp_str = f"HTTP {s.get('status')}"
+                        if body:
+                            resp_str = resp_str + "\n\n" + body
                 emit("pattern_done", {
                     "id": p["id"],
                     "severity": p["severity"],
                     "verdict": verdict,
                     "reason": reason[:240],
                     "duration_ms": out["duration_ms"],
+                    "evidence": evidence,
+                    "payload": evidence.get("payload") or evidence.get("sent"),
+                    "request": req_str,
+                    "response": resp_str,
                 })
             emit("progress", {"done": completed, "total": len(work)})
             collected.append((p, out, rec_target))
@@ -789,12 +967,9 @@ def _run_auto_compat(orc, url, min_severity, credentials, skip_discovery,
     emit("phase", {"name": "scanning", "status": "done"})
     emit("summary", {"counts": counts, "duration_ms": round(elapsed, 1)})
 
-    emit("phase", {"name": "report", "status": "running"})
     console.print()
-    console.print("[bold]Generating report...[/bold]")
-    rpath = report.generate(scan_target, fmt="html")
-    console.print(f"  [green]{rpath}[/green]")
-    emit("report", {"path": str(rpath)})
+    console.print("[dim]Scan complete. Findings are saved — "
+                  "export a report (html/md/pdf) whenever you want one.[/dim]")
     emit("phase", {"name": "report", "status": "done"})
 
     outcome = {
@@ -804,9 +979,10 @@ def _run_auto_compat(orc, url, min_severity, credentials, skip_discovery,
         "login": login_info,
         "counts": counts,
         "results": scan_results,
-        "report": rpath,
+        "report_target": scan_target,
+        "endpoint_probes": endpoint_probes,
     }
-    emit("done", {"counts": counts, "report": str(rpath)})
+    emit("done", {"counts": counts, "report_target": scan_target})
     return outcome
 
 
@@ -954,6 +1130,9 @@ def _attempt_login(console, frontend_url, api_base, adapter, api_paths):
             auth_headers[default_header] = f"{default_prefix}{tok['token']}"
             auth_cookies.update(login_info.get("cookies") or {})
             console.print(f"  [green]Login OK[/green] via {login_info['path']}")
+        elif login_info and login_info.get("note") == "success" and login_info.get("cookies"):
+            auth_cookies.update(login_info["cookies"])
+            console.print(f"  [green]Login OK (session cookie)[/green] via {login_info['path']}")
         else:
             console.print("  [yellow]No login endpoint discovered[/yellow]")
     console.print()

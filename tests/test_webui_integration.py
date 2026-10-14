@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT))
 
 def test_page_has_phase5_sections():
     from engine import webui
-    page = webui.PAGE
+    page = webui.PAGE_CLASSIC
     assert 'id="chains-section"' in page
     assert 'id="coverage-section"' in page
     assert 'id="why-section"' in page

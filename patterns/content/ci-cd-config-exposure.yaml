@@ -1,0 +1,33 @@
+id: ci-cd-config-exposure
+name: CI/CD Configuration Exposure
+severity: high
+tags: [supply-chain, owasp-a03, wstg-conf-02, cwe-538]
+inputs:
+  target_url:
+    type: string
+    required: true
+steps:
+  - name: github_workflows
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.github/workflows/ci.yml"
+  - name: gitlab_ci
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.gitlab-ci.yml"
+  - name: jenkinsfile
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/Jenkinsfile"
+  - name: travis
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.travis.yml"
+  - name: circleci
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.circleci/config.yml"
+oracles:
+  - type: pattern_match
+    regex: '(?i)(runs-on|script:|stages:|deploy|secrets\.|AWS_|GITHUB_TOKEN|CI_)'
+    verdict: VULNERABLE

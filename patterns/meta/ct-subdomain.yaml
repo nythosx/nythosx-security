@@ -1,0 +1,20 @@
+id: ct-subdomain
+name: Certificate Transparency Subdomain Enumeration
+severity: low
+tags: [recon, subdomain, wstg-info-01, cwe-200]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      follow_redirects: false
+
+oracles:
+  - type: ct_subdomain
+    verdict: SUSPICIOUS

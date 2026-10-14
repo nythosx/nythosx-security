@@ -51,6 +51,24 @@ def _connect():
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS extracted_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            engagement_id TEXT,
+            target TEXT,
+            endpoint TEXT,
+            method TEXT,
+            auth_used TEXT,
+            status INTEGER,
+            total_rows INTEGER,
+            extracted INTEGER,
+            rows_json TEXT,
+            source_pattern TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT,
@@ -92,6 +110,75 @@ def record_finding(pattern_id, target, verdict, severity, reason, evidence_path,
             conn.commit()
         finally:
             conn.close()
+
+
+def record_extracted(target, endpoint, method, auth_used, status,
+                      total_rows, extracted, rows, source_pattern="",
+                      engagement_id=""):
+    if not endpoint:
+        return
+    safe_rows = redact.redact_dict(list(rows or []))
+    with _write_lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO extracted_data
+                    (timestamp, engagement_id, target, endpoint, method,
+                     auth_used, status, total_rows, extracted, rows_json,
+                     source_pattern)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    engagement_id, target, endpoint, method,
+                    auth_used, int(status or 0), int(total_rows or 0),
+                    int(extracted or 0),
+                    json.dumps(safe_rows, default=str),
+                    source_pattern,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def extracted_for_target(target):
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, timestamp, endpoint, method, auth_used, status, "
+        "total_rows, extracted, rows_json, source_pattern "
+        "FROM extracted_data WHERE target = ? ORDER BY id DESC",
+        (target,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            parsed = json.loads(r[8]) if r[8] else []
+        except Exception:
+            parsed = []
+        out.append({
+            "id": r[0], "timestamp": r[1], "endpoint": r[2], "method": r[3],
+            "auth_used": r[4], "status": r[5], "total_rows": r[6],
+            "extracted": r[7], "rows": parsed, "source_pattern": r[9],
+        })
+    return out
+
+
+def extracted_stats(target):
+    conn = _connect()
+    row = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(extracted), 0), "
+        "COUNT(DISTINCT endpoint) FROM extracted_data WHERE target = ?",
+        (target,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {"records": 0, "total_extracted": 0, "endpoints": 0}
+    return {"records": int(row[0] or 0),
+            "total_extracted": int(row[1] or 0),
+            "endpoints": int(row[2] or 0)}
 
 
 def record_run(target, pattern_count, vulnerable_count, duration_ms, engagement_id=""):
@@ -137,7 +224,7 @@ def findings_for_target(target):
     conn = _connect()
     rows = conn.execute(
         "SELECT id, timestamp, pattern_id, category, verdict, severity, reason, "
-        "wstg_id, cwe_id, evidence_path, duration_ms "
+        "wstg_id, cwe_id, evidence_path, duration_ms, evidence_json "
         "FROM findings WHERE target = ? "
         "ORDER BY CASE severity "
         "WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 "

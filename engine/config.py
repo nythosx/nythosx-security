@@ -10,6 +10,8 @@ ROOT = Path(__file__).parent.parent.absolute()
 CONFIGS = ROOT / "configs"
 SESSIONS = CONFIGS / "sessions"
 
+SCHEMA_VERSION = 2
+
 DISCOVERY_DEFAULTS = {
     "prefer_https": True,
     "schemes": ["https", "http"],
@@ -19,6 +21,39 @@ DISCOVERY_DEFAULTS = {
     "reject_redirect_only": True,
     "follow_redirects": True,
     "probe_timeout_seconds": 6,
+}
+
+
+_BANKING_DEFAULTS = {
+    "mask_chars": 1,
+    "cipher": "rot13",
+    "endpoints_authenticated": [
+        "/api/v1/me",
+        "/api/v1/profile",
+        "/api/v1/user",
+        "/api/v1/accounts",
+        "/api/v1/accounts/1",
+        "/api/v1/accounts/2",
+        "/api/v1/transactions",
+        "/api/v1/transactions/1",
+        "/api/v1/customers",
+        "/api/v1/customers/1",
+        "/api/v1/balance",
+        "/api/v1/cards",
+        "/api/v1/statements",
+        "/api/v1/beneficiaries",
+        "/api/v1/payments",
+    ],
+    "endpoints_unauthenticated": [
+        "/api/v1/accounts",
+        "/api/v1/accounts/1",
+        "/api/v1/transactions",
+        "/api/v1/customers",
+        "/api/v1/balance",
+        "/check_balance/1",
+        "/api/v1/statements",
+        "/api/v1/cards",
+    ],
 }
 
 
@@ -32,7 +67,7 @@ _ENGINE_DEFAULTS = {
             "enforce_rate_limit": True},
     "budget": {"max_http_requests": 5000,
                "max_duration_seconds": 1800,
-               "max_requests_per_host": 500},
+               "max_requests_per_host": 2500},
     "oob": {"callback_url": "", "external_enabled": False},
     "redaction": {"enabled": True, "extra_patterns": [],
                   "allow_patterns": []},
@@ -44,6 +79,45 @@ _ENGINE_DEFAULTS = {
     "waf": {"enabled": True, "fingerprint_depth": 3, "max_encodings": 20},
     "iteration": {"enabled": False, "max_sweeps": 3, "min_budget_remaining": 0.2},
     "confirm": {"enabled": True, "max_attempts": 3, "read_only": True},
+    "cve_lookup": {
+        "enabled": True,
+        "nvd_api_key_env": "NVD_API_KEY",
+        "timeout_seconds": 15,
+        "cache_ttl_seconds": 86400,
+        "max_results_per_product": 25,
+        "cpe_overrides": {},
+    },
+    "access_bypass": {
+        "enabled": True,
+        "header_overrides": [
+            "X-Original-URL", "X-Rewrite-URL", "X-Override-URL",
+            "X-Forwarded-Prefix", "X-HTTP-Method-Override",
+            "X-Method-Override", "X-Forwarded-For", "X-Forwarded-Host",
+            "X-Real-IP", "X-Originating-IP", "X-Remote-IP",
+            "X-Client-IP", "X-Trusted-By",
+        ],
+        "path_mutations": [
+            "{p}/", "{p}/.", "{p}/%2e", "{p}%20", "{p}%09",
+            "{p}?x=1", "{p}..;/", "{p}#", "{p}%23", "{p}/*",
+            "{p}.json", "{p}.html",
+        ],
+        "timeout_seconds": 8,
+    },
+    "cache_deception": {
+        "enabled": True,
+        "extensions": [
+            ".css", ".js", ".png", ".jpg", ".jpeg", ".svg",
+            ".ico", ".woff", ".woff2", ".txt", ".json", ".html",
+        ],
+        "cache_header_keys": [
+            "x-cache", "cf-cache-status", "x-cache-status",
+            "x-served-by", "x-vercel-cache", "x-proxy-cache",
+            "akamai-cache-status", "age",
+        ],
+        "cache_hit_markers": ["hit", "HIT", "cached"],
+        "timeout_seconds": 8,
+    },
+    "banking": copy.deepcopy(_BANKING_DEFAULTS),
 }
 
 
@@ -81,6 +155,8 @@ def load_engine():
     for key, val in _ENGINE_DEFAULTS.items():
         if key not in data:
             data[key] = copy.deepcopy(val)
+    if "schema_version" not in data:
+        data["schema_version"] = SCHEMA_VERSION
     return data
 
 
@@ -101,6 +177,17 @@ def load_roe():
 
 
 def load_credentials():
+    try:
+        from . import secrets_vault
+        if secrets_vault.is_encrypted():
+            text = secrets_vault.read_file()
+            if text is None:
+                return {"credentials": {}}
+            data = strict_yaml_load(text) or {}
+            schema.validate_credentials(data, "credentials.yaml")
+            return data
+    except Exception:
+        pass
     return _load("credentials.yaml", {"credentials": {}}, strict=True,
                  validate=schema.validate_credentials)
 

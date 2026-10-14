@@ -1,0 +1,20 @@
+id: hpp-scan
+name: HTTP Parameter Pollution
+severity: medium
+tags: [hpp, injection, wstg-inpv-04, cwe-235]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      follow_redirects: false
+
+oracles:
+  - type: hpp_scan
+    verdict: SUSPICIOUS

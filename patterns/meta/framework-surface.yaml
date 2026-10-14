@@ -1,0 +1,20 @@
+id: framework-surface
+name: Framework Surface Exposure (Laravel / Spring / WordPress / Rails / Tomcat)
+severity: high
+tags: [misconfiguration, debug, wstg-conf-02, cwe-16, cwe-200]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      follow_redirects: false
+
+oracles:
+  - type: framework_probe
+    verdict: VULNERABLE

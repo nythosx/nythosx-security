@@ -1,0 +1,29 @@
+id: npmrc-exposure
+name: Package Manager Config Exposure
+severity: high
+tags: [supply-chain, owasp-a03, secrets-exposure, cwe-538]
+inputs:
+  target_url:
+    type: string
+    required: true
+steps:
+  - name: npmrc
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.npmrc"
+  - name: pypirc
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.pypirc"
+  - name: gem_credentials
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.gem/credentials"
+  - name: composer_auth
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/auth.json"
+oracles:
+  - type: pattern_match
+    regex: '(_authToken|_auth|password|token|username|pypi-|gem-|Bearer|Basic)'
+    verdict: VULNERABLE

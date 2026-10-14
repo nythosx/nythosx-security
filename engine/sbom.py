@@ -183,7 +183,7 @@ def build_spdx(root, scan_result=None):
         spdx["annotations"] = [{
             "annotationDate": timestamp,
             "annotationType": "OTHER",
-            "annotator": "Tool: sec-checker-1.2.1",
+            "annotator": f"Tool: sec-checker-{SEC_CHECKER_VERSION}",
             "comment": f"{len(findings)} vulnerabilities detected via OSV; "
                        f"completeness=no-hashes,no-graph",
         }]

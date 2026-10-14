@@ -21,6 +21,13 @@ _RECON_FACTS = {
     "sca_requested",
     "has_oauth_hint", "has_websocket_hint", "has_redirect_hint",
     "has_ssti_hint", "has_xml_hint", "has_http2_hint",
+    "has_historic_paths", "historic_path_count", "historic_params",
+    "framework_findings",
+    "has_sourcemap", "sourcemap_params_count", "sourcemap_params",
+    "sourcemap_paths", "graphql_field_count", "graphql_root_fields",
+    "ct_subdomain_count", "live_subdomains", "ct_subdomains",
+    "has_subdomain_takeover", "has_public_bucket", "has_hpp_signal",
+    "banking_requested",
 }
 
 _CONTEXT_KEYS = {

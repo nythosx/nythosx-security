@@ -184,5 +184,62 @@ def load_baseline(target, url):
     except Exception:
         return None
 
+
+
+def diff_since(target, since_iso):
+    """Return findings newer than since_iso (ISO8601) for the target.
+
+    Used by `chain --since <timestamp>` and by the web UI baseline view.
+    Reads directly from the ledger so it reflects every recorded finding,
+    not just those in the current run.
+    """
+    if not since_iso:
+        return []
+    from . import ledger as _ledger
+    try:
+        conn = _ledger._connect()
+    except Exception:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT id, timestamp, pattern_id, category, verdict, severity, "
+            "reason, wstg_id, cwe_id, evidence_path, duration_ms, "
+            "evidence_json FROM findings WHERE target = ? AND timestamp > ? "
+            "ORDER BY id DESC",
+            (target, since_iso),
+        ).fetchall()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    keys = ["id", "timestamp", "pattern_id", "category", "verdict",
+            "severity", "reason", "wstg_id", "cwe_id", "evidence_path",
+            "duration_ms", "evidence_json"]
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def latest_timestamp(target):
+    """Return the most recent finding timestamp for the target, or None."""
+    from . import ledger as _ledger
+    try:
+        conn = _ledger._connect()
+    except Exception:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT MAX(timestamp) FROM findings WHERE target = ?",
+            (target,),
+        ).fetchone()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if not row or not row[0]:
+        return None
+    return row[0]
+
 __all__ = ["BaselineEngine", "BaselineSnapshot",
-           "profile_endpoint", "save_baseline", "load_baseline"]
+           "profile_endpoint", "save_baseline", "load_baseline",
+           "diff_since", "latest_timestamp"]

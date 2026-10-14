@@ -77,6 +77,15 @@ ENDPOINT_HINTS = {
 }
 
 
+EXTRACTION_TOOLS = [
+    "unauth-pagination-dump",
+    "graphql-data-dump",
+    "bola-harvest",
+    "llm-system-prompt-dump",
+    "llm-tool-list-dump",
+]
+
+
 RELATED_CAPABILITIES = {
     "env-file-exposure": ["mass-assignment", "jwt-weak-secret"],
     "cors-wildcard": ["api-cors-preflight", "cookie-flags-missing"],
@@ -108,6 +117,13 @@ class RuleBasedBrain:
                     caps.extend(hints)
         return caps
 
+    def _extraction_hints(self, state):
+        out = []
+        for cap in EXTRACTION_TOOLS:
+            if cap not in state.executed_capabilities:
+                out.append(cap)
+        return out[:3]
+
     def _cross_finding_caps(self, state):
         caps = []
         for f in state.findings or []:
@@ -126,6 +142,8 @@ class RuleBasedBrain:
         caps.update(self._cross_finding_caps(state))
         if not caps:
             caps.update(["security-headers-missing", "cors-wildcard"])
+        if len(caps) < 3:
+            caps.update(self._extraction_hints(state))
         caps = {c for c in caps if c not in state.executed_capabilities}
         hypotheses = [
             Hypothesis(

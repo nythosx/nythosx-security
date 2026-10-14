@@ -95,6 +95,11 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 <strong>Generated:</strong> {{ timestamp }}<br>
 <strong>Total Findings:</strong> {{ findings|length }}
 </div>
+{% if impact_summary %}
+<div style="background:#2a1114;border:1px solid #f85149;color:#ffb4ae;padding:14px 18px;border-radius:10px;margin:18px 0;font-size:14px">
+<strong style="color:#fff">PROOF OF IMPACT:</strong> {{ impact_summary }}
+</div>
+{% endif %}
 <h2>Executive Summary</h2>
 <div class="summary">
 <div class="card critical"><div class="count">{{ counts.critical }}</div><div class="label">Critical</div></div>
@@ -148,7 +153,7 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 <h2>Findings</h2>
 <table>
 <thead>
-<tr><th>ID</th><th>Pattern</th><th>Severity</th><th>Triage</th><th>Verdict</th><th>Confirm</th><th>Reason</th><th>WSTG</th><th>CWE</th></tr>
+<tr><th>ID</th><th>Pattern</th><th>Severity</th><th>Triage</th><th>Verdict</th><th>Confirm</th><th>CVSS</th><th>ASVS</th><th>Reason</th><th>WSTG</th><th>CWE</th></tr>
 </thead>
 <tbody>
 {% for f in findings %}
@@ -159,6 +164,8 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 <td>{% if f.triage_category %}{{ f.triage_category }}{% if f.triage_by_design %} <span title="{{ f.triage_note }}">(by-design)</span>{% endif %}{% else %}-{% endif %}</td>
 <td><span class="badge {{ f.verdict }}">{{ f.verdict }}</span></td>
 <td>{{ f.confirmation_status or '-' }}</td>
+<td>{% if f.cvss %}{{ f.cvss.score or '-' }}{% else %}-{% endif %}</td>
+<td>{% if f.asvs_chapters %}{{ f.asvs_chapters|join(', ') }}{% else %}-{% endif %}</td>
 <td>{{ f.reason }}
 {% if f.why and f.verdict in ['VULNERABLE', 'SUSPICIOUS'] %}
 <details class="why-wrap"><summary>Why this matters</summary>
@@ -186,6 +193,22 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 <span class="badge2 {{ 'unauth' if 'unauth' in (dr.auth_used or '')|lower else 'auth' }}">{{ dr.auth_used or 'unknown' }}</span>
 <span class="datarow-empty"> &middot; {{ dr.extracted }} of {{ dr.total_rows }} row(s)</span>
 </div>
+{% for row in dr.rows %}
+<table class="datarow-table">
+{% for k, v in row.items() %}
+<tr><td class="k">{{ k }}</td><td class="v">{{ v }}</td></tr>
+{% endfor %}
+</table>
+{% endfor %}
+</div>
+{% endfor %}
+{% endif %}
+{% if extracted_rows %}
+<h2>Extracted Data &mdash; Proof of Impact</h2>
+<p class="meta">Raw records harvested during the scan, masked. Full unmasked output retained in the evidence directory.</p>
+{% for dr in extracted_rows %}
+<div class="datarow-card">
+<div class="hd">{{ dr.endpoint }} <span class="badge2">{{ dr.auth_used }}</span> <span class="datarow-empty">&middot; {{ dr.extracted }} of {{ dr.total_rows }} row(s) &middot; source: {{ dr.pattern }}</span></div>
 {% for row in dr.rows %}
 <table class="datarow-table">
 {% for k, v in row.items() %}
@@ -226,6 +249,10 @@ MD_TEMPLATE = """# Security Assessment Report
 **Target:** {{ target }}
 **Generated:** {{ timestamp }}
 **Total Findings:** {{ findings|length }}
+{% if impact_summary %}
+
+> **PROOF OF IMPACT:** {{ impact_summary }}
+{% endif %}
 
 ## Executive Summary
 
@@ -301,6 +328,24 @@ Masked data rows recovered from the target. First character of each sensitive va
 | field | value |
 |-------|-------|
 {% for k, v in row.items() -%}
+| `{{ k }}` | `{{ v }}` |
+{% endfor %}
+
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if extracted_rows %}
+## Extracted Data — Proof of Impact
+
+Raw records harvested during the scan, masked. Full unmasked output retained in evidence directory.
+
+{% for dr in extracted_rows %}
+### `{{ dr.endpoint }}` — {{ dr.auth_used }} ({{ dr.extracted }}/{{ dr.total_rows }}) — source: {{ dr.pattern }}
+
+{% for row in dr.rows %}
+| field | value |
+|-------|-------|
+{% for k, v in row.items() %}
 | `{{ k }}` | `{{ v }}` |
 {% endfor %}
 
@@ -420,6 +465,14 @@ def _enrich_evidence_fields(f):
         return
     if not isinstance(ev, dict):
         return
+    if isinstance(ev.get("cvss"), dict):
+        f.setdefault("cvss", ev["cvss"])
+    if isinstance(ev.get("asvs_chapters"), list):
+        f.setdefault("asvs_chapters", ev["asvs_chapters"])
+    if isinstance(ev.get("reproduction"), str):
+        f.setdefault("reproduction", ev["reproduction"])
+    if isinstance(ev.get("proof_of_impact"), dict):
+        f.setdefault("proof_of_impact", ev["proof_of_impact"])
     if "signal_strength" in ev and "signal_strength" not in f:
         f["signal_strength"] = ev["signal_strength"]
     if "confirmation_status" in ev:
@@ -579,6 +632,69 @@ def generate_sarif(target):
     return str(path)
 
 
+def _enrich_extracted_from_evidence_json(findings):
+    for f in findings or []:
+        raw = f.get("evidence_json")
+        if isinstance(raw, str):
+            try:
+                import json as _json
+                raw = _json.loads(raw)
+            except Exception:
+                raw = None
+        if not isinstance(raw, dict):
+            continue
+        if "extracted_data" in raw and isinstance(raw["extracted_data"], list):
+            f.setdefault("extracted_data", raw["extracted_data"])
+        if "extracted_records" in raw and isinstance(raw["extracted_records"], list):
+            f.setdefault("extracted_records", raw["extracted_records"])
+        if "records" in raw and isinstance(raw["records"], list):
+            f.setdefault("records", raw["records"])
+        if "files_read" in raw and isinstance(raw["files_read"], list):
+            f.setdefault("files_read", raw["files_read"])
+        if "extracted_value" in raw and isinstance(raw["extracted_value"], str):
+            f.setdefault("extracted_value", raw["extracted_value"])
+
+
+def _collect_extracted_for_report(findings):
+    out = []
+    for f in findings or []:
+        pid = f.get("pattern_id") or "?"
+        endpoint = f.get("target") or ""
+        auth_used = "authenticated" if "auth" in pid.lower() else "user"
+        for key in ("extracted_data", "extracted_records", "records"):
+            items = f.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                rows = item.get("rows") or []
+                if not rows and isinstance(item.get("data"), list):
+                    rows = item["data"]
+                if not rows:
+                    continue
+                masked = []
+                for r in rows:
+                    if isinstance(r, dict):
+                        try:
+                            from .util import mask_row
+                            masked.append(mask_row(r))
+                        except Exception:
+                            masked.append(r)
+                out.append({
+                    "endpoint": item.get("url") or item.get("endpoint")
+                                or endpoint,
+                    "auth_used": item.get("auth_used") or auth_used,
+                    "total_rows": int(item.get("total_rows")
+                                       or len(rows)),
+                    "extracted": int(item.get("extracted")
+                                       or len(masked)),
+                    "rows": masked,
+                    "pattern": pid,
+                })
+    return out
+
+
 def _extract_data_rows(findings):
     import json as _json
     out = []
@@ -648,12 +764,22 @@ def _build_context(target, engine_cfg=None):
         graph_svg = report_graph.render_chain_svg(chains) if chains else ""
     except Exception:
         graph_svg = ""
+    _enrich_extracted_from_evidence_json(findings)
     data_rows = _extract_data_rows(findings)
+    extracted_rows = _collect_extracted_for_report(findings)
     try:
         from . import report_graph
         data_svg = report_graph.render_data_flow_svg(data_rows) if data_rows else ""
     except Exception:
         data_svg = ""
+    total_extracted = sum(e.get("extracted", 0) for e in extracted_rows)
+    impact_summary = ""
+    if total_extracted:
+        impact_summary = (
+            f"{total_extracted} record(s) extracted across "
+            f"{len(extracted_rows)} endpoint(s). "
+            "See Extracted Data section below for masked samples."
+        )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     return {
         "target": target,
@@ -665,6 +791,9 @@ def _build_context(target, engine_cfg=None):
         "cves": cves,
         "graph_svg": graph_svg,
         "data_rows": data_rows,
+        "extracted_rows": extracted_rows,
+        "total_extracted": total_extracted,
+        "impact_summary": impact_summary,
         "data_svg": data_svg,
     }
 

@@ -40,6 +40,52 @@ _config_lock = threading.Lock()
 _configured = False
 
 
+_circuit_breaker_lock = threading.Lock()
+_circuit_breaker_state = {}
+
+
+class CircuitBreaker:
+    def __init__(self, threshold=5, cooldown_seconds=60.0):
+        self.threshold = int(threshold)
+        self.cooldown_seconds = float(cooldown_seconds)
+
+    def allow(self, host):
+        import time as _t
+        with _circuit_breaker_lock:
+            entry = _circuit_breaker_state.get(host)
+            if not entry:
+                return True
+            failures, until = entry
+            if failures < self.threshold:
+                return True
+            if _t.monotonic() >= until:
+                _circuit_breaker_state.pop(host, None)
+                return True
+            return False
+
+    def record_failure(self, host):
+        import time as _t
+        with _circuit_breaker_lock:
+            failures, _ = _circuit_breaker_state.get(host, (0, 0.0))
+            failures += 1
+            until = _t.monotonic() + self.cooldown_seconds
+            _circuit_breaker_state[host] = (failures, until)
+
+    def record_success(self, host):
+        with _circuit_breaker_lock:
+            _circuit_breaker_state.pop(host, None)
+
+
+_default_breaker = None
+
+
+def _get_breaker():
+    global _default_breaker
+    if _default_breaker is None:
+        _default_breaker = CircuitBreaker()
+    return _default_breaker
+
+
 def ensure_configured():
     """Configure the budget from configs once per process."""
     global _configured
@@ -107,10 +153,27 @@ class Client:
         try:
             self._roe.check_url(str(url), method)
         except ROEViolation as e:
+            try:
+                from . import progress as _prog
+                _prog.diagnostic("roe", "warning",
+                                 f"{method} {url}: {e}",
+                                 url=str(url), method=method)
+            except Exception:
+                pass
             raise ROEBlock(f"ROE_BLOCK: {e}") from e
         if not skip_rate_limit:
             self._limiter.acquire(str(url))
-        budget.record(str(url))
+        try:
+            budget.record(str(url))
+        except budget.BudgetExceeded as e:
+            try:
+                from . import progress as _prog
+                _prog.diagnostic("budget", "warning",
+                                 f"{method} {url}: {e}",
+                                 url=str(url), method=method)
+            except Exception:
+                pass
+            raise
 
     def _follow(self, r, max_hops=5, headers=None, method="GET",
                 body_kwargs=None):
@@ -157,15 +220,58 @@ class Client:
             if key in kwargs:
                 body_kwargs[key] = kwargs[key]
 
-        r = self._client.request(method, url,
-                                 headers=req_headers or None,
-                                 follow_redirects=False, **kwargs)
+        from urllib.parse import urlparse as _urlparse
+        _host = _urlparse(str(url)).netloc or ""
+        _breaker = _get_breaker()
+        if not _breaker.allow(_host):
+            raise ROEBlock(f"CIRCUIT_OPEN: {_host}")
+
+        import time as _time
+        _t0 = _time.monotonic()
+        try:
+            r = self._client.request(method, url,
+                                     headers=req_headers or None,
+                                     follow_redirects=False, **kwargs)
+        except (ConnectError, TimeoutException, NetworkError) as _e:
+            _breaker.record_failure(_host)
+            self._write_audit(method, url, None, _e, _t0)
+            raise
+        except Exception as _e:
+            self._write_audit(method, url, None, _e, _t0)
+            raise
+
+        _breaker.record_success(_host)
+        self._write_audit(method, url, r, None, _t0)
+
         if r.status_code == 429:
             self._limiter.on_429()
         if follow:
             r = self._follow(r, headers=req_headers or None,
                              method=method, body_kwargs=body_kwargs)
         return r
+
+    def _write_audit(self, method, url, response, error, t0):
+        try:
+            from . import audit as _audit
+        except Exception:
+            return
+        try:
+            import time as _time
+            dur = (_time.monotonic() - t0) * 1000.0
+        except Exception:
+            dur = None
+        status = None
+        if response is not None:
+            try:
+                status = response.status_code
+            except Exception:
+                status = None
+        try:
+            _audit.record("http_request", method=method, url=str(url),
+                          status=status, duration_ms=dur,
+                          error=str(error) if error else None)
+        except Exception:
+            pass
 
     def get(self, url, **kwargs):
         return self.request("GET", url, **kwargs)
@@ -221,7 +327,7 @@ def post(url, **kwargs):
 
 
 __all__ = [
-    "Client", "ROEBlock", "ensure_configured",
+    "Client", "ROEBlock", "ensure_configured", "CircuitBreaker",
     "get", "post", "request",
     "ConnectError", "TimeoutException", "NetworkError",
     "RequestError", "HTTPError", "HTTPStatusError", "InvalidURL",

@@ -1,0 +1,21 @@
+id: timing-robust
+name: Robust Statistical Timing Oracle
+severity: medium
+tags: [timing, blind-injection, wstg-inpv-05, cwe-208]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      follow_redirects: false
+
+oracles:
+  - type: timing_robust
+    param: q
+    verdict: SUSPICIOUS

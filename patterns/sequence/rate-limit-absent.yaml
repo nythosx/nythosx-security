@@ -22,6 +22,8 @@ steps:
       url: "{{ inputs.target_url }}"
       json:
         email: "probe_{{ loop_index }}@example.com"
+        username: "probe_{{ loop_index }}@example.com"
+        identifier: "probe_{{ loop_index }}@example.com"
         password: "wrong_pass"
 
 oracles:

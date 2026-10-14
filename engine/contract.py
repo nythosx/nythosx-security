@@ -159,6 +159,43 @@ class Finding:
 
 
 @dataclass
+class DataRow:
+    endpoint: str = ""
+    method: str = "GET"
+    status: int = 0
+    total_rows: int = 0
+    extracted: int = 0
+    rows: list = field(default_factory=list)
+    raw_rows: list = field(default_factory=list)
+    auth_used: str = None
+
+    def masked_json(self):
+        import json
+        from .util import mask_row
+        masked = [mask_row(r) for r in self.rows] if self.rows else []
+        return json.dumps({
+            "endpoint": self.endpoint,
+            "method": self.method,
+            "status": self.status,
+            "total_rows": self.total_rows,
+            "extracted": self.extracted,
+            "rows": masked,
+            "auth_used": self.auth_used,
+        }, indent=2, default=str)
+
+    def to_dict(self):
+        return {
+            "endpoint": self.endpoint,
+            "method": self.method,
+            "status": self.status,
+            "total_rows": self.total_rows,
+            "extracted": self.extracted,
+            "rows": self.rows,
+            "auth_used": self.auth_used,
+        }
+
+
+@dataclass
 class ScanBudget:
     max_iterations: int = 5
     max_http_requests: int = 500
@@ -232,6 +269,13 @@ class ScanResult:
     confirmation_status: str = "unconfirmed"
     confidence_breakdown: dict = field(default_factory=dict)
     iteration_id: int = 0
+    data_rows: list = field(default_factory=list)
+    extracted_data: list = field(default_factory=list)
+    proof_of_impact: dict = field(default_factory=dict)
+    reproduction: str = ""
+    cvss: dict = field(default_factory=dict)
+    asvs_chapters: list = field(default_factory=list)
+    mitre_techniques: list = field(default_factory=list)
 
     def __post_init__(self):
         self.verdict = coerce_verdict(self.verdict)
@@ -278,6 +322,20 @@ class ScanResult:
             return self.confidence_breakdown
         if key == "iteration_id":
             return self.iteration_id
+        if key == "data_rows":
+            return self.data_rows
+        if key == "extracted_data":
+            return self.extracted_data
+        if key == "proof_of_impact":
+            return self.proof_of_impact
+        if key == "reproduction":
+            return self.reproduction
+        if key == "cvss":
+            return self.cvss
+        if key == "asvs_chapters":
+            return self.asvs_chapters
+        if key == "mitre_techniques":
+            return self.mitre_techniques
         return self.raw.get(key)
 
     def get(self, key, default=None):
@@ -292,7 +350,10 @@ class ScanResult:
                    "confidence_reason", "reason", "evidence", "findings",
                    "next_hints", "duration_ms", "cost_used", "author", "raw",
                    "signal_strength", "confirmation_status",
-                   "confidence_breakdown", "iteration_id"):
+                   "confidence_breakdown", "iteration_id",
+                   "data_rows", "extracted_data", "proof_of_impact",
+                   "reproduction", "cvss", "asvs_chapters",
+                   "mitre_techniques"):
             return True
         return key in self.raw
 
@@ -315,6 +376,13 @@ class ScanResult:
             "confirmation_status": self.confirmation_status,
             "confidence_breakdown": self.confidence_breakdown,
             "iteration_id": self.iteration_id,
+            "data_rows": self.data_rows,
+            "extracted_data": self.extracted_data,
+            "proof_of_impact": self.proof_of_impact,
+            "reproduction": self.reproduction,
+            "cvss": self.cvss,
+            "asvs_chapters": self.asvs_chapters,
+            "mitre_techniques": self.mitre_techniques,
         }
 
 

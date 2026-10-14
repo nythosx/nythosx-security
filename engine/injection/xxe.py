@@ -71,7 +71,8 @@ def scan(target_url, headers=None, roe_guard=None, timeout=8,
                 capability="xxe_scan", target=target_url,
                 verdict="UNKNOWN", reason=r["error"],
             )
-        attempts.append({"payload": label, "status": r.get("status")})
+        attempts.append({"payload": label, "status": r.get("status"),
+                         "error": r.get("error")})
         body = r.get("body") or ""
         if marker and marker in body:
             findings.append({"payload": label, "path": path,
@@ -84,7 +85,8 @@ def scan(target_url, headers=None, roe_guard=None, timeout=8,
     if not findings and oob_url:
         xml = XXE_TEMPLATE_OOB.format(oob=oob_url)
         r = _post_xml(target_url, xml, headers, timeout, verify, roe_guard)
-        attempts.append({"payload": "oob", "status": r.get("status")})
+        attempts.append({"payload": "oob", "status": r.get("status"),
+                         "error": r.get("error")})
 
     if findings:
         return ScanResult(
@@ -95,9 +97,13 @@ def scan(target_url, headers=None, roe_guard=None, timeout=8,
         )
     statuses = [a["status"] for a in attempts if a["status"] is not None]
     if not statuses:
+        from ..util import summarize_failures
+        why = summarize_failures(attempts)
         return ScanResult(
             capability="xxe_scan", target=target_url,
-            verdict="UNKNOWN", reason="all requests failed",
+            verdict="UNKNOWN",
+            reason=f"all requests failed ({why})" if why else "all requests failed",
+            evidence={"attempts": attempts},
         )
     if all(s in (404, 405) for s in statuses):
         return ScanResult(

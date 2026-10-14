@@ -1,0 +1,16 @@
+id: mcp-tool-poisoning
+name: MCP Tool Description Poisoning
+severity: high
+tags: [mcp, prompt-injection, owasp-llm01, cwe-77]
+inputs:
+  config_path:
+    type: string
+    required: true
+steps:
+  - name: read_config
+    request:
+      method: GET
+      url: "file://{{ inputs.config_path }}"
+oracles:
+  - type: mcp_tool_poisoning
+    verdict: VULNERABLE

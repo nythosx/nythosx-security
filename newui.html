@@ -1,0 +1,945 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>sec-checker · live scan</title>
+<style>
+  :root {
+    --bg:          #08090a;
+    --bg-2:        #0b0c0d;
+    --surface:     #101112;
+    --surface-2:   #15171a;
+    --line-1:      #1a1c1e;
+    --line-2:      #23262a;
+    --line-3:      #383b3f;
+    --line-hi:     #5c6166;
+    --fg:          #d0d3d5;
+    --fg-dim:      #6a7075;
+    --fg-dimmer:   #454a4d;
+    --fg-bright:   #f2f4f5;
+    --accent:      #d94444;
+    --accent-dim:  #7a2828;
+    --accent-soft: rgba(217,68,68,0.05);
+    --bronze:      #9c7c3e;
+    --bronze-soft: rgba(156,124,62,0.06);
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 13px;
+    display: grid;
+    grid-template-rows: 40px 1fr 110px;
+    height: 100vh;
+  }
+
+  /* ══════════ Header ══════════ */
+  header {
+    display: flex; align-items: center;
+    padding: 0 22px;
+    border-bottom: 1px solid var(--line-1);
+    background: var(--bg-2);
+    font-family: var(--mono); font-size: 11.5px;
+    gap: 14px;
+  }
+  .brand {
+    color: var(--fg-bright);
+    letter-spacing: 0.09em; font-weight: 600;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .brand::before {
+    content: ""; width: 5px; height: 5px;
+    background: var(--fg); display: block;
+  }
+  .sep { color: var(--fg-dimmer); }
+  .target { color: var(--fg); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spacer { flex: 1; }
+  .stat { color: var(--fg-dim); letter-spacing: 0.02em; }
+  .stat b { color: var(--fg); font-weight: 500; }
+  .stat.v b { color: var(--accent); }
+  .stat.v { color: var(--accent-dim); }
+  .status {
+    display: flex; align-items: center; gap: 7px;
+    color: var(--fg-dim);
+    text-transform: uppercase; letter-spacing: 0.14em;
+    font-size: 10.5px;
+  }
+  .status::before {
+    content: ""; width: 5px; height: 5px;
+    background: var(--fg-dimmer); border-radius: 50%;
+    transition: background 200ms;
+  }
+  .status.running::before { background: var(--fg); animation: blink 1.3s ease-in-out infinite; }
+  .status.done::before    { background: var(--fg); }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+  .btn {
+    background: transparent; border: 1px solid var(--line-2);
+    color: var(--fg-dim); padding: 4px 10px;
+    font-family: var(--mono); font-size: 10px;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    cursor: pointer; transition: all 150ms;
+  }
+  .btn:hover { border-color: var(--fg); color: var(--fg); }
+
+  /* ══════════ Canvas ══════════ */
+  .canvas-wrap {
+    position: relative; overflow: hidden;
+    background: radial-gradient(ellipse at 50% 45%, #0c0d0e 0%, #050607 100%);
+  }
+  .canvas-wrap::before {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(to right,  #0f1011 1px, transparent 1px),
+      linear-gradient(to bottom, #0f1011 1px, transparent 1px);
+    background-size: 48px 48px;
+    opacity: 0.55; pointer-events: none;
+    -webkit-mask-image: radial-gradient(ellipse at center, #000 35%, transparent 88%);
+            mask-image: radial-gradient(ellipse at center, #000 35%, transparent 88%);
+  }
+  svg.exec {
+    position: relative; display: block;
+    width: 100%; height: 100%;
+  }
+
+  /* ══════════ Nodes ══════════ */
+  .node rect {
+    fill: var(--surface);
+    stroke: var(--line-2);
+    stroke-width: 1;
+    transition: stroke 240ms, fill 240ms, stroke-width 240ms, filter 240ms;
+  }
+  .node text {
+    font-family: var(--mono); font-size: 11px;
+    fill: var(--fg-dim);
+    transition: fill 260ms;
+    dominant-baseline: middle;
+    user-select: none;
+  }
+  .node .label  { font-size: 11px; letter-spacing: 0.04em; }
+  .node .meta   { font-size: 9.5px; fill: var(--fg-dimmer); letter-spacing: 0.05em; }
+  .node.terminal .label { font-size: 10.5px; letter-spacing: 0.16em; }
+  .node.chain .label    { font-size: 11.5px; }
+
+  .node.pending rect { stroke: var(--line-1); stroke-dasharray: 3 4; opacity: 0.75; }
+  .node.pending text { fill: var(--fg-dimmer); }
+
+  .node.active rect {
+    stroke: var(--fg-bright);
+    stroke-width: 1.4;
+    fill: var(--surface-2);
+    animation: pulseActive 1.15s ease-in-out infinite;
+  }
+  .node.active text { fill: var(--fg-bright); }
+  .node.active .meta { fill: var(--fg-dim); }
+  @keyframes pulseActive {
+    0%,100% { stroke-opacity: 1; }
+    50%     { stroke-opacity: 0.45; }
+  }
+
+  .node.done-pass rect { stroke: var(--line-3); }
+  .node.done-pass .label { fill: var(--fg); }
+
+  .node.done-susp rect { stroke: #453720; fill: var(--bronze-soft); }
+  .node.done-susp .label { fill: var(--bronze); }
+  .node.done-susp .meta  { fill: #6f5830; }
+
+  .node.done-vuln rect {
+    stroke: var(--accent);
+    fill: var(--accent-soft);
+    filter: drop-shadow(0 0 9px rgba(217,68,68,0.16));
+  }
+  .node.done-vuln .label { fill: #e56565; }
+  .node.done-vuln .meta  { fill: var(--accent); }
+
+  .node.skipped rect { stroke-dasharray: 2 4; stroke: var(--line-1); opacity: 0.55; }
+  .node.skipped .label { fill: var(--fg-dimmer); }
+  .node.skipped .meta  { fill: var(--fg-dimmer); }
+
+  /* pulse when a node just completed */
+  .node.flash rect {
+    animation: flashOut 700ms ease-out;
+  }
+  @keyframes flashOut {
+    0%   { stroke-width: 2.4; }
+    100% { stroke-width: 1; }
+  }
+
+  /* step progress dots inside chain nodes */
+  .step-dot {
+    fill: var(--line-2);
+    stroke: var(--line-3);
+    stroke-width: 0.6;
+    transition: fill 300ms, stroke 300ms;
+  }
+  .step-dot.on {
+    fill: var(--fg);
+    stroke: var(--fg);
+  }
+  .step-dot.vuln {
+    fill: var(--accent);
+    stroke: var(--accent);
+  }
+  .step-dot.susp {
+    fill: var(--bronze);
+    stroke: var(--bronze);
+  }
+
+  /* ══════════ Edges ══════════ */
+  .edge {
+    fill: none;
+    stroke: var(--line-2);
+    stroke-width: 1;
+    transition: stroke 300ms, stroke-width 300ms;
+  }
+  .edge.pending { stroke: var(--line-1); stroke-dasharray: 3 6; }
+  .edge.active {
+    stroke: var(--fg);
+    stroke-width: 1.1;
+    stroke-dasharray: 6 4;
+    animation: dash 0.6s linear infinite;
+  }
+  .edge.done {
+    stroke: var(--line-3);
+    stroke-dasharray: none;
+  }
+  .edge.done-vuln {
+    stroke: var(--accent-dim);
+    stroke-dasharray: none;
+    stroke-width: 1.3;
+  }
+  .edge.done-susp {
+    stroke: #453720;
+    stroke-dasharray: none;
+    stroke-width: 1.2;
+  }
+  @keyframes dash { to { stroke-dashoffset: -10; } }
+
+  .edge-label {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    fill: var(--fg-dimmer);
+    letter-spacing: 0.05em;
+    transition: fill 260ms;
+    user-select: none;
+  }
+  .edge-label.active { fill: var(--fg); }
+  .edge-label.vuln   { fill: var(--accent); }
+  .edge-label.susp   { fill: var(--bronze); }
+
+  /* packet */
+  .packet { fill: var(--fg); pointer-events: none; }
+  .packet.vuln { fill: var(--accent); }
+  .packet.susp { fill: var(--bronze); }
+
+  /* ══════════ Log ribbon ══════════ */
+  .log-ribbon {
+    border-top: 1px solid var(--line-1);
+    background: var(--bg-2);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 10px 22px;
+    display: flex; flex-direction: column;
+    justify-content: flex-start; gap: 3px;
+    overflow: hidden;
+    line-height: 1.5;
+  }
+  .log-line {
+    display: flex; gap: 12px;
+    color: var(--fg-dim);
+    white-space: nowrap;
+    opacity: 0;
+    animation: logIn 260ms ease forwards;
+  }
+  .log-line .t   { color: var(--fg-dimmer); flex-shrink: 0; }
+  .log-line .src { color: var(--fg-dimmer); flex-shrink: 0; min-width: 92px; }
+  .log-line .msg { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; }
+  .log-line.pass .msg { color: var(--fg); }
+  .log-line.vuln .msg { color: var(--accent); }
+  .log-line.vuln .src { color: var(--accent-dim); }
+  .log-line.susp .msg { color: var(--bronze); }
+  .log-line.hi   .msg { color: var(--fg-bright); }
+  @keyframes logIn {
+    from { opacity: 0; transform: translateY(3px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ══════════ Overlay ══════════ */
+  .overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5,6,7,0.90);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 10;
+    transition: opacity 400ms ease;
+  }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .overlay-inner { width: min(520px, 88%); }
+  .overlay-inner h1 {
+    margin: 0 0 10px;
+    font-family: var(--mono);
+    font-size: 12px; font-weight: 500;
+    color: var(--fg-bright);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .overlay-inner h1::before { content: "> "; color: var(--fg-dimmer); }
+  .overlay-inner p {
+    margin: 0 0 26px;
+    color: var(--fg-dim);
+    font-size: 12.5px; line-height: 1.75;
+  }
+  .input-row {
+    display: flex;
+    border-bottom: 1px solid var(--line-2);
+    transition: border-color 200ms;
+  }
+  .input-row:focus-within { border-color: var(--fg); }
+  .input-row input {
+    flex: 1;
+    background: transparent; border: none; outline: none;
+    padding: 10px 0;
+    color: var(--fg);
+    font-family: var(--mono); font-size: 13px;
+  }
+  .input-row input::placeholder { color: var(--fg-dimmer); }
+  .input-row button {
+    background: transparent; border: none;
+    padding: 0 2px 0 18px;
+    color: var(--fg);
+    font-family: var(--mono); font-size: 11px;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    cursor: pointer; font-weight: 600;
+    transition: color 140ms;
+  }
+  .input-row button:hover { color: #fff; }
+
+  @media (max-width: 820px) {
+    header { padding: 0 14px; gap: 10px; font-size: 10.5px; }
+    .stat.maybe-hide { display: none; }
+    .log-ribbon { padding: 8px 14px; font-size: 10.5px; }
+    .log-line .src { min-width: 72px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">sec-checker</div>
+  <div class="sep">/</div>
+  <div class="target" id="hTarget">—</div>
+  <div class="spacer"></div>
+  <div class="stat maybe-hide" id="hCounts">V <b>0</b> · S <b>0</b> · P <b>0</b> · U <b>0</b></div>
+  <div class="stat" id="hElapsed">00:00.0</div>
+  <div class="status" id="hStatus">idle</div>
+  <button class="btn" id="resetBtn">reset</button>
+</header>
+
+<div class="canvas-wrap">
+  <svg class="exec" id="exec" viewBox="0 0 1340 780" preserveAspectRatio="xMidYMid meet">
+    <g id="edges"></g>
+    <g id="packets"></g>
+    <g id="nodes"></g>
+  </svg>
+
+  <div class="overlay" id="overlay">
+    <div class="overlay-inner">
+      <h1>scan a target</h1>
+      <p>Enter a URL. The scanner resolves its identity, maps its surface, then fans out to attack chains — every decision visible as it happens.</p>
+      <div class="input-row">
+        <input id="urlInput" type="text" placeholder="https://target"
+               value="https://shop.demo.local" spellcheck="false" autocomplete="off">
+        <button id="startBtn">run →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="log-ribbon" id="logRibbon"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ═══════════════════════════════════════════════════════════════
+  //  GRAPH LAYOUT
+  // ═══════════════════════════════════════════════════════════════
+  const NODES = {
+    start:     { x:  40, y: 370, w:  72, h: 40, label: 'START',        kind: 'terminal' },
+    preflight: { x: 152, y: 358, w: 112, h: 64, label: 'PREFLIGHT',    kind: 'phase' },
+    fp:        { x: 300, y: 358, w: 122, h: 64, label: 'FINGERPRINT',  kind: 'phase' },
+    disc:      { x: 458, y: 358, w: 122, h: 64, label: 'DISCOVERY',    kind: 'phase' },
+    login:     { x: 616, y: 358, w: 100, h: 64, label: 'LOGIN',        kind: 'phase' },
+    propose:   { x: 752, y: 358, w: 118, h: 64, label: 'PROPOSE',      kind: 'phase' },
+
+    jwt:       { x: 924, y:  44, w: 176, h: 62, label: 'jwt-chain',      kind: 'chain', steps: 4 },
+    gql:       { x: 924, y: 188, w: 176, h: 62, label: 'graphql-chain',  kind: 'chain', steps: 3 },
+    ssrf:      { x: 924, y: 332, w: 176, h: 62, label: 'ssrf-chain',     kind: 'chain', steps: 3 },
+    biz:       { x: 924, y: 476, w: 176, h: 62, label: 'bizlogic-chain', kind: 'chain', steps: 3 },
+    race:      { x: 924, y: 620, w: 176, h: 62, label: 'race-chain',     kind: 'chain', steps: 2 },
+
+    report:    { x: 1180, y: 358, w: 110, h: 64, label: 'REPORT',      kind: 'terminal' },
+    abort:     { x: 152, y: 480, w: 112, h: 42, label: 'ABORT',        kind: 'terminal' },
+  };
+
+  const EDGES = [
+    { id: 'e-start',    from: 'start',     to: 'preflight' },
+    { id: 'e-pf-ok',    from: 'preflight', to: 'fp',        label: '200 OK' },
+    { id: 'e-pf-fail',  from: 'preflight', to: 'abort',     label: 'unreachable', drop: true },
+    { id: 'e-fp',       from: 'fp',        to: 'disc' },
+    { id: 'e-disc',     from: 'disc',      to: 'login' },
+    { id: 'e-login',    from: 'login',     to: 'propose',   label: 'facts' },
+
+    { id: 'e-b-jwt',    from: 'propose',   to: 'jwt',       label: 'has_jwt' },
+    { id: 'e-b-gql',    from: 'propose',   to: 'gql',       label: 'has_graphql' },
+    { id: 'e-b-ssrf',   from: 'propose',   to: 'ssrf',      label: 'has_ssrf_hint' },
+    { id: 'e-b-biz',    from: 'propose',   to: 'biz',       label: 'has_ecommerce' },
+    { id: 'e-b-race',   from: 'propose',   to: 'race',      label: 'has_cart' },
+
+    { id: 'e-jwt-r',    from: 'jwt',       to: 'report' },
+    { id: 'e-gql-r',    from: 'gql',       to: 'report' },
+    { id: 'e-ssrf-r',   from: 'ssrf',      to: 'report' },
+    { id: 'e-biz-r',    from: 'biz',       to: 'report' },
+    { id: 'e-race-r',   from: 'race',      to: 'report' },
+  ];
+
+  // ═══════════════════════════════════════════════════════════════
+  //  SVG BUILD
+  // ═══════════════════════════════════════════════════════════════
+  const NS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  function edgePath(edge) {
+    const f = NODES[edge.from], t = NODES[edge.to];
+    if (!f || !t) return '';
+    if (edge.drop) {
+      const p1 = { x: f.x + f.w / 2, y: f.y + f.h };
+      const p2 = { x: t.x + t.w / 2, y: t.y };
+      const my = (p1.y + p2.y) / 2;
+      return `M ${p1.x} ${p1.y} C ${p1.x} ${my}, ${p2.x} ${my}, ${p2.x} ${p2.y}`;
+    }
+    const p1 = { x: f.x + f.w, y: f.y + f.h / 2 };
+    const p2 = { x: t.x,       y: t.y + t.h / 2 };
+    const c  = Math.max(40, (p2.x - p1.x) * 0.45);
+    return `M ${p1.x} ${p1.y} C ${p1.x + c} ${p1.y}, ${p2.x - c} ${p2.y}, ${p2.x} ${p2.y}`;
+  }
+
+  function edgeMid(edge) {
+    const f = NODES[edge.from], t = NODES[edge.to];
+    const p1 = edge.drop
+      ? { x: f.x + f.w / 2, y: f.y + f.h }
+      : { x: f.x + f.w,     y: f.y + f.h / 2 };
+    const p2 = edge.drop
+      ? { x: t.x + t.w / 2, y: t.y }
+      : { x: t.x,           y: t.y + t.h / 2 };
+    return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+  }
+
+  const edgesG   = document.getElementById('edges');
+  const packetsG = document.getElementById('packets');
+  const nodesG   = document.getElementById('nodes');
+
+  const nodeEls = {}, nodeMetaEls = {}, stepDotsEls = {};
+  const edgeEls = {}, edgeLabelEls = {};
+
+  for (const e of EDGES) {
+    const p = el('path', { id: e.id, class: 'edge pending', d: edgePath(e) });
+    edgesG.appendChild(p);
+    edgeEls[e.id] = p;
+
+    if (e.label) {
+      const m = edgeMid(e);
+      const t = el('text', {
+        x: m.x, y: m.y - 8,
+        class: 'edge-label', 'text-anchor': 'middle',
+      });
+      t.textContent = e.label;
+      edgesG.appendChild(t);
+      edgeLabelEls[e.id] = t;
+    }
+  }
+
+  for (const id in NODES) {
+    const n = NODES[id];
+    const g = el('g', { class: `node pending ${n.kind}`, id: 'n-' + id });
+    g.appendChild(el('rect', {
+      x: n.x, y: n.y, width: n.w, height: n.h, rx: 3,
+    }));
+
+    const isChain = n.kind === 'chain';
+    const labelY  = isChain ? n.y + n.h / 2 - 8 : n.y + n.h / 2;
+    const label = el('text', {
+      x: n.x + n.w / 2, y: labelY,
+      class: 'label', 'text-anchor': 'middle',
+    });
+    label.textContent = n.label;
+    g.appendChild(label);
+
+    if (isChain) {
+      const meta = el('text', {
+        x: n.x + n.w / 2, y: n.y + n.h / 2 + 7,
+        class: 'meta', 'text-anchor': 'middle',
+      });
+      meta.textContent = '· idle';
+      g.appendChild(meta);
+      nodeMetaEls[id] = meta;
+
+      // step progress dots
+      const total = n.steps || 3;
+      const gap = 11;
+      const startX = n.x + n.w / 2 - (total - 1) * gap / 2;
+      const dotY = n.y + n.h - 11;
+      const dots = [];
+      for (let i = 0; i < total; i++) {
+        const c = el('circle', { cx: startX + i * gap, cy: dotY, r: 2.6, class: 'step-dot' });
+        g.appendChild(c);
+        dots.push(c);
+      }
+      stepDotsEls[id] = dots;
+    }
+
+    nodesG.appendChild(g);
+    nodeEls[id] = g;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  STATE TRANSITIONS
+  // ═══════════════════════════════════════════════════════════════
+  function setNode(id, state, meta) {
+    const g = nodeEls[id];
+    if (!g) return;
+    g.classList.remove('pending','active','done-pass','done-susp','done-vuln','skipped');
+    g.classList.add(state);
+    if (state.startsWith('done') || state === 'skipped') {
+      g.classList.add('flash');
+      setTimeout(() => g.classList.remove('flash'), 720);
+    }
+    if (meta !== undefined && nodeMetaEls[id]) nodeMetaEls[id].textContent = meta || '';
+  }
+  function setEdge(id, state) {
+    const p = edgeEls[id];
+    if (!p) return;
+    p.classList.remove('pending','active','done','done-vuln','done-susp');
+    p.classList.add(state);
+    const lbl = edgeLabelEls[id];
+    if (lbl) {
+      lbl.classList.remove('active','vuln','susp');
+      if (state === 'active')    lbl.classList.add('active');
+      if (state === 'done-vuln') lbl.classList.add('vuln');
+      if (state === 'done-susp') lbl.classList.add('susp');
+    }
+  }
+  function setStepDot(chainId, idx, cls) {
+    const dots = stepDotsEls[chainId];
+    if (!dots || !dots[idx]) return;
+    const d = dots[idx];
+    d.classList.remove('on','vuln','susp');
+    d.classList.add(cls);
+  }
+
+  // packet animation along an edge path
+  function firePacket(edgeId, cls, duration = 620) {
+    const p = edgeEls[edgeId];
+    if (!p) return;
+    const path = p;
+    const len  = path.getTotalLength();
+    if (!len) return;
+    const dot = el('circle', { r: 3, class: 'packet' + (cls ? ' ' + cls : '') });
+    packetsG.appendChild(dot);
+    const t0 = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - t0) / duration);
+      // easeInOutQuad
+      const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      const pt = path.getPointAtLength(e * len);
+      dot.setAttribute('cx', pt.x);
+      dot.setAttribute('cy', pt.y);
+      dot.setAttribute('opacity', t < 0.85 ? 1 : (1 - t) * 6.6);
+      if (t < 1) requestAnimationFrame(step);
+      else dot.remove();
+    }
+    requestAnimationFrame(step);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  LOG RIBBON
+  // ═══════════════════════════════════════════════════════════════
+  const ribbon = document.getElementById('logRibbon');
+  const MAX_LINES = 5;
+  const logLines = [];
+  function log(src, msg, cls) {
+    const t = new Date().toTimeString().slice(0, 8);
+    logLines.push({ t, src, msg, cls: cls || '' });
+    while (logLines.length > MAX_LINES) logLines.shift();
+    ribbon.innerHTML = logLines.map(l =>
+      `<div class="log-line ${l.cls}"><span class="t">${l.t}</span><span class="src">${esc(l.src)}</span><span class="msg">${esc(l.msg)}</span></div>`
+    ).join('');
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    })[c]);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  HEADER
+  // ═══════════════════════════════════════════════════════════════
+  const hTarget  = document.getElementById('hTarget');
+  const hCounts  = document.getElementById('hCounts');
+  const hElapsed = document.getElementById('hElapsed');
+  const hStatus  = document.getElementById('hStatus');
+  const counts = { v: 0, s: 0, p: 0, u: 0 };
+  function renderCounts() {
+    hCounts.innerHTML = `V <b>${counts.v}</b> · S <b>${counts.s}</b> · P <b>${counts.p}</b> · U <b>${counts.u}</b>`;
+    hCounts.className = 'stat maybe-hide' + (counts.v ? ' v' : '');
+  }
+  let startT = 0, timerId = null;
+  function startTimer() {
+    startT = performance.now();
+    clearInterval(timerId);
+    timerId = setInterval(() => {
+      const dt = (performance.now() - startT) / 1000;
+      const m = String(Math.floor(dt / 60)).padStart(2, '0');
+      const s = String(Math.floor(dt % 60)).padStart(2, '0');
+      const d = String(Math.floor((dt * 10) % 10));
+      hElapsed.textContent = `${m}:${s}.${d}`;
+    }, 100);
+  }
+  function stopTimer() { clearInterval(timerId); timerId = null; }
+  function setStatus(s, cls) {
+    hStatus.textContent = s;
+    hStatus.className = 'status' + (cls ? ' ' + cls : '');
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  SCAN SCRIPT
+  // ═══════════════════════════════════════════════════════════════
+  let timers = [];
+  const schedule = (ms, fn) => timers.push(setTimeout(fn, ms));
+
+  const TARGET = 'https://shop.demo.local';
+
+  const JOURNEY = [
+    // ─────────── STARTUP ───────────
+    [0, () => {
+      setStatus('running','running');
+      log('core', 'scan initiated', 'hi');
+      log('roe',  'in_scope=shop.demo.local · methods=GET,POST,HEAD,OPTIONS', '');
+    }],
+
+    // ─────────── START → PREFLIGHT ───────────
+    [260, () => { setNode('start','done-pass'); log('start', 'journey begun', ''); }],
+    [500, () => { setEdge('e-start','active'); firePacket('e-start'); }],
+    [780, () => {
+      setEdge('e-start','done');
+      setNode('preflight','active');
+      log('preflight', `GET ${TARGET}/`, '');
+    }],
+    [1450, () => {
+      setNode('preflight','done-pass', undefined);
+      log('preflight', '200 OK · 148ms · server: nginx/1.24', 'pass');
+      setEdge('e-pf-ok','active');
+      firePacket('e-pf-ok');
+    }],
+
+    // ─────────── PREFLIGHT → FINGERPRINT ───────────
+    [1750, () => {
+      setEdge('e-pf-ok','done');
+      setNode('fp','active');
+      log('fingerprint', 'matching adapters against headers/markup', '');
+    }],
+    [2200, () => log('fingerprint', 'header · server = "nginx/1.24.0"', '')],
+    [2400, () => log('fingerprint', 'header · x-powered-by = "Express"', '')],
+    [2650, () => log('fingerprint', 'cookie · connect.sid detected', '')],
+    [2950, () => {
+      setNode('fp','done-pass', undefined);
+      log('fingerprint', '✓ matched adapter · express (score 9)', 'pass');
+      setEdge('e-fp','active');
+      firePacket('e-fp');
+    }],
+
+    // ─────────── FINGERPRINT → DISCOVERY ───────────
+    [3250, () => {
+      setEdge('e-fp','done');
+      setNode('disc','active');
+      log('discovery', 'extracting JS bundles…', '');
+    }],
+    [3650, () => log('discovery', 'GET /_next/static/chunks/main.js · 200 · 84kb', '')],
+    [3950, () => log('discovery', 'GET /_next/static/chunks/pages.js · 200 · 42kb', '')],
+    [4250, () => log('discovery', 'extracted 24 api paths from 7 bundles', '')],
+    [4550, () => log('discovery', 'probing /api, /api/v1, /api/v2, /v1, /graphql…', '')],
+    [4950, () => {
+      setNode('disc','done-pass', undefined);
+      log('discovery', '✓ api_base = /api/v1  (JSON · source: js-bundle)', 'pass');
+      setEdge('e-disc','active');
+      firePacket('e-disc');
+    }],
+
+    // ─────────── DISCOVERY → LOGIN ───────────
+    [5250, () => {
+      setEdge('e-disc','done');
+      setNode('login','active');
+      log('login', 'POST /api/v1/auth/login', '');
+    }],
+    [5650, () => log('login', 'body · {"email":"user@example.com","password":"…"}', '')],
+    [6150, () => {
+      setNode('login','done-pass', undefined);
+      log('login', '✓ 200 · token acquired (JWT · HS256 · 182 chars)', 'pass');
+      setEdge('e-login','active');
+      firePacket('e-login');
+    }],
+
+    // ─────────── LOGIN → PROPOSE ───────────
+    [6450, () => {
+      setEdge('e-login','done');
+      setNode('propose','active');
+      log('propose', 'building fact store from recon…', '');
+    }],
+    [6850, () => log('propose', 'facts · framework=express  has_login=true  has_jwt=true', '')],
+    [7100, () => log('propose', 'facts · has_graphql_hint=true  has_ecommerce=true  has_cart=true', '')],
+    [7400, () => log('propose', 'ranked 5 chains: jwt(100) › graphql(95) › ssrf(90) › biz(85) › race(75)', '')],
+    [7700, () => {
+      setNode('propose','done-pass', undefined);
+      log('propose', '✓ plan ready · executing 5 chains (1 will be skipped)', 'pass');
+      ['e-b-jwt','e-b-gql','e-b-ssrf','e-b-biz','e-b-race'].forEach(id => setEdge(id,'active'));
+      ['e-b-jwt','e-b-gql','e-b-ssrf','e-b-biz','e-b-race'].forEach((id,i) =>
+        setTimeout(() => firePacket(id), i * 60));
+    }],
+
+    // ═══════════════════════════════════════════════════════
+    //  CHAIN 1 — jwt-chain · VULNERABLE
+    // ═══════════════════════════════════════════════════════
+    [8100, () => {
+      setEdge('e-b-jwt','done-vuln');
+      setNode('jwt','active','[1/4] · alg:none');
+      log('jwt-chain', 'step 1/4 · forging token with alg:none', '');
+    }],
+    [8500, () => { setStepDot('jwt',0,'on'); log('jwt-chain', 'POST /api/v1/me · Authorization: Bearer <alg:none>', ''); }],
+    [9000, () => {
+      setNode('jwt','active','[2/4] · algorithm-confusion');
+      log('jwt-chain', 'step 2/4 · RS256 → HS256 algorithm confusion', '');
+      setStepDot('jwt',1,'on');
+    }],
+    [9450, () => log('jwt-chain', 'POST /api/v1/me · Authorization: Bearer <HS256(pubkey)>', '')],
+    [9900, () => {
+      setNode('jwt','active','[3/4] · kid-injection');
+      log('jwt-chain', 'step 3/4 · kid=../../../dev/null', '');
+      setStepDot('jwt',2,'on');
+    }],
+    [10400, () => {
+      setNode('jwt','active','[4/4] · weak-secret');
+      log('jwt-chain', 'step 4/4 · cracking HMAC secret against 60-entry wordlist', '');
+      setStepDot('jwt',3,'on');
+    }],
+    [10900, () => log('jwt-chain', '→ secret match: "secret"  (HMAC-SHA256)', 'vuln')],
+    [11300, () => log('jwt-chain', '→ forged admin token accepted by /api/v1/me', 'vuln')],
+    [11750, () => {
+      setNode('jwt','done-vuln','VULNERABLE · alg:none accepted');
+      setStepDot('jwt',0,'vuln');
+      counts.v++; renderCounts();
+      setEdge('e-jwt-r','done-vuln');
+      firePacket('e-jwt-r','vuln');
+      log('jwt-chain', '✗ VULNERABLE · authentication bypass · CWE-347', 'vuln');
+    }],
+
+    // ═══════════════════════════════════════════════════════
+    //  CHAIN 2 — graphql-chain · PASS
+    // ═══════════════════════════════════════════════════════
+    [8300, () => {
+      setEdge('e-b-gql','done');
+      setNode('gql','active','[1/3] · introspection');
+      log('graphql-chain', 'step 1/3 · GET /graphql · query { __schema { types } }', '');
+    }],
+    [8800, () => { setStepDot('gql',0,'on'); log('graphql-chain', '→ 403 · introspection disabled', ''); }],
+    [9100, () => {
+      setNode('gql','active','[2/3] · depth-limit');
+      log('graphql-chain', 'step 2/3 · sending 120-deep nested query', '');
+      setStepDot('gql',1,'on');
+    }],
+    [9600, () => log('graphql-chain', '→ 400 · query depth exceeds maximum of 10', '')],
+    [9900, () => {
+      setNode('gql','active','[3/3] · batch-alias');
+      log('graphql-chain', 'step 3/3 · 50 aliased operations', '');
+      setStepDot('gql',2,'on');
+    }],
+    [10400, () => log('graphql-chain', '→ 400 · query complexity limit', '')],
+    [10800, () => {
+      setNode('gql','done-pass','PASS · introspection off');
+      setStepDot('gql',0,'on'); setStepDot('gql',1,'on'); setStepDot('gql',2,'on');
+      counts.p++; renderCounts();
+      setEdge('e-gql-r','done');
+      firePacket('e-gql-r');
+      log('graphql-chain', '✓ PASS · depth & complexity limits enforced', 'pass');
+    }],
+
+    // ═══════════════════════════════════════════════════════
+    //  CHAIN 3 — ssrf-chain · SUSPICIOUS
+    // ═══════════════════════════════════════════════════════
+    [8600, () => {
+      setEdge('e-b-ssrf','done-susp');
+      setNode('ssrf','active','[1/3] · aws-imds');
+      log('ssrf-chain', 'step 1/3 · probing 169.254.169.254/latest/meta-data/', '');
+    }],
+    [9100, () => { setStepDot('ssrf',0,'on'); log('ssrf-chain', '→ 403 · blocked at egress', ''); }],
+    [9400, () => {
+      setNode('ssrf','active','[2/3] · aws-imdsv2');
+      log('ssrf-chain', 'step 2/3 · PUT /latest/api/token · X-Forwarded-For spoof', '');
+      setStepDot('ssrf',1,'on');
+    }],
+    [9950, () => log('ssrf-chain', '→ 200 · token issued  (odd — no metadata should be reachable)', 'susp')],
+    [10250, () => {
+      setNode('ssrf','active','[3/3] · gcp-metadata');
+      log('ssrf-chain', 'step 3/3 · Metadata-Flavor: Google header · timing probe', '');
+      setStepDot('ssrf',2,'on');
+    }],
+    [10800, () => log('ssrf-chain', '→ timing delta 312ms vs baseline (unclear)', 'susp')],
+    [11200, () => {
+      setNode('ssrf','done-susp','SUSPICIOUS · timing anomaly');
+      setStepDot('ssrf',1,'susp'); setStepDot('ssrf',2,'susp');
+      counts.s++; renderCounts();
+      setEdge('e-ssrf-r','done-susp');
+      firePacket('e-ssrf-r','susp');
+      log('ssrf-chain', '? SUSPICIOUS · possible IMDSv2 bypass — manual confirm', 'susp');
+    }],
+
+    // ═══════════════════════════════════════════════════════
+    //  CHAIN 4 — bizlogic-chain · PASS
+    // ═══════════════════════════════════════════════════════
+    [8900, () => {
+      setEdge('e-b-biz','done');
+      setNode('biz','active','[1/3] · coupon-replay');
+      log('bizlogic-chain', 'step 1/3 · applying WELCOME50 five times', '');
+    }],
+    [9400, () => { setStepDot('biz',0,'on'); log('bizlogic-chain', '→ 200 (1st) · 409 duplicate (2-5)', ''); }],
+    [9700, () => {
+      setNode('biz','active','[2/3] · workflow-skip');
+      log('bizlogic-chain', 'step 2/3 · POST /api/order/confirm (skipping payment)', '');
+      setStepDot('biz',1,'on');
+    }],
+    [10250, () => log('bizlogic-chain', '→ 400 · prior step not completed', '')],
+    [10550, () => {
+      setNode('biz','active','[3/3] · mass-assign');
+      log('bizlogic-chain', 'step 3/3 · PATCH /api/me  {"role":"admin"}', '');
+      setStepDot('biz',2,'on');
+    }],
+    [11100, () => log('bizlogic-chain', '→ 200 · role unchanged (filtered)', '')],
+    [11500, () => {
+      setNode('biz','done-pass','PASS · invariants hold');
+      setStepDot('biz',0,'on'); setStepDot('biz',1,'on'); setStepDot('biz',2,'on');
+      counts.p++; renderCounts();
+      setEdge('e-biz-r','done');
+      firePacket('e-biz-r');
+      log('bizlogic-chain', '✓ PASS · coupon idempotent · workflow enforced', 'pass');
+    }],
+
+    // ═══════════════════════════════════════════════════════
+    //  CHAIN 5 — race-chain · SKIPPED
+    // ═══════════════════════════════════════════════════════
+    [9200, () => {
+      setEdge('e-b-race','done');
+      setNode('race','active','[1/2] · barrier');
+      log('race-chain', 'step 1/2 · 20× concurrent POST /api/cart/apply', '');
+    }],
+    [9700, () => log('race-chain', '⚠ destructive capability · allow_destructive=false', 'susp')],
+    [10100, () => {
+      setNode('race','skipped','SKIPPED · ROE destructive');
+      setStepDot('race',0,'on');
+      counts.u++; renderCounts();
+      setEdge('e-race-r','done');
+      firePacket('e-race-r');
+      log('race-chain', '— SKIPPED · not authorized (rerun with --allow-destructive)', '');
+    }],
+
+    // ═══════════════════════════════════════════════════════
+    //  REPORT
+    // ═══════════════════════════════════════════════════════
+    [12100, () => {
+      setNode('report','active');
+      log('report', 'composing artifacts…', '');
+    }],
+    [12600, () => log('report', 'evidence saved · evidence/2026-10-12T.../jwt-chain', '')],
+    [12900, () => log('report', 'chains resolved · 1 CONFIRMED · 1 LIKELY · 1 THEORETICAL', '')],
+    [13200, () => log('report', 'owasp coverage · A01=75% A02=50% A04=67% A05=100% A07=67%', '')],
+    [13600, () => {
+      setNode('report','done-pass');
+      log('report', 'report written · reports/2026-10-12T..._shop.demo.local.html', 'pass');
+      setStatus('done','done');
+      stopTimer();
+      log('core', `scan complete · ${counts.v} vulnerable · ${counts.s} suspicious · ${counts.p} pass · ${counts.u} skipped`, 'hi');
+    }],
+  ];
+
+  // ═══════════════════════════════════════════════════════════════
+  //  RUN / RESET
+  // ═══════════════════════════════════════════════════════════════
+  const overlay  = document.getElementById('overlay');
+  const inputEl  = document.getElementById('urlInput');
+  const startBtn = document.getElementById('startBtn');
+  const resetBtn = document.getElementById('resetBtn');
+
+function resetAll() {
+  timers.forEach(clearTimeout); timers = [];
+  stopTimer();
+  counts.v = counts.s = counts.p = counts.u = 0;
+  renderCounts();
+  hElapsed.textContent = '00:00.0';
+  hTarget.textContent = '—';
+  setStatus('idle','');
+  ribbon.innerHTML = '';
+  logLines.length = 0;
+
+  for (const id in NODES) {
+    const n = NODES[id];
+    const g = nodeEls[id];
+    g.setAttribute('class', `node pending ${n.kind}`);          // ← FIXED
+    if (nodeMetaEls[id]) {
+      nodeMetaEls[id].textContent = n.kind === 'chain' ? '· idle' : '';
+    }
+  }
+  for (const cid in stepDotsEls) {
+    stepDotsEls[cid].forEach(d => d.classList.remove('on','vuln','susp'));
+  }
+  for (const e of EDGES) {
+    const p = edgeEls[e.id];
+    p.setAttribute('class', 'edge pending');                    // ← FIXED
+    const lbl = edgeLabelEls[e.id];
+    if (lbl) {
+      lbl.textContent = e.label || '';
+      lbl.setAttribute('class', 'edge-label');                  // ← FIXED
+    }
+  }
+  packetsG.innerHTML = '';
+  overlay.classList.remove('hidden');
+}
+  function run() {
+    const url = (inputEl.value || '').trim();
+    if (!url) return;
+    resetAll();
+    overlay.classList.add('hidden');
+    hTarget.textContent = url;
+    startTimer();
+    for (const [t, fn] of JOURNEY) schedule(t, fn);
+  }
+
+  startBtn.addEventListener('click', run);
+  inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+  resetBtn.addEventListener('click', resetAll);
+
+  renderCounts();
+
+  // Auto-play on load so you see it immediately
+  setTimeout(run, 500);
+})();
+</script>
+</body>
+</html>

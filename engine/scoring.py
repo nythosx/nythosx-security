@@ -122,6 +122,23 @@ def _historical_hit_rate(chain_id, history):
     return max(HISTORY_FLOOR, min(HISTORY_CEIL, mult))
 
 
+def _chain_cost(chain):
+    total = 0.0
+    for step in (chain or {}).get("steps") or []:
+        try:
+            from . import cost as _cost
+            total += _cost.estimate_cost(step.get("tool", ""))
+        except Exception:
+            total += 1.0
+    return max(1.0, total)
+
+
+def _cost_factor(chain):
+    import math
+    c = _chain_cost(chain)
+    return 1.0 / math.sqrt(c) if c > 0 else 1.0
+
+
 def _coverage_gap_weight(chain, coverage):
     if not coverage:
         return 1.0
@@ -161,8 +178,9 @@ def compute_priority(chain, fact_store=None, history=None, coverage=None):
     fw = _framework_boost(chain, fact_store)
     hist = _historical_hit_rate(chain.get("id", ""), history)
     cov = _coverage_gap_weight(chain, coverage)
+    costf = _cost_factor(chain)
 
-    score = base * cond_factor * fw * hist * cov
+    score = base * cond_factor * fw * hist * cov * costf
     return float(score)
 
 

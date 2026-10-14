@@ -74,6 +74,26 @@ TOKEN_PATTERNS = [
      re.compile(r"\bBearer\s+[A-Za-z0-9\-_\.=]{16,}", re.I)),
     ("basic_header",
      re.compile(r"\bBasic\s+[A-Za-z0-9+/=]{16,}", re.I)),
+    ("supabase_anon",
+     re.compile(r"\beyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9_\-]{40,}")),
+    ("firebase_api",
+     re.compile(r"\bAIzaSy[A-Za-z0-9_\-]{33}\b")),
+    ("sentry_dsn",
+     re.compile(r"https://[0-9a-f]{32}@[a-z0-9.\-]+/\d+")),
+    ("algolia_admin",
+     re.compile(r"\b[A-Z0-9]{10}:[0-9a-f]{32}\b")),
+    ("mapbox_token",
+     re.compile(r"\bpk\.[A-Za-z0-9_\-]{60,}\b")),
+    ("twilio_sid",
+     re.compile(r"\bAC[0-9a-f]{32}\b")),
+    ("twilio_auth",
+     re.compile(r"\bSK[0-9a-f]{32}\b")),
+    ("sendgrid",
+     re.compile(r"\bSG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}\b")),
+    ("npm_token",
+     re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+    ("pypi_token",
+     re.compile(r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_\-]{40,}\b")),
 ]
 
 
@@ -98,6 +118,34 @@ def redact_text(s):
     for _name, pat in TOKEN_PATTERNS:
         s = pat.sub(PLACEHOLDER, s)
     return s
+
+
+def redact_url(url):
+    if not isinstance(url, str) or not url:
+        return url
+    from urllib.parse import urlparse, urlencode, parse_qsl, urlunparse
+    try:
+        p = urlparse(url)
+    except Exception:
+        return redact_text(url)
+    if not p.query:
+        return redact_text(url)
+    sensitive = {"token", "access_token", "refresh_token", "api_key",
+                 "apikey", "api-key", "secret", "password", "pwd",
+                 "auth", "jwt", "session", "sid", "key"}
+    pairs = parse_qsl(p.query, keep_blank_values=True)
+    changed = False
+    new_pairs = []
+    for k, v in pairs:
+        if k.lower() in sensitive:
+            new_pairs.append((k, PLACEHOLDER))
+            changed = True
+        else:
+            new_pairs.append((k, v))
+    if not changed:
+        return redact_text(url)
+    new_q = urlencode(new_pairs)
+    return redact_text(urlunparse(p._replace(query=new_q)))
 
 
 def redact_headers(headers):
@@ -138,6 +186,6 @@ def redact_dict(obj, _depth=0):
 
 
 __all__ = [
-    "redact_text", "redact_headers", "redact_dict", "PLACEHOLDER",
-    "SENSITIVE_HEADERS", "TOKEN_PATTERNS",
+    "redact_text", "redact_headers", "redact_dict", "redact_url",
+    "PLACEHOLDER", "SENSITIVE_HEADERS", "TOKEN_PATTERNS",
 ]

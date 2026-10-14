@@ -1,0 +1,23 @@
+id: session-fixation
+name: Session Fixation
+severity: high
+tags: [session, auth, wstg-sess-03, cwe-384]
+inputs:
+  target_url:
+    type: string
+    required: true
+steps:
+  - name: pre_login
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+  - name: post_login
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        email: "session-probe@example.com"
+        password: "probe"
+oracles:
+  - type: session_fixation
+    verdict: SUSPICIOUS

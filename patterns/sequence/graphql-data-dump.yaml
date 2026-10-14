@@ -1,0 +1,18 @@
+id: graphql-data-dump
+name: GraphQL Full Data Dump via Introspection
+severity: critical
+tags: [graphql, data-extraction, wstg-apit-99, cwe-200]
+inputs:
+  target_url:
+    type: string
+    required: true
+steps:
+  - name: introspect
+    request:
+      method: POST
+      url: "{{ inputs.target_url }}"
+      json:
+        query: "{ __schema { queryType { fields { name type { name kind } } } } }"
+oracles:
+  - type: graphql_data_dump
+    verdict: VULNERABLE

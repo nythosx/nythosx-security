@@ -81,7 +81,7 @@ def scan(target_url, param=None, method="GET", headers=None, roe_guard=None,
                 )
             body_text = r.get("body") or ""
             attempts.append({"param": pname, "engine": engine,
-                             "status": r.get("status")})
+                             "status": r.get("status"), "error": r.get("error")})
             if marker and marker in body_text:
                 findings.append({"param": pname, "engine": engine,
                                  "payload": payload, "marker": marker})
@@ -99,9 +99,13 @@ def scan(target_url, param=None, method="GET", headers=None, roe_guard=None,
         )
     statuses = [a["status"] for a in attempts if a["status"] is not None]
     if not statuses:
+        from ..util import summarize_failures
+        why = summarize_failures(attempts)
         return ScanResult(
             capability="ssti_scan", target=target_url,
-            verdict="UNKNOWN", reason="all requests failed",
+            verdict="UNKNOWN",
+            reason=f"all requests failed ({why})" if why else "all requests failed",
+            evidence={"attempts": attempts[:30]},
         )
     if all(s in (404, 405) for s in statuses):
         return ScanResult(

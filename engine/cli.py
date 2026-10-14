@@ -10,6 +10,7 @@ from . import (loader, executor, oracle, evidence, ledger, report,
 from .config import (load_engine, load_targets, get_target, save_session,
                      load_session, list_sessions)
 
+import sys as _sys_alias  # noqa: E402
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -433,7 +434,8 @@ def _make_brain(name):
     return RuleBasedBrain()
 
 
-def _run_orchestrated(url, profile, brain_name, fail_on, allow_destructive=False):
+def _run_orchestrated(url, profile, brain_name, fail_on, allow_destructive=False,
+                      credentials=None):
     from .orchestrator import Orchestrator
     brain = _make_brain(brain_name)
     console.print(f"[cyan]Orchestrated scan[/cyan] profile=[bold]{profile}[/bold] "
@@ -443,7 +445,7 @@ def _run_orchestrated(url, profile, brain_name, fail_on, allow_destructive=False
                       "capabilities are ENABLED for this run")
     orc = Orchestrator(console=console, allow_destructive=allow_destructive)
     state = orc.run(url, profile=profile, brain=brain,
-                     allow_destructive=allow_destructive)
+                     allow_destructive=allow_destructive, credentials=credentials)
     counts = {"VULNERABLE": 0, "SUSPICIOUS": 0, "PASS": 0, "UNKNOWN": 0}
     results = []
     for f in getattr(state, "findings", []) or []:
@@ -465,9 +467,12 @@ def _run_orchestrated(url, profile, brain_name, fail_on, allow_destructive=False
 def cmd_auto(args):
     if not args or "--help" in args or "-h" in args:
         console.print("[cyan]Usage: auto <url> [--min-severity X] [--adapter ID] "
-                      "[--profile quick|standard|deep] [--brain rule|llm][/cyan]")
-        console.print("  --profile  orchestrated multi-pass scan with a budget (opt-in)")
-        console.print("  --brain    rule (deterministic, default) or llm (opt-in, needs API key)")
+                      "[--profile quick|standard|deep] [--brain rule|llm] "
+                      "[--login user:pass] [--login-url URL][/cyan]")
+        console.print("  --profile    orchestrated multi-pass scan with a budget (opt-in)")
+        console.print("  --brain      rule (deterministic, default) or llm (opt-in, needs API key)")
+        console.print("  --login      username:password — log in before scanning")
+        console.print("  --login-url  explicit login endpoint (skip auto-discovery)")
         return 0
     from . import auto as auto_mod
     url = args[0]
@@ -478,11 +483,17 @@ def cmd_auto(args):
     fail_on = None
     profile = None
     brain_name = None
+    banking = False
+    login_str = None
+    login_url = None
     i = 1
     while i < len(args):
         if args[i] == "--min-severity" and i + 1 < len(args):
             min_sev = args[i + 1]
             i += 2
+        elif args[i] == "--banking":
+            banking = True
+            i += 1
         elif args[i] == "--no-discovery":
             skip = True
             i += 1
@@ -501,9 +512,21 @@ def cmd_auto(args):
         elif args[i] == "--brain" and i + 1 < len(args):
             brain_name = args[i + 1]
             i += 2
+        elif args[i] == "--login" and i + 1 < len(args):
+            login_str = args[i + 1]
+            i += 2
+        elif args[i] == "--login-url" and i + 1 < len(args):
+            login_url = args[i + 1]
+            i += 2
         else:
             i += 1
     allow_destructive = bool(RUNTIME.get("allow_destructive"))
+    credentials = None
+    if login_str and ":" in login_str:
+        username, _, password = login_str.partition(":")
+        credentials = {"username": username, "password": password}
+        if login_url:
+            credentials["login_url"] = login_url
     if RUNTIME.get("dry_run"):
         console.print(f"[cyan]DRY RUN[/cyan] would scan: {url}")
         console.print(f"[dim]  min-severity={min_sev} "
@@ -512,11 +535,13 @@ def cmd_auto(args):
         return 0
     if profile or brain_name:
         return _run_orchestrated(url, profile or "standard", brain_name, fail_on,
-                                  allow_destructive=allow_destructive)
+                                  allow_destructive=allow_destructive,
+                                  credentials=credentials)
     outcome = auto_mod.run_auto(url, min_severity=min_sev, skip_discovery=skip,
                                 adapter_override=adapter_override,
                                 auto_baseline=auto_baseline,
-                                allow_destructive=allow_destructive)
+                                allow_destructive=allow_destructive,
+                                banking=banking, credentials=credentials)
     results = (outcome or {}).get("results", [])
     return _compute_fail_exit(results, fail_on)
 
@@ -674,7 +699,7 @@ def _resolve_report_target(target):
 
 def cmd_report(args):
     if not args:
-        console.print("[red]Usage: report <target> [--format html|md|sarif][/red]")
+        console.print("[red]Usage: report <target> [--format html|md|pdf|sarif][/red]")
         return
     target = args[0]
     fmt = "html"
@@ -1077,10 +1102,6 @@ def cmd_llm(args):
         from .config import load_engine
     except Exception as _e:
         console.print(f"[yellow]ROE guard init: {_e}[/yellow]")
-    if not args:
-        console.print("[red]Usage: llm <url> [--model MODEL] [--api-key KEY] "
-                      "[--auth X] [--session NAME] [--fail-on SEV][/red]")
-        return
     url = args[0]
     model = "gpt-3.5-turbo"
     api_key = None
@@ -2746,7 +2767,8 @@ def cmd_chain(args):
     from .roe_guard import ROEGuard
     from .config import load_engine as _load_engine
 
-    guard = ROEGuard(engine_cfg=_load_engine())
+    _engine_cfg = _load_engine()
+    guard = ROEGuard(engine_cfg=_engine_cfg)
     console.print(f"[cyan]Attack chain scan:[/cyan] {url}")
     console.print(f"[dim]Budget: {budget}s  Verbose: {verbose}[/dim]")
     if only_chains:
@@ -2761,10 +2783,20 @@ def cmd_chain(args):
     if allow_destructive:
         console.print("[bold red]--allow-destructive:[/bold red] destructive "
                       "chain tools are ENABLED for this run")
+    _triage_brain = None
+    try:
+        from .brains.llm import make_brain_from_config
+        from .brains.rule_based import RuleBasedBrain
+        _brain = make_brain_from_config(_engine_cfg.get("brain"))
+        if not isinstance(_brain, RuleBasedBrain):
+            _triage_brain = _brain
+    except Exception:
+        _triage_brain = None
     try:
         orch = chain_engine.ChainOrchestrator(
-            url, roe_guard=guard, max_budget_sec=budget, verbose=verbose,
-            kill_on_vuln=kill_on_vuln, allow_destructive=allow_destructive)
+            url, roe_guard=guard, engine_cfg=_engine_cfg, max_budget_sec=budget,
+            verbose=verbose, kill_on_vuln=kill_on_vuln,
+            allow_destructive=allow_destructive, triage_brain=_triage_brain)
     except RuntimeError as e:
         console.print(f"[red]{e}[/red]")
         return 1
@@ -2902,10 +2934,159 @@ def _print_chain_report(report):
         console.print()
 
 
+def cmd_cve(args):
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: cve <product> <version>[/cyan]")
+        console.print("  Look up known CVEs for a component version against NVD.")
+        console.print("  Set NVD_API_KEY in env to raise the rate limit.")
+        console.print("  Example: python run.py cve nginx 1.18.0")
+        return 0
+    if len(args) < 2:
+        console.print("[red]Usage: cve <product> <version>[/red]")
+        return
+    product, version = args[0], args[1]
+    from . import cve_lookup
+    console.print(f"[cyan]CVE lookup:[/cyan] {product} {version}")
+    hits = cve_lookup.lookup(product, version)
+    if not hits:
+        console.print("  [dim]No CVEs found (unknown product, unknown version, "
+                      "or NVD unreachable).[/dim]")
+        return 0
+    summary = cve_lookup.summarize(hits)
+    t = Table(title=f"{product} {version} — {summary['total']} CVE(s)")
+    t.add_column("CVE", style="cyan")
+    t.add_column("Severity", style="yellow")
+    t.add_column("Summary", style="white")
+    for h in hits[:50]:
+        color = {"critical": "bold red", "high": "red",
+                 "medium": "yellow", "low": "dim"}.get(
+                     (h.get("severity") or "").lower(), "white")
+        t.add_row(h["id"], f"[{color}]{h.get('severity', '?')}[/{color}]",
+                  (h.get("summary") or "")[:90])
+    console.print(t)
+    console.print(f"  critical={summary['critical']} high={summary['high']} "
+                  f"medium={summary['medium']} low={summary['low']}")
+    return 0
+
+
+def cmd_bypass(args):
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: bypass <url>[/cyan]")
+        console.print("  Test a 403/401 gate for bypass via header overrides "
+                      "and path mutations.")
+        return 0
+    url = args[0]
+    from .injection import access_bypass
+    from .roe_guard import ROEGuard
+    from .config import load_engine
+    guard = ROEGuard(engine_cfg=load_engine())
+    console.print(f"[cyan]Access bypass probe:[/cyan] {url}")
+    r = access_bypass.scan(url, roe_guard=guard)
+    color = VERDICT_COLOR.get(r["verdict"], "white")
+    console.print(f"  [{color}]{r['verdict']}[/{color}]  {r.reason}")
+    for f in (r.evidence or {}).get("findings", [])[:10]:
+        label = f.get("header") or f.get("path") or "?"
+        console.print(f"    [yellow]{f.get('type')}[/yellow] "
+                      f"{label} -> HTTP {f.get('status')}")
+    return 0
+
+
+def cmd_cached(args):
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: cached <url>[/cyan]")
+        console.print("  Probe for web cache deception: append cacheable "
+                      "extensions to a sensitive 200 URL.")
+        return 0
+    url = args[0]
+    from .injection import cache_deception
+    from .roe_guard import ROEGuard
+    from .config import load_engine
+    guard = ROEGuard(engine_cfg=load_engine())
+    console.print(f"[cyan]Cache deception probe:[/cyan] {url}")
+    r = cache_deception.scan(url, roe_guard=guard)
+    color = VERDICT_COLOR.get(r["verdict"], "white")
+    console.print(f"  [{color}]{r['verdict']}[/{color}]  {r.reason}")
+    for f in (r.evidence or {}).get("findings", [])[:5]:
+        console.print(f"    [yellow]{f.get('ext')}[/yellow] "
+                      f"cache_headers={f.get('cache_headers')}")
+    return 0
+
+
+def cmd_hunt(args):
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: hunt <target> [--budget N] "
+                      "[--max-findings N] [--json] [--no-standalone][/cyan]")
+        console.print()
+        console.print("One-command hunter: recon + every relevant chain + "
+                      "top-N summary.")
+        console.print()
+        console.print("  --budget N         max seconds for the run (default 600)")
+        console.print("  --max-findings N   cap findings in report (default 25)")
+        console.print("  --json             print raw JSON instead of the "
+                      "formatted report")
+        console.print("  --no-standalone    skip cloud storage enumeration")
+        console.print()
+        console.print("Examples:")
+        console.print("  python run.py hunt https://nythosx.com")
+        console.print("  python run.py hunt https://nythosx.com --budget 900")
+        console.print("  python run.py hunt https://nythosx.com --json > report.json")
+        return 0
+    if not args:
+        console.print("[red]Usage: hunt <target>[/red]")
+        return
+
+    target = args[0]
+    budget = 600
+    max_findings = 25
+    as_json = bool(RUNTIME.get("json_output"))
+    include_standalone = True
+    banking = False
+
+    i = 1
+    while i < len(args):
+        if args[i] == "--banking":
+            banking = True; i += 1
+        elif args[i] == "--budget" and i + 1 < len(args):
+            budget = int(args[i + 1]); i += 2
+        elif args[i] == "--max-findings" and i + 1 < len(args):
+            max_findings = int(args[i + 1]); i += 2
+        elif args[i] == "--json":
+            as_json = True; i += 1
+        elif args[i] == "--no-standalone":
+            include_standalone = False; i += 1
+        else:
+            i += 1
+
+    from .hunt import hunt as _hunt
+    try:
+        report = _hunt(
+            target, budget_sec=budget, max_findings=max_findings,
+            console=console, include_standalone=include_standalone,
+            allow_destructive=bool(RUNTIME.get("allow_destructive")),
+            banking=banking,
+        )
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        return 1
+
+    if as_json:
+        import json as _json
+        console.print(_json.dumps({
+            "target": report["target"],
+            "duration_sec": report["duration_sec"],
+            "verdict": report["verdict"],
+            "total_findings": report["total_findings"],
+            "findings": report["findings"],
+        }, indent=2, default=str))
+
+    return 0
+
+
 def cmd_help(args):
     console.print("[bold cyan]sec-checker MVP[/bold cyan]")
     console.print()
     console.print("[bold]Main[/bold]")
+    console.print("  hunt <target>                     One-command hunter: recon + all chains + top-N report")
     console.print("  web [--port N]                    Launch web UI (single URL input)")
     console.print("  auto <url>                        Full auto-discovery + scan")
     console.print("  chain <url>                       Adaptive attack chain (recon \u2192 chains \u2192 report)")
@@ -2947,6 +3128,12 @@ def cmd_help(args):
     console.print("  explore <base> --paths /a,/b       Combination explorer (outliers)")
     console.print("  smuggle <target>                  HTTP smuggling timing probe (safe)")
     console.print("  llm <url>                         LLM/AI security scan (OWASP LLM Top 10)")
+    console.print()
+    console.print("[bold]Extraction[/bold]")
+    console.print("  extract <url>                     Paginated data dump (masked)")
+    console.print("  bola <base> <template>            Sequential-ID BOLA harvest")
+    console.print("  blind <url>                       Blind SQLi value extraction")
+    console.print("  mcp-scan <config>                 MCP poisoning + credential scan")
     console.print()
     console.print("[bold]Report[/bold]")
     console.print("  report <target>                   Generate report")
@@ -3137,6 +3324,83 @@ def cmd_weak_password(args):
     return 0
 
 
+def cmd_unauth_scan(args):
+    if not args:
+        console.print("[red]Usage: unauth-scan <base_url> [--max-paths N][/red]")
+        return
+    base = args[0]
+    max_paths = 40
+    i = 1
+    while i < len(args):
+        if args[i] == "--max-paths" and i + 1 < len(args):
+            max_paths = int(args[i + 1])
+            i += 2
+        else:
+            i += 1
+    from engine.unauth_exposure import probe
+    result = probe(base, max_paths=max_paths)
+    color = VERDICT_COLOR.get(result["verdict"], "white")
+    console.print(f"  [{color}]{result['verdict']}[/{color}]  "
+                  f"{result['reason']}")
+    for f in (result.get("evidence") or {}).get("findings", [])[:10]:
+        console.print(f"    [red]{f['url']}[/red]  "
+                      f"{f['extracted']}/{f['total_rows']} row(s)")
+    return 0
+
+
+def cmd_banking_hunt(args):
+    if not args:
+        console.print("[red]Usage: banking-hunt <url> [--budget N][/red]")
+        return
+    url = args[0]
+    budget = 900
+    i = 1
+    while i < len(args):
+        if args[i] == "--budget" and i + 1 < len(args):
+            budget = int(args[i + 1])
+            i += 2
+        else:
+            i += 1
+    from engine.hunt import hunt as _hunt
+    try:
+        report = _hunt(url, budget_sec=budget, banking=True, verbose=True,
+                       console=console)
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        return 1
+    console.print(f"[cyan]Verdict:[/cyan] {report['verdict']}")
+    console.print(f"[cyan]Total findings:[/cyan] {report['total_findings']}")
+    for f in report["findings"]:
+        console.print(f"  [{f['severity']}] {f['tool']} / {f['step']}")
+        console.print(f"    {f['reason'][:200]}")
+    return 0
+
+
+def cmd_diagnose(args):
+    if not args:
+        console.print("[red]Usage: diagnose <url>[/red]")
+        return
+    url = args[0]
+    from engine.roe_guard import ROEGuard
+    from engine import budget as _budget
+    from engine import ratelimit as _ratelimit
+    guard = ROEGuard(engine_cfg=load_engine())
+    allowed, reason = guard.walkthrough(url, "GET")
+    color = "green" if allowed else "red"
+    console.print(f"[cyan]ROE:[/cyan] [{color}]"
+                  f"{'ALLOWED' if allowed else 'BLOCKED'}[/{color}]")
+    console.print(f"  reason: {reason}")
+    b = _budget.snapshot_human()
+    console.print(f"[cyan]Budget:[/cyan] {b['requests']}/{b['max']} requests, "
+                  f"{b['elapsed_seconds']}s elapsed")
+    if b.get("reason"):
+        console.print(f"  reason: {b['reason']}")
+    r = _ratelimit.snapshot()
+    console.print(f"[cyan]Rate limiter:[/cyan] {r['limiter_count']} "
+                  f"shared limiter(s)")
+    return 0
+
+
 def cmd_chain_stats(args):
     if args and ("--help" in args or "-h" in args):
         console.print("[cyan]Usage: chain-stats [--limit N] [--json][/cyan]")
@@ -3180,8 +3444,214 @@ def cmd_chain_stats(args):
     return 0
 
 
+def cmd_extract(args):
+    if not args:
+        console.print("[red]Usage: extract <url> [--rows N] [--pages N] [--token TOKEN] [--session NAME][/red]")
+        return
+    url = args[0]
+    token = None
+    session = None
+    max_pages = 50
+    max_rows = 50
+    i = 1
+    while i < len(args):
+        if args[i] == "--token" and i + 1 < len(args):
+            token = args[i + 1]; i += 2
+        elif args[i] == "--session" and i + 1 < len(args):
+            session = args[i + 1]; i += 2
+        elif args[i] == "--pages" and i + 1 < len(args):
+            max_pages = int(args[i + 1]); i += 2
+        elif args[i] == "--rows" and i + 1 < len(args):
+            max_rows = int(args[i + 1]); i += 2
+        else:
+            i += 1
+    if session:
+        sess = load_session(session)
+        if sess:
+            hdrs = auth_flow.build_headers_from_session(sess)
+            if not token:
+                for k, v in hdrs.items():
+                    if k.lower() == "authorization":
+                        token = v.split(" ", 1)[1] if " " in v else v
+    from engine.data_extractor import extract_with_pagination
+    console.print(f"[cyan]Pagination extract:[/cyan] {url}")
+    result = extract_with_pagination(url, token=token, max_pages=max_pages)
+    rows = result.get("rows") or []
+    if not rows:
+        console.print(f"  [yellow]no rows recovered[/yellow] "
+                       f"({result.get('pages_fetched', 0)} page(s) tried)")
+        return 0
+    from rich.table import Table as _T
+    t = _T(title=f"Extracted ({len(rows)} row(s) across "
+                 f"{result.get('pages_fetched', 0)} page(s))")
+    for col in list(rows[0].keys())[:6]:
+        t.add_column(col, style="white", overflow="fold")
+    from engine.util import mask_row
+    for r in rows[:max_rows]:
+        masked = mask_row(r)
+        t.add_row(*[str(masked.get(k, ""))[:40] for k in list(r.keys())[:6]])
+    console.print(t)
+    try:
+        from engine import ledger
+        ledger.record_extracted(
+            target=url, endpoint=url, method="GET",
+            auth_used="authenticated" if token else "unauthenticated",
+            status=200, total_rows=len(rows),
+            extracted=min(len(rows), max_rows), rows=rows[:max_rows],
+            source_pattern="cli-extract",
+        )
+    except Exception:
+        pass
+    return 0
+
+
+def cmd_bola(args):
+    if len(args) < 2:
+        console.print("[red]Usage: bola <base_url> <endpoint_template> "
+                      "[--token-a TOKEN] [--token-b TOKEN] [--max-records N][/red]")
+        return
+    base_url = args[0]
+    template = args[1]
+    token_a = None
+    token_b = None
+    max_records = 100
+    i = 2
+    while i < len(args):
+        if args[i] == "--token-a" and i + 1 < len(args):
+            token_a = args[i + 1]; i += 2
+        elif args[i] == "--token-b" and i + 1 < len(args):
+            token_b = args[i + 1]; i += 2
+        elif args[i] == "--max-records" and i + 1 < len(args):
+            max_records = int(args[i + 1]); i += 2
+        else:
+            i += 1
+    token = token_b or token_a
+    if not token:
+        console.print("[red]bola: needs --token-a or --token-b[/red]")
+        return 1
+    from engine.bola_scanner import harvest_sequential_ids
+    console.print(f"[cyan]BOLA harvest:[/cyan] {template} "
+                   f"(max {max_records} records)")
+    harvested = harvest_sequential_ids(
+        base_url, template, token, max_records=max_records,
+    )
+    if not harvested:
+        console.print("  [yellow]no records harvested across ID space[/yellow]")
+        return 0
+    owners = {str(h["owner_value"]) for h in harvested
+              if h.get("owner_value") is not None}
+    console.print(f"  [green]{len(harvested)} record(s) harvested[/green] "
+                   f"across {len(owners)} distinct owner(s)")
+    from rich.table import Table as _T
+    t = _T(title="Harvested Records (masked)")
+    t.add_column("ID", style="cyan")
+    t.add_column("Owner", style="yellow")
+    t.add_column("Sample Fields", style="white")
+    from engine.util import mask_row
+    for h in harvested[:20]:
+        sample = h["rows"][0] if h.get("rows") else {}
+        masked = mask_row(sample) if isinstance(sample, dict) else {}
+        preview = ", ".join(f"{k}={str(v)[:20]}" for k, v in list(masked.items())[:4])
+        t.add_row(str(h["id"]), str(h.get("owner_value", "-"))[:30], preview)
+    console.print(t)
+    try:
+        from engine import ledger
+        ledger.record_extracted(
+            target=base_url, endpoint=template, method="GET",
+            auth_used="user-b" if token_b else "user-a",
+            status=200, total_rows=len(harvested),
+            extracted=min(len(harvested), 20),
+            rows=[h["rows"][0] for h in harvested if h.get("rows")][:20],
+            source_pattern="cli-bola",
+        )
+    except Exception:
+        pass
+    return 0
+
+
+def cmd_blind(args):
+    if not args:
+        console.print("[red]Usage: blind <url> --param q --table users "
+                      "--column password [--dbms mysql][/red]")
+        return
+    url = args[0]
+    param = "q"
+    table = "users"
+    column = "password"
+    dbms = None
+    max_length = 64
+    i = 1
+    while i < len(args):
+        if args[i] == "--param" and i + 1 < len(args):
+            param = args[i + 1]; i += 2
+        elif args[i] == "--table" and i + 1 < len(args):
+            table = args[i + 1]; i += 2
+        elif args[i] == "--column" and i + 1 < len(args):
+            column = args[i + 1]; i += 2
+        elif args[i] == "--dbms" and i + 1 < len(args):
+            dbms = args[i + 1]; i += 2
+        elif args[i] == "--max-length" and i + 1 < len(args):
+            max_length = int(args[i + 1]); i += 2
+        else:
+            i += 1
+    from engine.blind_extract import fingerprint_dbms, extract_string
+    console.print(f"[cyan]Blind extract:[/cyan] {url} param={param}")
+    console.print(f"  target: {table}.{column}")
+    if not dbms:
+        console.print("  [dim]fingerprinting DBMS…[/dim]")
+        dbms, fp = fingerprint_dbms(url, param)
+        if not dbms:
+            console.print(f"  [yellow]no timing signal — is param "
+                           f"'{param}' injectable?[/yellow]")
+            return 0
+        console.print(f"  [green]detected: {dbms}[/green]")
+    console.print(f"  [dim]extracting via {dbms} timing…[/dim]")
+    result = extract_string(url, param, table, column, dbms=dbms,
+                             max_length=max_length)
+    extracted = result.get("extracted", "")
+    if extracted:
+        console.print(f"  [bold red]{table}.{column} = {extracted}[/bold red]")
+        console.print(f"  [dim]{result.get('requests')} requests, "
+                       f"baseline {result.get('baseline_ms')}ms[/dim]")
+    else:
+        console.print("  [yellow]no characters extracted[/yellow]")
+    return 0
+
+
+def cmd_mcp_scan(args):
+    if not args:
+        console.print("[red]Usage: mcp-scan <config_path> [--check poisoning|credentials][/red]")
+        return
+    config_path = args[0]
+    check = "poisoning"
+    i = 1
+    while i < len(args):
+        if args[i] == "--check" and i + 1 < len(args):
+            check = args[i + 1]; i += 2
+        else:
+            i += 1
+    from engine.mcp_security import _tool_mcp_security
+    class _StubOrch:
+        target = config_path
+        roe_guard = None
+    result = _tool_mcp_security(_StubOrch(), {"config_path": config_path,
+                                               "check": check})
+    v = result.get("verdict", "UNKNOWN")
+    color = VERDICT_COLOR.get(v, "white")
+    console.print(f"[cyan]MCP scan:[/cyan] {config_path} ({check})")
+    console.print(f"  [{color}]{v}[/{color}]  {result.get('reason', '')}")
+    for h in (result.get("evidence") or {}).get("hits") or []:
+        console.print(f"    [yellow]{h.get('where')}[/yellow]: {h.get('match')}")
+    for c in (result.get("evidence") or {}).get("credentials") or []:
+        console.print(f"    [red]{c.get('type')}[/red]: {c.get('match')}")
+    return 0
+
+
 COMMANDS = {
     "list": cmd_list,
+    "unauth-scan": cmd_unauth_scan,
+    "banking-hunt": cmd_banking_hunt,
+    "diagnose": cmd_diagnose,
     "show": cmd_show,
     "chains": cmd_chains,
     "coverage": cmd_coverage,
@@ -3218,6 +3688,14 @@ COMMANDS = {
     "web": cmd_web,
     "history": cmd_history,
     "targets": cmd_targets,
+    "cve": cmd_cve,
+    "bypass": cmd_bypass,
+    "cached": cmd_cached,
+    "hunt": cmd_hunt,
+    "extract": cmd_extract,
+    "bola": cmd_bola,
+    "blind": cmd_blind,
+    "mcp-scan": cmd_mcp_scan,
     "help": cmd_help,
     "-h": cmd_help,
     "--help": cmd_help,
@@ -3238,6 +3716,8 @@ _GLOBAL_FLAGS = {
     "--no-confirm": ("confirm_disabled", "flag"),
     "--iterate": ("iterate_enabled", "flag"),
     "--iteration-max": ("iteration_max", "int"),
+    "--duration": ("duration_override", "int"),
+    "--max-requests": ("max_requests_override", "int"),
 }
 
 RUNTIME = {
@@ -3254,6 +3734,8 @@ RUNTIME = {
     "confirm_disabled": False,
     "iterate_enabled": False,
     "iteration_max": None,
+    "duration_override": None,
+    "max_requests_override": None,
 }
 
 
@@ -3319,17 +3801,32 @@ def _apply_runtime():
         _active.append("--iterate")
     if RUNTIME.get("iteration_max") is not None:
         _active.append(f"--iteration-max {RUNTIME['iteration_max']}")
+    if RUNTIME.get("duration_override") is not None:
+        _active.append(f"--duration {RUNTIME['duration_override']}")
+    if RUNTIME.get("max_requests_override") is not None:
+        _active.append(f"--max-requests {RUNTIME['max_requests_override']}")
     if _active:
         console.print(f"[dim]runtime: {' '.join(_active)}[/dim]")
     try:
         from . import budget as _budget
         _budget.auto_configure_from_configs()
-        if RUNTIME.get("max_requests_per_host"):
+        _banking_mode = "--banking" in (sys.argv[1:] if hasattr(sys, "argv") else [])
+        if _banking_mode and RUNTIME.get("max_requests_per_host") is None:
+            RUNTIME["max_requests_per_host"] = 2500
+        if RUNTIME.get("max_requests_per_host") or \
+                RUNTIME.get("duration_override") or \
+                RUNTIME.get("max_requests_override"):
             snap = _budget.snapshot()
             _budget.configure(
-                max_requests=snap.get("max_requests"),
-                max_per_host=int(RUNTIME["max_requests_per_host"]),
-                max_duration_seconds=snap.get("max_duration_seconds"),
+                max_requests=(int(RUNTIME["max_requests_override"])
+                              if RUNTIME.get("max_requests_override")
+                              else snap.get("max_requests")),
+                max_per_host=(int(RUNTIME["max_requests_per_host"])
+                              if RUNTIME.get("max_requests_per_host")
+                              else snap.get("max_per_host")),
+                max_duration_seconds=(int(RUNTIME["duration_override"])
+                                      if RUNTIME.get("duration_override")
+                                      else snap.get("max_duration_seconds")),
             )
     except Exception:
         pass

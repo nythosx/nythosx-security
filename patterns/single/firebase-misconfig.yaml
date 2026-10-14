@@ -1,0 +1,21 @@
+id: firebase-misconfig
+name: Firebase Misconfiguration
+severity: high
+tags: [cloud, misconfiguration, wstg-conf-11, cwe-284]
+inputs:
+  target_url:
+    type: string
+    required: true
+steps:
+  - name: firebaseio_root
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.json"
+  - name: firebaseapp
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}/.firebaseio.com/.json"
+oracles:
+  - type: pattern_match
+    regex: '"\w+"\s*:\s*\{'
+    verdict: VULNERABLE

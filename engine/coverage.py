@@ -221,3 +221,160 @@ for _name, _caps in _PHASE3_SURFACES.items():
     for _c in _caps:
         if _c not in _existing:
             _existing.append(_c)
+
+
+_PHASE4_OWASP_CAPS = {
+    "A01": ["access-bypass", "cache-deception"],
+    "A03": ["cve-correlation"],
+}
+
+for _code, _caps in _PHASE4_OWASP_CAPS.items():
+    _existing = OWASP_TO_CAPABILITIES.setdefault(_code, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+_PHASE4_SURFACES = {
+    "rest": ["access-bypass", "cache-deception"],
+    "infra": ["cve-correlation"],
+}
+
+for _name, _caps in _PHASE4_SURFACES.items():
+    _existing = ATTACK_SURFACES.setdefault(_name, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+
+_PHASE5_OWASP_CAPS = {
+    "A01": ["differential-auth"],
+    "A02": ["wayback-mining"],
+}
+
+for _code, _caps in _PHASE5_OWASP_CAPS.items():
+    _existing = OWASP_TO_CAPABILITIES.setdefault(_code, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+_PHASE5_SURFACES = {
+    "rest": ["differential-auth"],
+    "infra": ["wayback-mining"],
+}
+
+for _name, _caps in _PHASE5_SURFACES.items():
+    _existing = ATTACK_SURFACES.setdefault(_name, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+
+_PHASE6_OWASP_CAPS = {
+    "A05": ["framework-surface", "timing-robust"],
+    "A02": ["framework-surface"],
+}
+
+for _code, _caps in _PHASE6_OWASP_CAPS.items():
+    _existing = OWASP_TO_CAPABILITIES.setdefault(_code, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+_PHASE6_SURFACES = {
+    "infra": ["framework-surface"],
+    "injection": ["timing-robust"],
+}
+
+for _name, _caps in _PHASE6_SURFACES.items():
+    _existing = ATTACK_SURFACES.setdefault(_name, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+
+_PHASE7_OWASP_CAPS = {
+    "A08": ["deserialization"],
+    "A01": ["graphql-schema-walk"],
+    "A02": ["sourcemap-mining", "ct-subdomain"],
+}
+
+for _code, _caps in _PHASE7_OWASP_CAPS.items():
+    _existing = OWASP_TO_CAPABILITIES.setdefault(_code, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+_PHASE7_SURFACES = {
+    "injection": ["deserialization"],
+    "graphql": ["graphql-schema-walk"],
+    "recon": ["sourcemap-mining", "ct-subdomain"],
+}
+
+for _name, _caps in _PHASE7_SURFACES.items():
+    _existing = ATTACK_SURFACES.setdefault(_name, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+
+_PHASE8_OWASP_CAPS = {
+    "A08": ["subdomain-takeover"],
+    "A01": ["cloud-storage"],
+    "A05": ["hpp-scan"],
+}
+
+for _code, _caps in _PHASE8_OWASP_CAPS.items():
+    _existing = OWASP_TO_CAPABILITIES.setdefault(_code, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+_PHASE2_OWASP_CAPS = {
+    "A01": ["bola-harvest", "unauth-pagination-dump",
+            "graphql-data-dump", "llm-system-prompt-dump",
+            "llm-tool-list-dump"],
+    "A02": ["firebase-misconfig", "llm-credential-extract",
+            "mcp-credential-exposure"],
+    "A03": ["ci-cd-config-exposure", "npmrc-exposure"],
+    "A05": ["blind-sqli-extract", "blind-xxe-file-read",
+            "mcp-tool-poisoning", "postmessage-abuse"],
+    "A07": ["session-fixation"],
+}
+
+for _code, _caps in _PHASE2_OWASP_CAPS.items():
+    _existing = OWASP_TO_CAPABILITIES.setdefault(_code, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+
+_PHASE2_SURFACES = {
+    "rest": ["bola-harvest", "unauth-pagination-dump",
+             "postmessage-abuse"],
+    "graphql": ["graphql-data-dump"],
+    "llm": ["llm-system-prompt-dump", "llm-tool-list-dump",
+            "llm-credential-extract", "mcp-tool-poisoning",
+            "mcp-credential-exposure"],
+    "auth": ["session-fixation"],
+    "infra": ["ci-cd-config-exposure", "npmrc-exposure",
+              "firebase-misconfig"],
+    "injection": ["blind-sqli-extract", "blind-xxe-file-read"],
+}
+
+for _name, _caps in _PHASE2_SURFACES.items():
+    _existing = ATTACK_SURFACES.setdefault(_name, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)
+
+
+_PHASE8_SURFACES = {
+    "recon": ["subdomain-takeover", "cloud-storage"],
+    "injection": ["hpp-scan"],
+}
+
+for _name, _caps in _PHASE8_SURFACES.items():
+    _existing = ATTACK_SURFACES.setdefault(_name, [])
+    for _c in _caps:
+        if _c not in _existing:
+            _existing.append(_c)

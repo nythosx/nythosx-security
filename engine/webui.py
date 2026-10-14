@@ -59,6 +59,19 @@ def _findings_for(target):
     return out
 
 
+def _extracted_dedup_key(endpoint, rows):
+    import hashlib, json as _json
+    first = None
+    if isinstance(rows, list) and rows:
+        first = rows[0]
+    try:
+        blob = _json.dumps(first, sort_keys=True, default=str)
+    except Exception:
+        blob = str(first)
+    h = hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()[:16]
+    return (str(endpoint or ""), h)
+
+
 def _build_result(url, outcome, log_text):
     targets = (outcome or {}).get("targets") or {}
     scan_target = targets.get("api_base") or url
@@ -67,11 +80,48 @@ def _build_result(url, outcome, log_text):
     login = (outcome or {}).get("login")
     findings = _findings_for(scan_target)
     chains, coverage = [], None
+    extracted_rows = []
     try:
         from . import report as _report
         _report.enrich_findings(findings)
         chains = _report.build_chains(findings)
         coverage = _report.build_coverage(scan_target, findings)
+        _report._enrich_extracted_from_evidence_json(findings)
+        extracted_rows = _report._collect_extracted_for_report(findings)
+    except Exception:
+        pass
+    seen_extracted = set()
+    for e in extracted_rows:
+        seen_extracted.add(_extracted_dedup_key(e.get("endpoint"), e.get("rows")))
+    try:
+        from . import ledger as _ledger
+        for entry in _ledger.extracted_for_target(scan_target):
+            rows = entry.get("rows") or []
+            if not rows:
+                continue
+            masked = []
+            for r in rows:
+                if isinstance(r, dict):
+                    try:
+                        from .util import mask_row
+                        masked.append(mask_row(r))
+                    except Exception:
+                        masked.append(r)
+                else:
+                    masked.append(r)
+            endpoint = entry.get("endpoint") or scan_target
+            key = _extracted_dedup_key(endpoint, masked)
+            if key in seen_extracted:
+                continue
+            seen_extracted.add(key)
+            extracted_rows.append({
+                "endpoint": endpoint,
+                "auth_used": entry.get("auth_used") or "unknown",
+                "total_rows": int(entry.get("total_rows") or len(rows)),
+                "extracted": int(entry.get("extracted") or len(masked)),
+                "pattern": entry.get("source_pattern") or "cli",
+                "rows": masked,
+            })
     except Exception:
         pass
     confirmed_count = sum(
@@ -99,6 +149,9 @@ def _build_result(url, outcome, log_text):
         "report_target": scan_target,
         "endpoint_probes": (outcome or {}).get("endpoint_probes") or [],
         "data_rows": _collect_data_rows(outcome),
+        "extracted_rows": extracted_rows,
+        "total_extracted": sum(e.get("extracted", 0)
+                                for e in extracted_rows),
         "log": log_text,
     })
 
@@ -879,6 +932,11 @@ padding:16px 18px;border-radius:10px;font-size:14px}
       <div id="data-rows-body"></div>
     </div>
 
+    <div class="section" id="extracted-section" style="display:none">
+      <div class="section-title">Extracted Data &mdash; Proof of Impact <span class="hint">&mdash; live, masked</span></div>
+      <div id="extracted-body"></div>
+    </div>
+
     <div class="section" id="chains-section" style="display:none">
       <div class="section-title">Attack Chains</div>
       <div id="chains-body"></div>
@@ -1327,7 +1385,10 @@ function handleEvent(ev){
       showSummary(d.counts, d.report_target);
       if(currentJob){
         fetch("/api/job/" + currentJob).then(function(r){return r.json();}).then(function(job){
-          if(job && job.result) renderResult(job.result);
+          if(job && job.result){
+            renderResult(job.result);
+            renderExtractedFromResult(job.result);
+          }
         }).catch(function(){});
       }
       break;
@@ -1338,6 +1399,93 @@ function handleEvent(ev){
       log("ERROR: " + d.message, "err");
       break;
   }
+}
+
+var extractedSeen = [];
+var extractedValues = [];
+function escAttr(v){
+  if(v === null || v === undefined) return '';
+  return String(v).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function handleExtractionEvent(d){
+  var ev = d.evidence || {};
+  var recs = ev.extracted_records || ev.extracted_data || d.extracted_data;
+  if(Array.isArray(recs) && recs.length){
+    for(var i=0;i<recs.length;i++){ extractedSeen.push(recs[i]); }
+    renderExtractedPanel();
+  }
+  if(typeof ev.extracted_value === 'string' && ev.extracted_value){
+    extractedValues.push(ev.extracted_value);
+    renderExtractedValues();
+  }
+  var files = ev.files_read;
+  if(Array.isArray(files) && files.length){
+    for(var j=0;j<files.length;j++){ extractedValues.push(files[j]); }
+    renderExtractedValues();
+  }
+}
+function renderExtractedPanel(){
+  var sec = $("extracted-section");
+  var body = $("extracted-body");
+  if(!sec || !body) return;
+  if(!extractedSeen.length){ sec.style.display = 'none'; return; }
+  var groups = {};
+  for(var i=0;i<extractedSeen.length;i++){
+    var item = extractedSeen[i];
+    var key = (item && (item.endpoint || item.url)) || 'records';
+    var rows = (item && item.rows) || [];
+    if(!rows.length && item && typeof item === 'object'){
+      rows = [item];
+    }
+    if(!groups[key]) groups[key] = [];
+    groups[key] = groups[key].concat(rows);
+  }
+  var html = '';
+  html += '<div style="background:#2a1114;border:1px solid #f85149;color:#ffb4ae;padding:12px 16px;border-radius:8px;margin-bottom:12px;font-size:13px">';
+  html += '<b style="color:#fff">PROOF OF IMPACT:</b> ' + extractedSeen.length + ' record(s) extracted across ' + Object.keys(groups).length + ' endpoint(s)';
+  html += '</div>';
+  for(var k in groups){
+    html += '<div class="datarow-card">';
+    html += '<div class="hd">' + escAttr(k) + ' <span class="datarow-empty">&middot; ' + groups[k].length + ' row(s)</span></div>';
+    var shown = groups[k].slice(0,5);
+    for(var r=0;r<shown.length;r++){
+      var row = shown[r];
+      if(typeof row !== 'object'){ continue; }
+      html += '<table class="datarow-table">';
+      var keys = Object.keys(row).slice(0,10);
+      for(var ki=0;ki<keys.length;ki++){
+        var kk = keys[ki];
+        html += '<tr><td class="k">' + escAttr(kk) + '</td><td class="v">' + escAttr(String(row[kk]).slice(0,80)) + '</td></tr>';
+      }
+      html += '</table>';
+    }
+    html += '</div>';
+  }
+  body.innerHTML = html;
+  sec.style.display = 'block';
+}
+function renderExtractedValues(){
+  var sec = $("extracted-section");
+  var body = $("extracted-body");
+  if(!sec || !body) return;
+  if(!extractedValues.length) return;
+  var html = body.innerHTML || '';
+  html += '<div class="datarow-card"><div class="hd">Recovered value(s)</div>';
+  for(var i=0;i<extractedValues.length;i++){
+    html += '<table class="datarow-table"><tr><td class="k">value</td><td class="v">' + escAttr(String(extractedValues[i]).slice(0,200)) + '</td></tr></table>';
+  }
+  html += '</div>';
+  body.innerHTML = html;
+  sec.style.display = 'block';
+}
+function renderExtractedFromResult(result){
+  var rows = (result && result.extracted_rows) || [];
+  if(!rows.length) return;
+  extractedSeen = [];
+  for(var i=0;i<rows.length;i++){ extractedSeen.push(rows[i]); }
+  renderExtractedPanel();
 }
 
 form.addEventListener("submit", async function(e){
@@ -1352,6 +1500,10 @@ form.addEventListener("submit", async function(e){
 
   // reset state
   findingsSeen.clear();
+  extractedSeen = [];
+  extractedValues = [];
+  var _esec = $("extracted-section"); if(_esec) _esec.style.display = 'none';
+  var _eb = $("extracted-body"); if(_eb) _eb.innerHTML = '';
   caps = {}; cloudHasCaps = false; cloudEl.innerHTML = '<span class="empty">Naghihintay ng tools…</span>';
   feedHasRows = false; feedEl.innerHTML = '<div class="empty">Wala pang data na naipapasa…</div>';
   consoleEl.innerHTML = "";
@@ -1904,6 +2056,56 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
   var findingsCount = document.getElementById('findingsCount');
   var findings = [];
   var reconTarget = '';
+var extractedSeen = [];
+function renderExtractedSummary(result) {
+  var rows = (result && result.extracted_rows) || [];
+  var total = 0;
+  var byEndpoint = {};
+  for (var i = 0; i < rows.length; i++) {
+    var n = rows[i].extracted || (rows[i].rows || []).length || 0;
+    total += n;
+    var ep = rows[i].endpoint || 'records';
+    if (!byEndpoint[ep]) byEndpoint[ep] = {count: 0, auth: rows[i].auth_used || '?'};
+    byEndpoint[ep].count += n;
+  }
+  if (!total) return;
+  var body = document.getElementById('findingsBody');
+  if (!body) return;
+  if (findingsBody && findingsBody.querySelector) {
+    var empty = findingsBody.querySelector('.findings-empty');
+    if (empty) empty.remove();
+  }
+  var html = '<div class="fcard vuln" style="border-left-color:#f85149;'
+    + 'background:#2a1114;color:#ffb4ae">';
+  html += '<div class="fh" style="color:#ffb4ae"><span>EXTRACTED</span>'
+    + '<span class="tag" style="background:#f85149;color:#fff">PROOF</span></div>';
+  html += '<div class="fn" style="color:#fff"><b>PROOF OF IMPACT</b> — '
+    + total + ' record(s) across ' + Object.keys(byEndpoint).length + ' endpoint(s)</div>';
+  for (var ep in byEndpoint) {
+    var info = byEndpoint[ep];
+    html += '<div class="fp" style="color:#ffb4ae;margin-top:4px">'
+      + '<b>' + esc(ep) + '</b>: ' + info.count + ' row(s) [' + esc(info.auth) + ']</div>';
+  }
+  html += '</div>';
+  body.insertAdjacentHTML('afterbegin', html);
+}
+function handleLiveExtraction(d) {
+  var ev = d.evidence || {};
+  var recs = ev.extracted_records || ev.extracted_data;
+  if (Array.isArray(recs) && recs.length) {
+    for (var i = 0; i < recs.length; i++) extractedSeen.push(recs[i]);
+  }
+  if (typeof ev.extracted_value === 'string' && ev.extracted_value) {
+    extractedSeen.push({endpoint: 'blind-extract', extracted: 1,
+                        rows: [{value: ev.extracted_value}]});
+  }
+  if (Array.isArray(ev.files_read) && ev.files_read.length) {
+    for (var j = 0; j < ev.files_read.length; j++) {
+      extractedSeen.push({endpoint: 'files-read', extracted: 1,
+                          rows: [{file: ev.files_read[j]}]});
+    }
+  }
+}
   function addFinding(f) {
     if (findings.find(function (x) { return x.id === f.id; })) return;
     findings.push(f);
@@ -2116,6 +2318,11 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
         break;
       case 'narrator':
         narrate(d.text, { type: d.type, detail: d.detail });
+        if(d.extracted && d.extracted.length){
+        handleLiveExtraction(d);
+        break;
+      case 'step_done':
+        handleLiveExtraction(d);
         break;
       case 'activity':
         if (d.message) {

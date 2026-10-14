@@ -1,0 +1,20 @@
+id: differential-auth
+name: Differential Authentication / Cross-User Access
+severity: critical
+tags: [access-control, bola, idor, wstg-athz-04, cwe-639, cwe-862]
+
+inputs:
+  target_url:
+    type: string
+    required: true
+
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      follow_redirects: false
+
+oracles:
+  - type: differential_scan
+    verdict: VULNERABLE

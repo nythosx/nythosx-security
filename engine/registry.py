@@ -185,6 +185,95 @@ _STATIC = {
         "injection",
         cost="medium",
     ),
+    "cve_correlation": _cap(
+        "cve_correlation",
+        "Correlate detected framework/server versions against NVD for known CVEs.",
+        "recon",
+        cost="low",
+    ),
+    "access_bypass_scan": _cap(
+        "access_bypass_scan",
+        "403/401 bypass via header overrides and path mutations.",
+        "access-control",
+        cost="low",
+    ),
+    "cache_deception_scan": _cap(
+        "cache_deception_scan",
+        "Web cache deception via cacheable extensions on sensitive endpoints.",
+        "access-control",
+        cost="medium",
+    ),
+    "differential_scan": _cap(
+        "differential_scan",
+        "Cross-auth differential: anon + two users, structural diff per endpoint.",
+        "access-control",
+        cost="high",
+    ),
+    "wayback_mining": _cap(
+        "wayback_mining",
+        "Harvest historic URLs from Wayback CDX and CommonCrawl for the target domain.",
+        "recon",
+        cost="low",
+    ),
+    "framework_probe": _cap(
+        "framework_probe",
+        "Safe probes for known-vulnerable framework surfaces "
+        "(Laravel Ignition, Spring Actuator, WordPress xmlrpc, Rails dev routes, Tomcat manager).",
+        "recon",
+        cost="medium",
+    ),
+    "timing_robust": _cap(
+        "timing_robust",
+        "Robust statistical timing oracle (Mann-Whitney U, MAD outlier fallback).",
+        "injection",
+        cost="medium",
+        destructive=True,
+        default_on=False,
+        opt_in=True,
+        destructive_reason="Sends SLEEP/CPU-heavy payloads that consume server resources.",
+    ),
+    "deserialization_scan": _cap(
+        "deserialization_scan",
+        "Detect unsafe deserialization by sending magic-byte payloads to reflection points.",
+        "injection",
+        cost="medium",
+    ),
+    "graphql_schema_walk": _cap(
+        "graphql_schema_walk",
+        "Reconstruct GraphQL schema by walking field-suggestion hints when introspection is off.",
+        "recon",
+        cost="medium",
+    ),
+    "sourcemap_mine": _cap(
+        "sourcemap_mine",
+        "Fetch JS source maps and extract original params, paths, and URL literals.",
+        "recon",
+        cost="low",
+    ),
+    "ct_subdomain": _cap(
+        "ct_subdomain",
+        "Enumerate subdomains via Certificate Transparency logs (crt.sh) + DNS resolve.",
+        "recon",
+        cost="low",
+    ),
+    "subdomain_takeover": _cap(
+        "subdomain_takeover",
+        "Match subdomain response bodies against known takeover fingerprints.",
+        "recon",
+        cost="low",
+    ),
+    "cloud_storage_enum": _cap(
+        "cloud_storage_enum",
+        "Enumerate S3/GCS/Azure buckets derived from a domain; classify public/private/available.",
+        "recon",
+        cost="medium",
+    ),
+    "hpp_scan": _cap(
+        "hpp_scan",
+        "HTTP Parameter Pollution: detect last-wins reflection on duplicate params.",
+        "injection",
+        cost="low",
+    ),
 }
 
 

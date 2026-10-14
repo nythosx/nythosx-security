@@ -89,7 +89,10 @@ def validate_engine(data, where="engine.yaml"):
         "waf": dict,
         "iteration": dict,
         "confirm": dict,
+        "banking": dict,
     }, where)
+    if data.get("banking") is not None:
+        validate_banking(data["banking"], where + ".banking")
     http = data.get("http")
     if isinstance(http, dict):
         v = http.get("verify_tls")
@@ -210,6 +213,27 @@ def validate_credentials(data, where="credentials.yaml"):
         raise SchemaError(f"{where}.credentials: expected mapping")
 
 
+def validate_banking(data, where="banking"):
+    if not isinstance(data, dict):
+        raise SchemaError(f"{where}: expected mapping")
+    for key in ("endpoints_authenticated", "endpoints_unauthenticated"):
+        v = data.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            raise SchemaError(f"{where}.{key}: expected list")
+        for item in v:
+            if not isinstance(item, str):
+                raise SchemaError(f"{where}.{key}: entries must be strings")
+    mc = data.get("mask_chars")
+    if mc is not None:
+        if isinstance(mc, bool) or not isinstance(mc, int) or mc < 0:
+            raise SchemaError(f"{where}.mask_chars: expected non-negative int")
+    cipher = data.get("cipher")
+    if cipher is not None and not isinstance(cipher, str):
+        raise SchemaError(f"{where}.cipher: expected string")
+
+
 def validate_pattern(data, where="pattern"):
     if not isinstance(data, dict):
         raise SchemaError(f"{where}: expected mapping")
@@ -264,6 +288,15 @@ def validate_correlator_chain(data, where="correlator-chain"):
     return True
 
 
+def validate_asvs_metadata(data, where="asvs"):
+    if not isinstance(data, dict):
+        raise SchemaError(f"{where}: expected mapping")
+    chapters = data.get("chapters")
+    if chapters is not None and not isinstance(chapters, list):
+        raise SchemaError(f"{where}.chapters: expected list")
+    return True
+
+
 def validate_writeup_family(data, where="writeup-family"):
     if not isinstance(data, dict):
         raise SchemaError(f"{where}: expected mapping")
@@ -282,4 +315,5 @@ __all__ = [
     "validate_credentials", "validate_pattern", "validate_adapter",
     "validate_chain", "validate_correlator_chain",
     "validate_writeup_family", "validate_writeup_pattern",
+    "validate_banking", "validate_asvs_metadata",
 ]

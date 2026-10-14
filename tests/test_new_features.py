@@ -210,7 +210,7 @@ def test_ssrf_cloud_roe_fail_closed_no_guard(monkeypatch):
     def _boom(*a, **kw):
         raise AssertionError("httpx must not be called when ROE fails closed")
 
-    monkeypatch.setattr(ssrf_cloud.httpx, "Client", _boom)
+    monkeypatch.setattr(ssrf_cloud._http, "Client", _boom)
     r = ssrf_cloud.probe_single("http://not-in-scope.invalid", roe_guard=None)
     assert r.get("blocked") and "ROE_BLOCK" in r.get("error", "")
 

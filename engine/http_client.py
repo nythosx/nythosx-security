@@ -53,13 +53,15 @@ class HttpClient:
                 follow_redirects=follow_redirects,
             )
         except _http.ROEBlock as e:
-            return self._error(url, f"ROE_BLOCK: {e}", t0)
+            return self._error(url, f"ROE_BLOCK: {e}", t0, kind="roe_block")
+        except _http.budget.BudgetExceeded as e:
+            return self._error(url, f"BUDGET_EXCEEDED: {e}", t0, kind="budget")
         except _http.ConnectError as e:
-            return self._error(url, f"connection error: {e}", t0)
+            return self._error(url, f"connection error: {e}", t0, kind="connect_error")
         except _http.TimeoutException:
-            return self._error(url, "timeout", t0)
+            return self._error(url, "timeout", t0, kind="timeout")
         except Exception as e:
-            return self._error(url, f"{type(e).__name__}: {e}", t0)
+            return self._error(url, f"{type(e).__name__}: {e}", t0, kind="error")
         elapsed = (time.perf_counter() - t0) * 1000.0
         body = r.text or ""
         return {
@@ -76,11 +78,13 @@ class HttpClient:
         }
 
     @staticmethod
-    def _error(url, msg, t0):
+    def _error(url, msg, t0, kind=None):
         return {
             "status": None, "headers": {}, "body": "", "body_hash": None,
             "time_ms": round((time.perf_counter() - t0) * 1000.0, 3),
             "url": url, "error": msg, "attempts": 1,
+            "diagnostic": kind or "error",
+            "roe_block": kind == "roe_block",
         }
 
     def close(self):

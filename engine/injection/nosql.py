@@ -115,7 +115,8 @@ def scan(login_url, headers=None, roe_guard=None, timeout=8,
                 capability="nosql_scan", target=login_url,
                 verdict="UNKNOWN", reason=r["error"],
             )
-        attempts.append({"op": label, "status": r.get("status")})
+        attempts.append({"op": label, "status": r.get("status"),
+                         "error": r.get("error")})
         if _looks_bypassed(r, baseline):
             findings.append({"op": label,
                              "payload": json.dumps(op)})
@@ -130,9 +131,13 @@ def scan(login_url, headers=None, roe_guard=None, timeout=8,
         )
     statuses = [a["status"] for a in attempts if a["status"] is not None]
     if not statuses:
+        from ..util import summarize_failures
+        why = summarize_failures(attempts)
         return ScanResult(
             capability="nosql_scan", target=login_url,
-            verdict="UNKNOWN", reason="all requests failed",
+            verdict="UNKNOWN",
+            reason=f"all requests failed ({why})" if why else "all requests failed",
+            evidence={"attempts": attempts},
         )
     return ScanResult(
         capability="nosql_scan", target=login_url,

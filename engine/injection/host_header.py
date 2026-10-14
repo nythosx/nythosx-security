@@ -109,9 +109,13 @@ def scan(target_url, headers=None, roe_guard=None, timeout=8):
         )
     statuses = [a["status"] for a in attempts if a["status"] is not None]
     if not statuses:
+        from ..util import summarize_failures
+        why = summarize_failures(attempts)
         return ScanResult(
             capability="host_header_scan", target=target_url,
-            verdict="UNKNOWN", reason="all requests failed",
+            verdict="UNKNOWN",
+            reason=f"all requests failed ({why})" if why else "all requests failed",
+            evidence={"attempts": attempts[:30]},
         )
     return ScanResult(
         capability="host_header_scan", target=target_url,

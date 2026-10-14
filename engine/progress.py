@@ -81,3 +81,20 @@ def clear(job_id):
         _events.pop(job_id, None)
         _subscribers.pop(job_id, None)
         _done.discard(job_id)
+
+def warning(code, detail, **extra):
+    job_id = active_job()
+    if not job_id:
+        return
+    data = {"code": code, "detail": detail}
+    data.update(extra)
+    emit(job_id, "warning", data)
+
+
+def diagnostic(category, severity, detail, **extra):
+    job_id = active_job()
+    if not job_id:
+        return
+    data = {"category": category, "severity": severity, "detail": detail}
+    data.update(extra)
+    emit(job_id, "diagnostic", data)

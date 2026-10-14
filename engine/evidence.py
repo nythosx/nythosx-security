@@ -85,3 +85,47 @@ def save_evidence(pattern_id, target, context, verdict, oracle_result,
         summary_path.write_text(json.dumps(data, indent=2, default=str),
                                 encoding="utf-8")
     return path
+
+def bundle_evidence(target, extra_paths=None):
+    """Zip every evidence file for the target into one archive."""
+    import zipfile
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in target)[:80]
+    stamp = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%S")
+    out_dir = ROOT / "findings" / "bundles"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = out_dir / f"{stamp}_{safe}_evidence.zip"
+    included = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        if EVIDENCE_DIR.exists():
+            for p in EVIDENCE_DIR.rglob("*"):
+                if p.is_file():
+                    try:
+                        z.write(p, p.relative_to(EVIDENCE_DIR.parent))
+                        included += 1
+                    except Exception:
+                        continue
+        audit = ROOT / "findings" / "audit.jsonl"
+        if audit.exists():
+            try:
+                z.write(audit, "findings/audit.jsonl")
+                included += 1
+            except Exception:
+                pass
+        ledger_db = ROOT / "findings" / "ledger.db"
+        if ledger_db.exists():
+            try:
+                z.write(ledger_db, "findings/ledger.db")
+                included += 1
+            except Exception:
+                pass
+        for extra in (extra_paths or []):
+            try:
+                p = Path(extra)
+                if p.exists() and p.is_file():
+                    z.write(p, "extra/" + p.name)
+                    included += 1
+            except Exception:
+                continue
+    return {"zip_path": str(zip_path), "files_included": included}

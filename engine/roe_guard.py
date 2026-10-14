@@ -133,5 +133,15 @@ class ROEGuard:
                         raise ROEViolation(f"FORBIDDEN PATH: {raw_path}")
         return True
 
+    def check_path_normalized(self, url, method="GET"):
+        return self.check_url(url, method)
+
+    def walkthrough(self, url, method="GET"):
+        try:
+            self.check_url(url, method)
+            return True, "allowed"
+        except ROEViolation as e:
+            return False, str(e)
+
 
 __all__ = ["ROEGuard", "ROEViolation"]

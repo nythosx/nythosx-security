@@ -259,6 +259,19 @@ ALLOWED_RAW_HTTPX = {
     # Phase 4 (orchestrator merge + destructive gating). Migrating it now
     # would break the file-touch-once invariant.
     "engine/orchestrator.py",
+    # Non-target: talks to NVD for CVE lookup. Same exception class as SCA
+    # (external vulnerability DB, not the scan target).
+    "engine/cve_lookup.py",
+    # Non-target: talks to web.archive.org and CommonCrawl indexes. Same
+    # exception class (external archive, not the scan target).
+    "engine/recon/wayback.py",
+    # Non-target: talks to crt.sh (Certificate Transparency). Same exception.
+    "engine/recon/ct_logs.py",
+    # Non-target: talks to S3/GCS/Azure's own hostnames to check for
+    # publicly-misconfigured buckets guessed from the domain name. Same
+    # exception class — these are third-party cloud provider endpoints,
+    # not the scan target itself.
+    "engine/cloud_storage.py",
 }
 
 

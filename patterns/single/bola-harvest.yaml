@@ -1,0 +1,20 @@
+id: bola-harvest
+name: BOLA/BFLA Data Harvesting
+severity: critical
+tags: [bola, access-control, data-extraction, wstg-athz-04, cwe-639]
+inputs:
+  target_url:
+    type: string
+    required: true
+  token_a:
+    type: string
+  token_b:
+    type: string
+steps:
+  - name: probe
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+oracles:
+  - type: bola_harvest
+    verdict: VULNERABLE

