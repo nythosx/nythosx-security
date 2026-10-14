@@ -2663,6 +2663,10 @@ def _inject_article_ui(html):
 #articleDoc li{margin:0 0 6px}
 #articleDoc .fields{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;opacity:.78}
 #articleDoc .quiet{opacity:.6;font-size:15px;font-style:italic}
+#articleDoc ul.rows{list-style:none;padding-left:0;margin:0 0 18px;
+  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;line-height:1.5}
+#articleDoc ul.rows li{margin:0 0 5px;word-break:break-word}
+#articleDoc ul.rows ul.rows{padding-left:18px;margin:4px 0 2px;opacity:.9}
 </style>
 <button id="articleOpenBtn" type="button">Read as article</button>
 <div id="articleOverlay"><button id="articleClose" type="button">close &times;</button>
@@ -2687,93 +2691,132 @@ def _inject_article_ui(html):
   window.__articleReady=function(){btn.style.display='block';};
   window.__articleReset=function(){btn.style.display='none';overlay.style.display='none';doc.innerHTML='';};
 
+  function valstr(v){
+    if (v===null||v===undefined) return '';
+    if (typeof v==='object'){ try{v=JSON.stringify(v);}catch(e){v=String(v);} }
+    v=String(v);
+    return v.length>200?v.slice(0,200)+'\\u2026':v;
+  }
+  function rowLines(rows,maxR){
+    if(!rows||!rows.length) return '';
+    var li=rows.slice(0,maxR||10).map(function(row){
+      if (row&&typeof row==='object'&&!Array.isArray(row)){
+        var pairs=Object.keys(row).map(function(k){
+          return '<strong>'+esc(k)+'</strong> '+esc(valstr(row[k]));});
+        return '<li>'+pairs.join(' &middot; ')+'</li>';
+      }
+      return '<li>'+esc(valstr(row))+'</li>';
+    }).join('');
+    var more=rows.length>(maxR||10)?'<li class="quiet">+'+(rows.length-(maxR||10))+' more row(s)</li>':'';
+    return '<ul class="rows">'+li+more+'</ul>';
+  }
+  function objLines(o,skip){
+    skip=skip||{};
+    var ks=Object.keys(o||{}).filter(function(k){
+      return !skip[k]&&o[k]!=null&&o[k]!=='';});
+    if(!ks.length) return '';
+    return '<ul class="rows">'+ks.map(function(k){
+      var v=o[k];
+      if (Array.isArray(v)&&v.length&&typeof v[0]==='object')
+        return '<li><strong>'+esc(k)+'</strong>'+rowLines(v,6)+'</li>';
+      return '<li><strong>'+esc(k)+'</strong> '+esc(valstr(v))+'</li>';
+    }).join('')+'</ul>';
+  }
+
   function build(){
     var r=window.__scanResult||{};
     var rc=window.__scanRecon||{};
     var sm=window.__scanSummary;
     var h=host(r.target||r.entered_url);
     var out=[];
-    out.push('<h1>Security assessment: '+esc(h)+'</h1>');
-    var fw=(r.framework&&(r.framework.name))||'an unrecognised stack';
-    var when=new Date().toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'});
-    var authTxt=r.logged_in?'scanned as an authenticated user':'scanned anonymously';
-    out.push('<p class="sub">An automated assessment of '+esc(h)+', presenting as '+esc(fw)+
-      ', '+authTxt+' on '+esc(when)+'.</p>');
+    var fw=(r.framework&&r.framework.name)||'an unrecognised stack';
+    var when=new Date().toLocaleString();
+    var c=r.counts||{};
+    var totalPat=(c.VULNERABLE||0)+(c.SUSPICIOUS||0)+(c.PASS||0)+(c.UNKNOWN||0);
 
-    out.push('<h2>What we did</h2>');
-    out.push('<p>We started by fingerprinting the application to learn what it is built on, then '+
-      'recovered its routes from the JavaScript it ships to the browser rather than guessing at '+
-      'paths. Each route we found was probed directly, we tried to read whatever data it would '+
-      'return, and we ran the engine&rsquo;s vulnerability chains against the live surface.</p>');
+    out.push('<h1>Security assessment: '+esc(h)+'</h1>');
+    out.push('<p class="sub">'+esc(r.target||r.entered_url||h)+' &mdash; '+esc(fw)+
+      (r.framework&&r.framework.score?' (score '+esc(r.framework.score)+')':'')+
+      ' &mdash; '+(r.logged_in?'authenticated':'anonymous')+' &mdash; '+esc(when)+'</p>');
     if (typeof sm==='string'&&sm.trim()) out.push('<p>'+esc(sm.trim())+'</p>');
 
-    out.push('<h2>The target</h2>');
-    var tp='The application at <strong>'+esc(h)+'</strong> presents as <em>'+esc(fw)+'</em>';
-    if (r.framework&&r.framework.score) tp+=' (detection score '+esc(r.framework.score)+')';
-    tp+='.';
-    if (r.api_base) tp+=' Its API is served under <strong>'+esc(r.api_base)+'</strong>';
-    if (r.api_paths_count) tp+=', where we catalogued '+plural(r.api_paths_count,'route')+'';
-    tp+='.';
-    out.push('<p>'+tp+'</p>');
-    out.push('<p>'+(r.logged_in?'We authenticated successfully, so the findings below reflect what a legitimate logged-in user can reach.':'No credentials were used; everything below was reachable without logging in at all.')+'</p>');
+    out.push('<h2>The test</h2>');
+    out.push('<p>We fingerprinted the application, recovered its routes from the JavaScript '+
+      'bundles it serves, probed every route directly, tried to read the data each returned, and '+
+      'ran the vulnerability chains. '+plural(totalPat,'check')+' produced a verdict &mdash; '+
+      (c.VULNERABLE||0)+' vulnerable, '+(c.SUSPICIOUS||0)+' suspicious, '+(c.PASS||0)+
+      ' passed, '+(c.UNKNOWN||0)+' inconclusive.</p>');
 
+    out.push('<h2>The website</h2>');
+    out.push(objLines({
+      'URL': r.target||r.entered_url,
+      'Framework': fw,
+      'Framework id': r.framework&&r.framework.id,
+      'Detection score': r.framework&&r.framework.score,
+      'API base': r.api_base,
+      'API routes catalogued': r.api_paths_count,
+      'Authenticated': r.logged_in?'yes':'no',
+      'Confirmed findings': r.confirmed_count,
+      'Avg signal strength': r.avg_signal_strength
+    }));
     var s=rc.summary||{};
     if (s.endpoints||s.live){
-      out.push('<h2>What we discovered</h2>');
-      var dp='Of '+plural(s.endpoints||0,'candidate route')+', '+(s.live||0)+' responded as live'+
-        (s.with_data?', and '+s.with_data+' of those handed back data':'')+'.';
-      out.push('<p>'+dp+'</p>');
+      out.push(objLines({
+        'Routes discovered': s.endpoints,
+        'Live': s.live,
+        'Returning data': s.with_data,
+        'IDOR candidates': s.idor_candidates
+      }));
       var bc=s.by_category||{};
-      var cats=Object.keys(bc);
-      if (cats.length){
-        var parts=cats.map(function(k){return plural(bc[k],k+' endpoint');});
-        out.push('<p>By their nature these break down as '+parts.join(', ').replace(/,([^,]*)$/,' and$1')+'. '+
-          'Endpoints we consider public or telemetry by design are not treated as weaknesses.</p>');
-      }
-      if (rc.soft_404) out.push('<p class="quiet">The site answers unknown paths with a soft 404 '+
-        '(HTTP '+esc(rc.soft_404.status)+', '+esc(rc.soft_404.len)+' bytes), which we accounted for so '+
-        'phantom pages were never mistaken for real ones.</p>');
+      if (Object.keys(bc).length) out.push('<p class="fields">Categories: '+
+        Object.keys(bc).map(function(k){return esc(k)+' '+bc[k];}).join(' &middot; ')+'</p>');
+      if (rc.soft_404) out.push('<p class="quiet">Soft-404 baseline: HTTP '+esc(rc.soft_404.status)+
+        ', '+esc(rc.soft_404.len)+' bytes (accounted for, so phantom pages were not mistaken for real ones).</p>');
+    }
+
+    var inv=(rc.inventory||[]).filter(function(i){return i.real;});
+    if (inv.length){
+      out.push('<h2>Endpoint inventory</h2>');
+      out.push('<p>Every live endpoint we found, with its classification and whatever data it returned (masked):</p>');
+      inv.forEach(function(i){
+        out.push('<h3>'+esc(i.path)+'</h3>');
+        out.push('<p class="fields">HTTP '+esc(i.status)+' &middot; '+esc(i.length)+' bytes &middot; '+
+          esc(i.category)+(i.by_design?' (by design)':'')+' &middot; confidence '+esc(i.confidence||'?')+'</p>');
+        if (i.data&&i.data.rows&&i.data.rows.length){
+          out.push('<p class="quiet">'+(i.data.extracted||i.data.rows.length)+' of '+
+            (i.data.total_rows||i.data.rows.length)+' row(s), '+esc(i.data.auth_used||'unauth')+':</p>');
+          out.push(rowLines(i.data.rows,10));
+        } else {
+          out.push('<p class="quiet">No data returned.</p>');
+        }
+      });
     }
 
     var ex=r.extracted_rows||[];
-    out.push('<h2>What we were able to read</h2>');
-    if (ex.length){
-      out.push('<p>We pulled records from '+plural(ex.length,'endpoint')+' (every value below is masked):</p>');
-      ex.slice(0,12).forEach(function(e){
-        var keys=(e.rows&&e.rows[0]&&typeof e.rows[0]==='object')?Object.keys(e.rows[0]).slice(0,10):[];
-        var p='From <strong>'+esc(e.endpoint)+'</strong> we read '+(e.extracted||0)+' of '+
-          (e.total_rows||0)+' row(s) ('+esc(e.auth_used||'unauth')+')';
-        if (keys.length) p+=', exposing the fields <span class="fields">'+esc(keys.join(', '))+'</span>';
-        p+='.';
-        out.push('<p>'+p+'</p>');
+    if (ex.length && !inv.length){
+      out.push('<h2>Data captured</h2>');
+      ex.slice(0,30).forEach(function(e){
+        out.push('<h3>'+esc(e.endpoint)+'</h3>');
+        out.push('<p class="fields">'+(e.extracted||0)+' of '+(e.total_rows||0)+' row(s) &middot; '+
+          esc(e.auth_used||'unauth')+' &middot; masked</p>');
+        out.push(rowLines(e.rows,10));
       });
       if (r.total_extracted) out.push('<p class="quiet">'+plural(r.total_extracted,'record')+' read in total.</p>');
-    } else {
-      out.push('<p>No endpoint returned readable records to us. Where data was behind authentication, it stayed there.</p>');
     }
 
     var ff=(r.findings||[]).filter(function(f){return f.verdict==='VULNERABLE'||f.verdict==='SUSPICIOUS';});
     out.push('<h2>Findings</h2>');
     if (!ff.length){
-      out.push('<p>We did not surface any vulnerable or suspicious behaviour across the surface we '+
-        'exercised. For a target like this that is itself the headline: the endpoints held up, access '+
-        'control behaved, and nothing leaked that should not have.</p>');
+      out.push('<p>No vulnerable or suspicious behaviour was raised across the '+plural(totalPat,'check')+
+        ' run. Endpoints returning 401/403 did so correctly, and public content is public by design.</p>');
     } else {
-      out.push('<p>We raised '+plural(ff.length,'finding')+'. Each is described below in plain terms.</p>');
       ff.forEach(function(f){
-        out.push('<h3>'+esc(f.pattern_id||f.id||'Finding')+'</h3>');
-        var verd=f.verdict==='VULNERABLE'?'a confirmed weakness':'a suspicious signal worth a closer look';
-        var fp='This is '+verd;
-        if (f.severity) fp+=', rated <em>'+esc(String(f.severity).toLowerCase())+'</em>';
-        fp+='. '+esc(f.reason||'No further detail was recorded.');
-        out.push('<p>'+fp+'</p>');
-        var note=f.triage_note||(f.evidence&&f.evidence.triage&&f.evidence.triage.note);
-        var conf=f.triage_confidence||(f.evidence&&f.evidence.triage&&f.evidence.triage.confidence);
-        if (note||conf){
-          var cp=[];
-          if (conf) cp.push('our confidence here is <em>'+esc(conf)+'</em>');
-          if (note) cp.push(esc(note));
-          out.push('<p class="quiet">'+cap(cp.join('; '))+'.</p>');
+        out.push('<h3>'+esc(f.pattern_id||f.id||'Finding')+' &mdash; '+esc(f.verdict)+'</h3>');
+        out.push('<p>'+(f.severity?'Severity <em>'+esc(String(f.severity).toLowerCase())+'</em>. ':'')+
+          esc(f.reason||'')+'</p>');
+        if (f.evidence&&typeof f.evidence==='object'&&!Array.isArray(f.evidence)){
+          out.push('<p class="quiet">Evidence:</p>');
+          out.push(objLines(f.evidence,{}));
         }
       });
     }
@@ -2781,17 +2824,35 @@ def _inject_article_ui(html):
     var idc=(rc.idor&&rc.idor.idor_candidates)||[];
     if (idc.length){
       out.push('<h2>Access-control candidates</h2>');
-      out.push('<p>These resources enumerated in a way that may let one user reach another&rsquo;s '+
-        'data. They warrant a manual check with a second account:</p>');
-      out.push('<ul>'+idc.slice(0,20).map(function(x){return '<li class="fields">'+esc(x)+'</li>';}).join('')+'</ul>');
+      out.push('<ul class="rows">'+idc.slice(0,40).map(function(x){
+        return '<li>'+esc(valstr(x))+'</li>';}).join('')+'</ul>');
+    }
+
+    var ep=r.endpoint_probes||[];
+    if (ep.length){
+      out.push('<h2>Probe log</h2>');
+      out.push('<p>Each endpoint we touched and how it answered:</p>');
+      out.push('<ul class="rows">'+ep.slice(0,120).map(function(p){
+        if (p&&typeof p==='object'){
+          var path=p.path||p.url||p.endpoint||'';
+          var rest=Object.keys(p).filter(function(k){return k!=='path'&&k!=='url'&&k!=='endpoint'&&p[k]!=null;})
+            .map(function(k){return esc(k)+' '+esc(valstr(p[k]));}).join(' &middot; ');
+          return '<li><strong>'+esc(path)+'</strong>'+(rest?' &middot; '+rest:'')+'</li>';
+        }
+        return '<li>'+esc(valstr(p))+'</li>';
+      }).join('')+'</ul>');
+    }
+
+    if (r.coverage&&typeof r.coverage==='object'){
+      out.push('<h2>Coverage</h2>');
+      out.push(objLines(r.coverage.owasp||r.coverage,{}));
     }
 
     out.push('<h2>In summary</h2>');
-    var c=r.counts||{};
     var concl;
-    if ((c.VULNERABLE||0)>0) concl='We confirmed '+plural(c.VULNERABLE,'vulnerability')+'. These should be fixed before anything else, and re-tested afterwards.';
-    else if ((c.SUSPICIOUS||0)>0) concl='Nothing was outright confirmed, but '+plural(c.SUSPICIOUS,'signal')+' deserve a manual second pass before the target is called clean.';
-    else concl='The target held up to everything we ran. Keep the surface small, keep authentication in front of anything sensitive, and re-run this as the application changes.';
+    if ((c.VULNERABLE||0)>0) concl='Confirmed '+plural(c.VULNERABLE,'vulnerability')+' &mdash; fix and re-test.';
+    else if ((c.SUSPICIOUS||0)>0) concl=plural(c.SUSPICIOUS,'suspicious signal')+' to review manually; nothing outright confirmed.';
+    else concl='Nothing confirmed vulnerable across the tested surface.';
     out.push('<p>'+concl+'</p>');
     return out.join('\\n');
   }
