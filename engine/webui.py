@@ -272,7 +272,27 @@ class _Handler(BaseHTTPRequestHandler):
             return self._export()
         if self.path == "/api/ai_status":
             return self._ai_status()
+        if self.path == "/api/defaults":
+            return self._defaults()
         return self._send(404, {"error": "not found"})
+
+    def _defaults(self):
+        from pathlib import Path as _P
+        out = {"target": "https://nythosx.com"}
+        try:
+            p = _P(__file__).parent.parent / "configs" / "credentials.yaml"
+            if p.exists():
+                import yaml as _yaml
+                data = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                wd = data.get("webui_defaults") or {}
+                if wd.get("target"):
+                    out["target"] = wd["target"]
+                for k in ("username", "password", "login_url", "token"):
+                    if wd.get(k):
+                        out[k] = wd[k]
+        except Exception:
+            pass
+        return self._send(200, out)
 
     def _ai_status(self):
         try:
@@ -807,7 +827,7 @@ padding:16px 18px;border-radius:10px;font-size:14px}
     <h1>Scan a target</h1>
     <p>Enter a URL. It studies what the target is, then runs the scan live as a flow of tools.</p>
     <form class="box" id="form">
-      <input id="url" type="text" placeholder="http://localhost:3000" autocomplete="off" autofocus>
+      <input id="url" type="text" placeholder="http://localhost:3000" value="https://nythosx.com" autocomplete="off" autofocus>
       <button id="go" type="submit">Analyze &amp; Scan</button>
     </form>
     <div class="opts">
@@ -1779,7 +1799,7 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
         <h1>scan a target</h1>
         <p>Enter a URL. I will walk you through every step — what I found, what I tried, and why — in plain language.</p>
         <div class="input-row">
-          <input id="url" type="text" placeholder="https://target" value="https://shop.demo.local" spellcheck="false" autocomplete="off">
+          <input id="url" type="text" placeholder="https://target" value="https://nythosx.com" spellcheck="false" autocomplete="off">
           <button id="startBtn">Analyze →</button>
         </div>
       </div>
@@ -2493,6 +2513,13 @@ def _inject_credential_ui(html):
       '<input id="credToken" type="password" placeholder="bearer token (optional \u2014 paste if you already have one)" autocomplete="off" spellcheck="false" style="grid-column:1/-1;background:transparent;border:1px solid rgba(128,128,128,0.45);border-radius:6px;color:inherit;font-family:inherit;font-size:12px;padding:8px 10px;outline:none;min-width:0">';
     row.parentNode.insertBefore(form, row.nextSibling);
 
+    function openForm(){
+      form.style.display = "grid";
+      btn.textContent = "x";
+      btn.style.color = "currentColor";
+      btn.style.borderColor = "currentColor";
+    }
+
     btn.addEventListener("click", function(){
       var open = form.style.display !== "grid";
       form.style.display = open ? "grid" : "none";
@@ -2500,6 +2527,20 @@ def _inject_credential_ui(html):
       btn.style.color = open ? "currentColor" : "inherit";
       btn.style.borderColor = open ? "currentColor" : "rgba(128,128,128,0.45)";
     });
+
+    fetch("/api/defaults").then(function(r){return r.json();}).then(function(d){
+      if (!d) return;
+      if (d.target && (!url.value || url.value.trim() === "")) url.value = d.target;
+      else if (d.target) url.value = d.target;
+      var map = {credUser: d.username, credPass: d.password,
+                 credLoginUrl: d.login_url, credToken: d.token};
+      var any = false;
+      Object.keys(map).forEach(function(id){
+        var el = document.getElementById(id);
+        if (el && map[id]) { el.value = map[id]; any = true; }
+      });
+      if (any) openForm();
+    }).catch(function(){});
 
     var origFetch = window.fetch;
     window.fetch = function(input, init){
