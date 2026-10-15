@@ -41,14 +41,35 @@ def _roe_block(guard, url, method="GET"):
         return str(e)
 
 
+def _augmented_crlf_payloads(target_url):
+    try:
+        from ..brains import payload_author
+        extra = payload_author.propose_strings(
+            "crlf_header_injection (each payload MUST inject a header named "
+            "exactly 'X-Injected: payload' using CRLF / encoding variants)",
+            {"target": target_url}, capability="crlf", cap=10)
+    except Exception:
+        extra = []
+    tuples = [("llm_%d" % i, p) for i, p in enumerate(extra)
+              if isinstance(p, str) and "X-Injected" in p]
+    seen = set()
+    out = []
+    for t in tuples + list(CRLF_PAYLOADS):
+        if t[1] not in seen:
+            seen.add(t[1])
+            out.append(t)
+    return out
+
+
 def scan(target_url, param=None, headers=None, roe_guard=None, timeout=8):
     verify = _verify_tls()
     params = [param] if param else COMMON_INJECTION_PARAMS[:8]
 
     attempts = []
     findings = []
+    crlf_payloads = _augmented_crlf_payloads(target_url)
     for pname in params:
-        for label, payload in CRLF_PAYLOADS:
+        for label, payload in crlf_payloads:
             viol = _roe_block(roe_guard, target_url, "GET")
             if viol:
                 return ScanResult(

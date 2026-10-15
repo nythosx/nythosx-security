@@ -52,6 +52,41 @@ def _parse_str_list(raw, cap):
     return out
 
 
+def propose_objects(kind, shape, context=None, capability="payload_author",
+                    cap=20):
+    try:
+        from .. import llm_service
+        client = llm_service.get_client(capability)
+    except Exception:
+        return []
+    if client is None:
+        return []
+    prompt = (
+        "You propose additional test payloads for an authorized security "
+        "scan. Output ONLY a JSON array of up to " + str(cap) + " objects, "
+        "each shaped exactly like " + shape + ", tailored to the target. "
+        "No prose, no markdown.\n\n"
+        "KIND: " + str(kind) + "\nCONTEXT:\n"
+        + json.dumps(context or {}, default=str)[:_MAX_PROMPT_CHARS]
+        + "\n\nRespond with a JSON array only."
+    )
+    try:
+        raw = client(prompt)
+    except Exception:
+        return []
+    txt = (raw or "").strip()
+    m = re.search(r"\[.*\]", txt, re.S)
+    if m:
+        txt = m.group(0)
+    try:
+        data = json.loads(txt)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [d for d in data if isinstance(d, dict)][:cap]
+
+
 def propose_strings(kind, context=None, capability="payload_author", cap=20):
     try:
         from .. import llm_service

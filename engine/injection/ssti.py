@@ -59,6 +59,29 @@ def _send(url, method, params, json_body, headers, timeout, verify, roe_guard):
         return {"status": None, "error": f"{type(e).__name__}: {e}"}
 
 
+def _augmented_ssti_payloads(target_url):
+    try:
+        from ..brains import payload_author
+        objs = payload_author.propose_objects(
+            "ssti", '{"expr": "{{7*7}}", "marker": "49", "engine": "jinja2"}',
+            {"target": target_url}, capability="ssti", cap=12)
+    except Exception:
+        objs = []
+    extra = []
+    for o in objs:
+        expr = o.get("expr")
+        marker = o.get("marker")
+        if isinstance(expr, str) and expr and isinstance(marker, str) and marker:
+            extra.append((expr, marker, str(o.get("engine") or "llm")))
+    seen = set()
+    out = []
+    for t in extra + list(SSTI_PAYLOADS):
+        if t[0] not in seen:
+            seen.add(t[0])
+            out.append(t)
+    return out
+
+
 def scan(target_url, param=None, method="GET", headers=None, roe_guard=None,
          timeout=8):
     verify = _verify_tls()
@@ -66,8 +89,9 @@ def scan(target_url, param=None, method="GET", headers=None, roe_guard=None,
 
     attempts = []
     findings = []
+    ssti_payloads = _augmented_ssti_payloads(target_url)
     for pname in params:
-        for payload, marker, engine in SSTI_PAYLOADS:
+        for payload, marker, engine in ssti_payloads:
             if method.upper() == "POST":
                 body = {pname: payload}
                 r = _send(target_url, "POST", None, body, headers, timeout,
