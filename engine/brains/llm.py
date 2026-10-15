@@ -248,12 +248,38 @@ def _normalize_response(obj):
 class LLMBrain:
     def __init__(self, client=None, model="gpt-4", max_per_iter=20,
                  fallback=None, capability_allowlist=None):
-        self.client = client
+        self.on_call = None
+        self.last_call = None
+        self.client = self._wrap_client(client)
         self.model = model
         self.max_per_iter = max_per_iter
         self.fallback = fallback or RuleBasedBrain()
         self.capability_allowlist = capability_allowlist
         self._canary = _new_canary() if client else None
+
+    def _wrap_client(self, raw):
+        if raw is None:
+            return None
+
+        def wrapped(prompt):
+            info = {"prompt": prompt, "response": None, "error": None}
+            try:
+                resp = raw(prompt)
+                info["response"] = resp
+                return resp
+            except Exception as e:
+                info["error"] = f"{type(e).__name__}: {e}"
+                raise
+            finally:
+                self.last_call = info
+                cb = self.on_call
+                if cb:
+                    try:
+                        cb(dict(info))
+                    except Exception:
+                        pass
+
+        return wrapped
 
     def _compromised(self, raw):
         if not raw or not self._canary:

@@ -84,6 +84,11 @@ class ChainOrchestrator:
         self.allow_destructive = bool(allow_destructive)
         self.credentials = credentials if isinstance(credentials, dict) else {}
         self.triage_brain = triage_brain
+        if triage_brain is not None and hasattr(triage_brain, "on_call"):
+            try:
+                triage_brain.on_call = self._emit_llm
+            except Exception:
+                pass
         self.stopped_reason = None
         self.started = time.monotonic()
         try:
@@ -119,6 +124,17 @@ class ChainOrchestrator:
     def _emit(self, etype, data=None):
         if self.job_id:
             progress.emit(self.job_id, etype, data or {})
+
+    def _emit_llm(self, info):
+        try:
+            self._emit("llm", {
+                "model": getattr(self.triage_brain, "model", ""),
+                "prompt": (info.get("prompt") or "")[:4000],
+                "response": (info.get("response") or "")[:4000],
+                "error": info.get("error"),
+            })
+        except Exception:
+            pass
 
     def _activity(self, msg, stage=None):
         if self.job_id:

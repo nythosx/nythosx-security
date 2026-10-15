@@ -1577,6 +1577,11 @@ function panelHandle(ev){ var d=ev.data||{}; switch(ev.type){
   case 'plan': var nc=(d.chains&&d.chains.length)||0; trStep('Attack plan ready', nc+' chains','done'); consoleLog('brain','planned '+nc+' chains','hi'); if(aiConfigured) setAIPanel('thinking','AI Brain','ranking '+nc+' chains'); break;
   case 'chain_start': consoleLog('chain', d.name||d.id||''); break;
   case 'chain_done': var k=VERD[d.verdict]||'unknown'; if(k==='vuln'||k==='susp'){ trSub(pEsc(d.name||d.id||'')+' <span class="verdict-'+k+'">'+pEsc(d.verdict||'')+'</span>'+(d.reason?' \u2014 '+pEsc(d.reason):'')); } consoleLog('chain',(d.id||'')+' '+(d.verdict||''), k==='vuln'?'err':k==='susp'?'warn':''); break;
+  case 'llm':
+    if(d.prompt) appendTrace('PROMPT', d.prompt);
+    if(d.error){ appendTrace('RESPONSE', d.error, 'vuln'); setAIPanel('online','AI Brain error', (d.model||'')+' — see trace'); consoleLog('brain','LLM error: '+d.error,'err'); bumpCap('response_triage', false); }
+    else if(d.response){ appendTrace('RESPONSE', d.response); setAIPanel('thinking','AI Brain', (d.model||'')+' responded'); bumpCap('response_triage', false); }
+    break;
   case 'narrator': var nk=d.type==='vuln'?'vuln':d.type==='susp'?'susp':''; if(nk) trSub('<span class="verdict-'+nk+'">'+(d.text||'')+'</span>'); else trSub(d.text||''); break;
   case 'activity': if(d.message) consoleLog('core', d.message); break;
   case 'warning': consoleLog('warn',(d.chain?d.chain+': ':'')+(d.message||d.step||'warning'),'warn'); break;
