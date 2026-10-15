@@ -32,15 +32,11 @@ def _match(spec, status, body, neg_fp=None):
     if needles_all and not all(m in body for m in needles_all):
         return False
     needles = spec.get("body_contains") or []
-    has_marker = bool(needles) or bool(needles_all)
     if needles and not any(m in body for m in needles):
         return False
-    json_markers = [m for m in (needles + needles_all) if '"' in m]
-    if json_markers and not spec.get("allow_html") and _looks_html(body):
+    if _looks_html(body) and not spec.get("allow_html"):
         return False
     if _matches_neg_fp(body, neg_fp):
-        return False
-    if not has_marker and _looks_html(body):
         return False
     return True
 

@@ -77,12 +77,48 @@ def _verify_tls():
         return True
 
 
+_COMPOUND_SUFFIXES = frozenset([
+    "co.uk", "org.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "sch.uk",
+    "ac.uk", "gov.uk", "mod.uk", "nhs.uk", "police.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au", "id.au",
+    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz", "school.nz",
+    "co.jp", "ne.jp", "or.jp", "go.jp", "ac.jp", "ad.jp", "ed.jp", "gr.jp",
+    "com.ph", "net.ph", "org.ph", "edu.ph", "gov.ph", "ngo.ph", "mil.ph",
+    "co.in", "net.in", "org.in", "gen.in", "ind.in", "ac.in", "edu.in",
+    "gov.in", "mil.in", "res.in", "firm.in",
+    "com.br", "net.br", "org.br", "gov.br", "edu.br",
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn", "mil.cn",
+    "co.kr", "ne.kr", "or.kr", "re.kr", "go.kr", "ac.kr",
+    "co.za", "net.za", "org.za", "gov.za", "ac.za", "edu.za", "web.za",
+    "com.sg", "net.sg", "org.sg", "edu.sg", "gov.sg", "per.sg",
+    "co.id", "net.id", "or.id", "web.id", "ac.id", "sch.id", "go.id",
+    "mil.id", "my.id", "biz.id",
+    "co.th", "in.th", "ac.th", "go.th", "or.th", "net.th",
+    "com.my", "net.my", "org.my", "gov.my", "edu.my", "mil.my",
+    "com.mx", "net.mx", "org.mx", "gob.mx", "edu.mx",
+    "com.tr", "net.tr", "org.tr", "gov.tr", "edu.tr", "bel.tr", "k12.tr",
+    "com.hk", "edu.hk", "gov.hk", "org.hk", "net.hk",
+    "com.tw", "edu.tw", "gov.tw", "org.tw", "net.tw",
+    "co.il", "org.il", "ac.il", "gov.il", "net.il",
+    "com.ar", "gov.ar", "edu.ar", "org.ar", "net.ar",
+    "com.co", "edu.co", "gov.co", "org.co", "net.co",
+    "co.ke", "or.ke", "ac.ke", "go.ke",
+    "com.ng", "org.ng", "gov.ng", "edu.ng", "net.ng",
+    "com.pk", "edu.pk", "gov.pk", "org.pk", "net.pk",
+    "com.vn", "edu.vn", "gov.vn", "net.vn", "org.vn",
+    "com.sa", "edu.sa", "gov.sa", "org.sa", "net.sa",
+    "com.eg", "edu.eg", "gov.eg", "org.eg", "net.eg",
+])
+
+
 def _base_name(domain):
     if "://" in domain:
         domain = urlparse(domain).hostname or domain
     parts = [p for p in domain.split(".") if p]
     if not parts:
         return ""
+    if len(parts) >= 3 and (parts[-2] + "." + parts[-1]) in _COMPOUND_SUFFIXES:
+        return parts[-3]
     if len(parts) >= 2:
         return parts[-2]
     return parts[0]

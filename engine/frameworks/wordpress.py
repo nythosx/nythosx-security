@@ -60,6 +60,7 @@ PROBES = [
         "name": "wp_setup_config",
         "method": "GET",
         "path": "/wp-admin/setup-config.php",
+        "allow_html": True,
         "status_in": [200],
         "body_contains": ["setup-config", "wp-config.php"],
         "severity": "critical",
