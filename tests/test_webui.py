@@ -43,6 +43,13 @@ def test_index_serves_html(server):
     r = httpx.get(server + "/", timeout=5)
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+    assert 'id="flowUrl"' in r.text
+    assert 'id="goBtn"' in r.text
+
+
+def test_analyze_ui_still_available(server):
+    r = httpx.get(server + "/?ui=analyze", timeout=5)
+    assert r.status_code == 200
     assert 'id="url"' in r.text
     assert "Analyze" in r.text
 

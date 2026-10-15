@@ -258,11 +258,13 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, {"token": _CSRF_TOKEN})
         if self.path == "/" or self.path.startswith("/?"):
             import os as _os
-            classic = (
-                "ui=classic" in self.path
-                or _os.environ.get("SEC_CHECKER_UI", "").lower() == "classic"
-            )
-            page = PAGE_CLASSIC if classic else PAGE
+            ui = _os.environ.get("SEC_CHECKER_UI", "").lower()
+            if "ui=classic" in self.path or ui == "classic":
+                page = PAGE_CLASSIC
+            elif "ui=analyze" in self.path or ui == "analyze":
+                page = PAGE
+            else:
+                page = PAGE_FLOW if PAGE_FLOW else PAGE
             return self._send(200, page, "text/html; charset=utf-8")
         if self.path.startswith("/api/scan/") and self.path.endswith("/stream"):
             parts = self.path.split("/")
@@ -2935,3 +2937,20 @@ PAGE = _inject_credential_ui(PAGE)
 PAGE_CLASSIC = _inject_credential_ui(PAGE_CLASSIC)
 PAGE = _inject_article_ui(PAGE)
 PAGE_CLASSIC = _inject_article_ui(PAGE_CLASSIC)
+
+from . import webui_theme as _webui_theme
+PAGE = _webui_theme.apply(PAGE)
+
+from . import webui_llm as _webui_llm
+PAGE = _webui_llm.apply(PAGE)
+
+from . import webui_chart as _webui_chart
+PAGE = _webui_chart.apply(PAGE)
+
+try:
+    import os as _os_flow
+    _flow_path = _os_flow.path.join(_os_flow.path.dirname(__file__), "flow_ui.html")
+    with open(_flow_path, "r", encoding="utf-8") as _ff:
+        PAGE_FLOW = _ff.read()
+except Exception:
+    PAGE_FLOW = ""

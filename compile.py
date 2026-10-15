@@ -137,7 +137,6 @@ def main():
     total_bytes = 0
 
     with out_path.open("w", encoding="utf-8") as out:
-        out.write("=" * 70 + "\n")
         out.write("SEC-CHECKER source bundle\n")
         out.write(f"Generated: {datetime.now().isoformat(timespec='seconds')}\n")
         out.write(f"Root: {ROOT}\n")
@@ -146,9 +145,6 @@ def main():
             out.write("!! WARNING: THIS BUNDLE CONTAINS SECRET FILES "
                       "(credentials.yaml, targets.yaml, roe.yaml, sessions). "
                       "KEEP LOCAL ONLY — never paste, upload, push, or share it. !!\n")
-        out.write("Excluded: packages, .github, __pycache__, scratch, *.md, "
-                  "scan artifacts\n")
-        out.write("=" * 70 + "\n\n")
 
         for i, path in enumerate(files, 1):
             rel = path.relative_to(ROOT).as_posix()
@@ -159,9 +155,8 @@ def main():
             total_bytes += len(text.encode("utf-8"))
             tag = "  [SECRET]" if path.resolve() in secret_set else ""
             out.write("\n")
-            out.write("#" * 70 + "\n")
             out.write(f"# FILE {i}/{len(files)}: {rel}{tag}\n")
-            out.write("#" * 70 + "\n\n")
+            out.write("\n")
             out.write(text)
             if not text.endswith("\n"):
                 out.write("\n")

@@ -30,11 +30,18 @@ def permissive_roe(monkeypatch):
 
 
 def test_new_ui_served_by_default(server):
-    r = httpx.get(server + "/", timeout=5)
+    r = httpx.get(server + "/?ui=analyze", timeout=5)
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     assert "transcript" in r.text
     assert "narrator" in r.text.lower()
+
+
+def test_flow_ui_is_default(server):
+    r = httpx.get(server + "/", timeout=5)
+    assert r.status_code == 200
+    assert 'id="chart"' in r.text
+    assert 'id="flowUrl"' in r.text
 
 
 def test_classic_ui_still_available(server):
@@ -46,7 +53,7 @@ def test_classic_ui_still_available(server):
 
 
 def test_new_ui_has_url_and_analyze(server):
-    r = httpx.get(server + "/", timeout=5)
+    r = httpx.get(server + "/?ui=analyze", timeout=5)
     assert r.status_code == 200
     assert 'id="url"' in r.text
     assert "Analyze" in r.text
