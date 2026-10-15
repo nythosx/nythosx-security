@@ -23,6 +23,12 @@ def test_mask_value_dispatch():
     assert es.mask_value("4222222222225678").endswith("78")
 
 
+def test_mask_text_pii_masks_credentials():
+    assert "S3cr3t" not in es.mask_text_pii("SET PASSWORD = 'S3cr3tDbP@ss';")
+    assert "hunter2" not in es.mask_text_pii("'password' => 'hunter2',")
+    assert "AKIA" not in es.mask_text_pii("api_key: AKIAABCDEF12TOKEN")
+
+
 def test_mask_record_nested_and_secrets():
     rec = {"email": "x@y.com", "account": "4111111111111234",
            "password": "hunter2", "nested": {"token": "abc"}}

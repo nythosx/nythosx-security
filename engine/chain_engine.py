@@ -1942,6 +1942,65 @@ class ChainOrchestrator:
         return {"verdict": r["verdict"], "reason": r.reason,
                 "evidence": r.evidence or {}}
 
+    def _tool_drupal_chain(self, args):
+        from . import drupalchain
+        which = args.get("which", "run_all")
+        send = drupalchain.make_send(self.target, roe_guard=self.roe_guard)
+        try:
+            soft404 = drupalchain.soft404_fingerprint(send)
+        except Exception:
+            soft404 = None
+        gate = getattr(self, "_oracle_gate", None)
+        dispatch = {
+            "user_idor": lambda: drupalchain.user_idor_chain(
+                send, soft404=soft404),
+            "rest": lambda: drupalchain.rest_exposure_chain(
+                send, soft404=soft404),
+            "views": lambda: drupalchain.views_ajax_chain(
+                send, soft404=soft404),
+            "maintenance": lambda: drupalchain.updatephp_install_chain(
+                send, soft404=soft404),
+            "file_storage": lambda: drupalchain.file_storage_chain(
+                send, observed_ids=self.get_fact("storage_ids"),
+                soft404=soft404),
+            "config": lambda: drupalchain.config_exposure_chain(
+                send, soft404=soft404),
+            "org": lambda: drupalchain.org_recon_chain(send),
+        }
+        if which == "run_all" or which not in dispatch:
+            res = drupalchain.run_all(self.target, roe_guard=self.roe_guard,
+                                      fact_store=self.fact_store, gate=gate)
+            findings = res["findings"]
+            if res.get("facts", {}).get("framework"):
+                self.add_fact("framework", res["facts"]["framework"],
+                              source="active_probe")
+        else:
+            result = dispatch[which]()
+            findings = result.get("findings", [])
+            for f in findings:
+                self.fact_store.add("has_" + f.get("type", "drupal_finding"),
+                                    True, source="live_confirm",
+                                    confidence=0.9)
+        confirmed = [f for f in findings if f.get("verdict") == "VULNERABLE"]
+        if getattr(send, "_own_client", False):
+            try:
+                send._client.close()
+            except Exception:
+                pass
+        if confirmed:
+            worst = max(confirmed, key=lambda f: {
+                "critical": 4, "high": 3, "medium": 2, "low": 1,
+                "info": 0}.get(f.get("severity", "info"), 0))
+            return {"verdict": "VULNERABLE",
+                    "reason": f"{len(confirmed)} Drupal finding(s): "
+                              + ", ".join(sorted({f["type"]
+                                                  for f in confirmed}))[:200],
+                    "evidence": {"severity": worst.get("severity", "medium"),
+                                 "findings": findings}}
+        return {"verdict": "PASS",
+                "reason": f"no Drupal findings ({which})",
+                "evidence": {"findings": findings}}
+
     _TOOL_CAPABILITY_NAMES = {
         "cloud_storage": "cloud_storage_enum",
         "hpp": "hpp_scan",
@@ -1980,6 +2039,7 @@ class ChainOrchestrator:
         "cve_correlation": _tool_cve_correlation,
         "access_bypass": _tool_access_bypass,
         "cache_deception": _tool_cache_deception,
+        "drupal_chain": _tool_drupal_chain,
         "graphql_scan": _tool_graphql_scan,
         "ssrf_cloud": _tool_ssrf_cloud,
         "race_scan": _tool_race_scan,

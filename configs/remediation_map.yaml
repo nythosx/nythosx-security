@@ -48,3 +48,26 @@ open_redirect: >-
 data_exposure: >-
   Scope every data response to the authenticated subject and paginate with
   server-side authorization checks.
+
+# Phase 7 — Drupal / university-CMS finding classes
+maintenance_endpoint_exposed: >-
+  Restrict /update.php and /install.php to authenticated administrators (or
+  remove them post-install); they are a direct site-takeover path.
+config_disclosure: >-
+  Serve settings.php, .env and SQLite stores only via the app runtime; block
+  direct web access with .htaccess/web-server rules and rotate any exposed
+  credentials.
+sensitive_file_exposure: >-
+  Move non-public documents out of the web-served storage path and enforce
+  per-file authorization; never serve .sql/.bak/.env from public storage.
+user_enumeration: >-
+  Require authentication for /user/<uid> profile reads and suppress private
+  fields (email, roles) for anonymous callers.
+broken_access_control: >-
+  Apply content-type and role permissions to JSON:API/REST resources; deny
+  anonymous reads of restricted content by default.
+unauthenticated_data_disclosure: >-
+  Enforce CSRF and authentication on views/ajax endpoints; never expose admin
+  views to anonymous callers.
+version_disclosure: >-
+  Remove CHANGELOG.txt and other version-bearing files from the web root.

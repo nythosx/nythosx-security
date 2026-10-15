@@ -2,6 +2,32 @@
 import threading
 
 
+def _drupal_chain(chain_id, name, priority, which):
+    """Phase 7 Drupal chain: triggered by a Drupal fingerprint, one step
+    dispatching to the engine's drupal_chain tool for the named sub-chain."""
+    return {
+        "id": chain_id,
+        "name": name,
+        "priority": priority,
+        "framework_hint": ["drupal"],
+        "trigger": {
+            "mode": "any",
+            "conditions": [
+                {"fact": "framework", "value": "drupal"},
+                {"fact": "has_drupal"},
+            ],
+        },
+        "steps": [
+            {
+                "id": which,
+                "tool": "drupal_chain",
+                "args": {"which": which, "target": "{{ target }}"},
+                "on_fail": "next",
+            },
+        ],
+    }
+
+
 def get_all_chains():
     return [
         {
@@ -1083,6 +1109,21 @@ def get_all_chains():
                 },
             ],
         },
+        _drupal_chain("drupal-user-idor-chain",
+                      "Drupal /user IDOR & Enumeration Chain", 109,
+                      "user_idor"),
+        _drupal_chain("drupal-config-exposure-chain",
+                      "Drupal Config / Version Exposure Chain", 108, "config"),
+        _drupal_chain("drupal-updatephp-and-install-chain",
+                      "Drupal Maintenance Endpoint Chain", 107, "maintenance"),
+        _drupal_chain("drupal-file-storage-chain",
+                      "Drupal Public File Storage Chain", 106, "file_storage"),
+        _drupal_chain("drupal-rest-exposure-chain",
+                      "Drupal REST / JSON:API Exposure Chain", 105, "rest"),
+        _drupal_chain("drupal-views-ajax-chain",
+                      "Drupal views/ajax Disclosure Chain", 104, "views"),
+        _drupal_chain("university-org-recon-chain",
+                      "University Org Recon Chain", 82, "org"),
     ]
 
 

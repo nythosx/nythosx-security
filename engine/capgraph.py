@@ -64,6 +64,15 @@ _DEFAULT_MAP = {
     "sqli": {"requires": [START], "grants": "read_data"},
     "sqli_scan": {"requires": [START], "grants": "read_data"},
     "missing_access_control": {"requires": [START], "grants": "read_data"},
+    # Phase 7 — Drupal / university-CMS finding classes
+    "maintenance_endpoint_exposed": {"requires": [START],
+                                     "grants": "escalate_role"},
+    "config_disclosure": {"requires": [START], "grants": "obtain_token"},
+    "sensitive_file_exposure": {"requires": [START], "grants": "read_data"},
+    "user_enumeration": {"requires": [START], "grants": "read_data"},
+    "broken_access_control": {"requires": [START], "grants": "read_data"},
+    "unauthenticated_data_disclosure": {"requires": [START],
+                                        "grants": "read_data"},
 }
 
 
@@ -100,7 +109,7 @@ def _lookup(cmap, finding_class):
 def _finding_class(finding):
     return (finding.get("finding_class") or finding.get("class")
             or finding.get("pattern_id") or finding.get("capability")
-            or finding.get("kind") or "")
+            or finding.get("type") or finding.get("kind") or "")
 
 
 def _finding_id(finding):

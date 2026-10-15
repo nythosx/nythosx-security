@@ -81,16 +81,22 @@ def mask_value(value):
 
 _PII_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _PII_DIGITS_RE = re.compile(r"\d{5,}")
+# credential assignments: password = 'x', 'secret' => "x", api_key: x, ...
+_CRED_ASSIGN_RE = re.compile(
+    r"(?i)(password|passwd|pwd|secret|api[_-]?key|apikey|db_password|token)"
+    r"(['\"]?\s*(?:=>|[:=])\s*['\"]?)"
+    r"([^'\"\s,;}{)]+)")
 
 
 def mask_text_pii(s):
-    """Mask third-party PII (emails, long digit runs) in free text.
-
-    Applied to raw request/response bodies so Row 1 never leaks the data that
-    Row 2 masks. Credential redaction is layered separately.
+    """Mask third-party PII (emails, long digit runs) and credential
+    assignments in free text, so Row 1's raw pair never leaks the data that
+    Row 2 masks. Credential redaction via engine.redact is layered on top.
     """
     if not isinstance(s, str) or not s:
         return s
+    s = _CRED_ASSIGN_RE.sub(
+        lambda m: m.group(1) + m.group(2) + (MASK * 6), s)
     s = _PII_EMAIL_RE.sub(lambda m: mask_email(m.group(0)), s)
     s = _PII_DIGITS_RE.sub(lambda m: mask_digits(m.group(0)), s)
     return s
@@ -278,7 +284,7 @@ def _records_from_finding(finding):
 def _finding_class(finding):
     return (finding.get("finding_class") or finding.get("class")
             or finding.get("capability") or finding.get("pattern_id")
-            or finding.get("kind") or "")
+            or finding.get("type") or finding.get("kind") or "")
 
 
 def build_evidence_block(finding, request=None, response=None,

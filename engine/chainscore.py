@@ -64,6 +64,14 @@ _CHAIN_CLASS = {
     "injection-family-chain": "data_exposure",
     "ssrf-chain": "data_exposure",
     "cve-chain": "info_disclosure",
+    # Phase 7 — Drupal / university-CMS chains
+    "drupal-user-idor-chain": "data_exposure",
+    "drupal-rest-exposure-chain": "data_exposure",
+    "drupal-views-ajax-chain": "data_exposure",
+    "drupal-updatephp-and-install-chain": "credential_access",
+    "drupal-file-storage-chain": "data_exposure",
+    "drupal-config-exposure-chain": "credential_access",
+    "university-org-recon-chain": "info_disclosure",
 }
 
 

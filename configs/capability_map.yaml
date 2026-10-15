@@ -39,3 +39,23 @@ ssrf:
 ssrf-cloud-metadata:
   requires: [anon]
   grants: obtain_token
+
+# Phase 7 — Drupal / university-CMS finding classes
+maintenance_endpoint_exposed:
+  requires: [anon]
+  grants: escalate_role
+config_disclosure:
+  requires: [anon]
+  grants: obtain_token
+sensitive_file_exposure:
+  requires: [anon]
+  grants: read_data
+user_enumeration:
+  requires: [anon]
+  grants: read_data
+broken_access_control:
+  requires: [anon]
+  grants: read_data
+unauthenticated_data_disclosure:
+  requires: [anon]
+  grants: read_data

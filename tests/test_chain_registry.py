@@ -32,6 +32,7 @@ _RECON_FACTS = {
     "has_nosql_param", "has_mass_assignment_param",
     "has_numeric_injection_param", "has_container_param",
     "has_loose_string_param",
+    "has_drupal",
 }
 
 _CONTEXT_KEYS = {

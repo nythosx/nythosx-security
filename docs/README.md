@@ -13,6 +13,7 @@ committed.
 | 4 | `engine/evidence_synth.py` | [Evidence Synthesizer](phase4_evidence.md) |
 | 5 | `engine/capgraph.py` | [Capability Graph](phase5_capgraph.md) |
 | 6 | `engine/chainscore.py` | [Expected-Value Chain Scoring](phase6_chainscore.md) |
+| 7 | `engine/inject/`, `engine/drupalchain/` | [Deep Injection + Drupal/University-CMS](phase7_deep_injection_drupal.md) |
 
 ## Config files added
 
@@ -22,9 +23,19 @@ committed.
 - `configs/capability_map.yaml` — Phase 5 finding→capability edges.
 - `configs/impact_weights.yaml` — Phase 6 per-class impact dollar weights.
 
-## Test app
+## Config files added
+
+- Phase 7 reuses `capability_map.yaml`, `remediation_map.yaml`, and
+  `impact_weights.yaml` with added Drupal finding classes.
+
+## Test apps
 
 `tests/testapp/` is a local app served on 127.0.0.1 (in ROE scope) exposing a
 strict-numeric param, a loose-string param, a mass-assignment body, an IDOR
 surface, admin-only vs broken-authz endpoints, a weak-JWT token, and
-data-exposure records — the shared fixture for every phase's acceptance test.
+data-exposure records — the shared fixture for Phases 1–6.
+
+`tests/testapp/drupal_mimic/` is the Phase 7 fixture: `/user/{uid}`,
+anonymous `/jsonapi/node/secret_content`, `/update.php` at 200,
+`/storage/108/backup.sql`, `/CHANGELOG.txt`, and a readable
+`/sites/default/settings.php`.
