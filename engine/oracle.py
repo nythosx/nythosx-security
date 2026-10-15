@@ -166,6 +166,79 @@ def _load_jwt_secrets(path=None):
     return list(_FALLBACK_JWT_SECRETS)
 
 
+def _decode_jwt_meta(token):
+    import base64
+    import json as _json
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+
+    def _d(seg):
+        try:
+            seg += "=" * (-len(seg) % 4)
+            return _json.loads(base64.urlsafe_b64decode(seg.encode()))
+        except Exception:
+            return {}
+
+    return {"header": _d(parts[0]), "payload": _d(parts[1])}
+
+
+def _parse_secret_list(raw):
+    import json as _json
+    import re as _re
+    if not raw:
+        return []
+    txt = raw.strip()
+    m = _re.search(r"\[.*\]", txt, _re.S)
+    if m:
+        txt = m.group(0)
+    try:
+        data = _json.loads(txt)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for x in data:
+        if isinstance(x, str) and 0 < len(x) <= 200:
+            out.append(x)
+        if len(out) >= 200:
+            break
+    return out
+
+
+def _llm_jwt_candidates(context, token, capability="jwt_secret"):
+    try:
+        from . import llm_service
+        client = llm_service.get_client(capability)
+    except Exception:
+        return []
+    if client is None:
+        return []
+    import json as _json
+    from urllib.parse import urlparse as _up
+    target = context.get("target") or ""
+    domain = (_up(target).hostname or target) if target else ""
+    fw = context.get("framework") or context.get("adapter") or ""
+    meta = _decode_jwt_meta(token)
+    prompt = (
+        "You generate candidate HMAC secrets to test against a JWT during an "
+        "authorized security assessment. Given the target domain, framework, "
+        "and the JWT header/payload (signature omitted), output ONLY a JSON "
+        "array of up to 200 plausible secret strings a developer might have "
+        "used: env-style names, brand/app/year combos, framework defaults. "
+        "No prose.\n\n"
+        + _json.dumps({"domain": domain, "framework": str(fw)[:60],
+                       "jwt": meta}, default=str)[:3000]
+        + "\n\nRespond with a JSON array of strings only."
+    )
+    try:
+        raw = client(prompt)
+    except Exception:
+        return []
+    return _parse_secret_list(raw)
+
+
 def _collect_jwts(steps):
     found = []
     seen = set()
@@ -263,6 +336,11 @@ def _jwt_weak_secret(oracle, context):
     if not tokens:
         return {"verdict": "UNKNOWN", "reason": "no JWT found in responses",
                 "evidence": {}}
+    llm_cands = _llm_jwt_candidates(context, tokens[0][0])
+    if llm_cands:
+        _seen = set()
+        secrets = [s for s in (llm_cands + list(secrets))
+                   if not (s in _seen or _seen.add(s))]
     hmac_seen = False
     for token, step_name in tokens:
         res = _crack_jwt(token, secrets)

@@ -58,6 +58,7 @@ brain:
     model: gemini-flash-lite-latest
     base_url: ''
     api_key_env: ''
+  tools: {}
 correlator:
   enabled: true
   confidence_threshold: 0.7

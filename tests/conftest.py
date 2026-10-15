@@ -112,6 +112,18 @@ def _clear_module_caches():
 
 
 @pytest.fixture(autouse=True)
+def _no_live_llm(monkeypatch):
+    from engine import llm_service
+    for _n in ("SECCHECKER_LLM_API_KEY", "LLM_API_KEY", "ANTHROPIC_API_KEY",
+               "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+               "GROQ_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.delenv(_n, raising=False)
+    llm_service.reset_cache()
+    yield
+    llm_service.reset_cache()
+
+
+@pytest.fixture(autouse=True)
 def _reset_global_http_state():
     """Reset the shared request budget and rate limiter before each test.
 
