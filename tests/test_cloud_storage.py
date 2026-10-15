@@ -107,7 +107,7 @@ def test_public_bucket_flagged():
     assert r.evidence["public"][0]["bucket"] == "publicbucket"
 
 
-def test_available_bucket_flagged():
+def test_available_bucket_informational_not_flagged():
     srv = _serve()
     _, port = srv.server_address
     endpoints = [{"provider": "s3",
@@ -117,8 +117,9 @@ def test_available_bucket_flagged():
             "availablebucket.com", endpoints=endpoints, max_buckets=1)
     finally:
         srv.shutdown(); srv.server_close()
-    assert r["verdict"] == "SUSPICIOUS"
+    assert r["verdict"] == "PASS"
     assert r.evidence["available"][0]["bucket"] == "availablebucket"
+    assert "informational" in r["reason"]
 
 
 def test_private_bucket_passes():

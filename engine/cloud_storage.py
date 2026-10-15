@@ -225,36 +225,41 @@ async def scan_async(domain, timeout=8, endpoints=None, max_buckets=None):
     public = [r for r in results if r["classification"] == "public"]
     available = [r for r in results if r["classification"] == "available"]
     private = [r for r in results if r["classification"] == "private"]
+
+    def _names(rows):
+        seen = []
+        for r in rows:
+            if r["bucket"] not in seen:
+                seen.append(r["bucket"])
+        return seen
+
     if public:
+        pub_names = _names(public)
         return ScanResult(
             capability="cloud_storage_enum", target=domain,
             verdict="VULNERABLE", severity="high",
-            reason=(f"{len(public)} publicly listable bucket(s): "
-                    + ", ".join(r["bucket"] for r in public[:5])),
-            evidence={"public": public, "available": available,
-                      "private": private},
-        )
-    if available:
-        return ScanResult(
-            capability="cloud_storage_enum", target=domain,
-            verdict="SUSPICIOUS", severity="medium",
-            reason=(f"{len(available)} available bucket name(s) — a subdomain "
-                    f"or application referencing them may be takeover-able: "
-                    + ", ".join(r["bucket"] for r in available[:5])),
+            reason=(f"{len(pub_names)} publicly listable bucket(s): "
+                    + ", ".join(pub_names[:5])),
             evidence={"public": public, "available": available,
                       "private": private},
         )
     if private:
+        priv_names = _names(private)
         return ScanResult(
             capability="cloud_storage_enum", target=domain,
             verdict="PASS", severity="low",
-            reason=(f"{len(private)} private bucket(s), none public"),
-            evidence={"private": private},
+            reason=(f"{len(priv_names)} existing private bucket(s), none public"),
+            evidence={"private": private, "available": available},
         )
+    avail_names = _names(available)
+    extra = (f"; {len(avail_names)} unregistered candidate name(s) "
+             f"(informational — only a takeover risk if the target "
+             f"references them)") if avail_names else ""
     return ScanResult(
         capability="cloud_storage_enum", target=domain,
         verdict="PASS", severity="low",
-        reason=f"no matching buckets across {len(buckets)} candidate(s)",
+        reason=f"no public buckets across {len(buckets)} candidate name(s)" + extra,
+        evidence={"available": available} if available else None,
     )
 
 
