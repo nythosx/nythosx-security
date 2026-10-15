@@ -404,6 +404,7 @@ def test_select_chains_uses_adaptive_scoring():
 
 def test_select_chains_confidence_affects_order():
     orch = _make_orch()
+    orch.legacy_scoring = True  # confidence weighting is a legacy-scorer trait
     orch.add_fact("has_jwt", True, source="recon", confidence="low")
     orch.add_fact("has_graphql", True, source="recon", confidence="high")
     chains = [

@@ -28,6 +28,10 @@ _RECON_FACTS = {
     "ct_subdomain_count", "live_subdomains", "ct_subdomains",
     "has_subdomain_takeover", "has_public_bucket", "has_hpp_signal",
     "banking_requested",
+    "has_sqli_param", "has_ssti_param", "has_xss_param", "has_crlf_param",
+    "has_nosql_param", "has_mass_assignment_param",
+    "has_numeric_injection_param", "has_container_param",
+    "has_loose_string_param",
 }
 
 _CONTEXT_KEYS = {

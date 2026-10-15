@@ -1,0 +1,41 @@
+# Phase 5 — maps a confirmed finding class to a capability edge.
+# Each entry: {requires: [capability, ...], grants: capability}.
+# `requires` defaults to [anon]. Keys match a finding's class / pattern_id /
+# kind (exact first, then prefix/substring). Canonical verbs:
+#   read_data, write_data, obtain_token, escalate_role,
+#   ssrf_to_internal, execute_js_in_victim, pivot_internal
+# Values here override the built-in defaults in engine/capgraph.py.
+
+jwt_weak_secret:
+  requires: [anon]
+  grants: obtain_token
+jwt-weak-secret:
+  requires: [anon]
+  grants: obtain_token
+
+# IDOR/BOLA on a mutable object is a cross-account write primitive once a
+# session/token is held.
+idor:
+  requires: [obtain_token]
+  grants: write_data
+bola:
+  requires: [obtain_token]
+  grants: write_data
+idor-user:
+  requires: [obtain_token]
+  grants: read_data
+
+mass_assignment:
+  requires: [obtain_token]
+  grants: escalate_role
+
+stored-xss:
+  requires: [anon]
+  grants: execute_js_in_victim
+
+ssrf:
+  requires: [anon]
+  grants: ssrf_to_internal
+ssrf-cloud-metadata:
+  requires: [anon]
+  grants: obtain_token

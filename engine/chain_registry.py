@@ -126,6 +126,7 @@ def get_all_chains():
                     {"fact": "has_coupon"},
                     {"fact": "has_financial"},
                     {"fact": "has_workflow"},
+                    {"fact": "has_mass_assignment_param"},
                 ],
             },
             "steps": [
@@ -238,6 +239,7 @@ def get_all_chains():
                     {"fact": "framework", "value": "nuxt"},
                     {"fact": "framework", "value": "nextjs"},
                     {"fact": "framework", "value": "express"},
+                    {"fact": "has_xss_param"},
                 ],
             },
             "steps": [
@@ -405,7 +407,10 @@ def get_all_chains():
             "priority": 36,
             "trigger": {
                 "mode": "any",
-                "conditions": [{"fact": "has_redirect_hint"}],
+                "conditions": [
+                    {"fact": "has_redirect_hint"},
+                    {"fact": "has_crlf_param"},
+                ],
             },
             "steps": [
                 {
@@ -460,6 +465,8 @@ def get_all_chains():
                     {"fact": "has_search"},
                     {"fact": "has_ssti_hint"},
                     {"fact": "has_xml_hint"},
+                    {"fact": "has_ssti_param"},
+                    {"fact": "has_nosql_param"},
                 ],
             },
             "steps": [
@@ -899,6 +906,8 @@ def get_all_chains():
                 "conditions": [
                     {"fact": "has_login"},
                     {"fact": "has_search"},
+                    {"fact": "has_sqli_param"},
+                    {"fact": "has_numeric_injection_param"},
                 ],
             },
             "steps": [

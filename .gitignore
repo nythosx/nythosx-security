@@ -3,6 +3,9 @@ configs/credentials.yaml
 configs/targets.yaml
 configs/sessions/
 configs/roe.yaml
+configs/diffcrawl.creds.yaml
+stats/
+.evidence_key
 
 # scan artifacts
 evidence/
@@ -51,3 +54,6 @@ a_resume.py
 .vscode/
 *.swp
 .DS_Store
+
+# coverage
+.coverage

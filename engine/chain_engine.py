@@ -82,6 +82,11 @@ class ChainOrchestrator:
         self.verbose = verbose
         self.kill_on_vuln = kill_on_vuln
         self.allow_destructive = bool(allow_destructive)
+        try:
+            self.legacy_scoring = bool(
+                (self.engine_cfg.get("scoring") or {}).get("legacy", False))
+        except Exception:
+            self.legacy_scoring = False
         self.credentials = credentials if isinstance(credentials, dict) else {}
         self.triage_brain = triage_brain
         if triage_brain is not None and hasattr(triage_brain, "on_call"):
@@ -100,6 +105,11 @@ class ChainOrchestrator:
 
         self.facts = {}
         self.fact_store = FactStore()
+        try:
+            from .oracles.controls import OracleGate
+            self._oracle_gate = OracleGate(fact_store=self.fact_store)
+        except Exception:
+            self._oracle_gate = None
         self.findings = []
         self.attempts = []
         self.context = {}
@@ -619,6 +629,14 @@ class ChainOrchestrator:
             history = load_history()
             coverage = self._coverage_summary()
             selected = rank_chains(chains, self.fact_store, history, coverage)
+            if selected and not getattr(self, "legacy_scoring", False):
+                try:
+                    from . import chainscore
+                    framework = self.get_fact("framework")
+                    selected = chainscore.rank_chains_ev(selected,
+                                                         framework=framework)
+                except Exception:
+                    pass
             if selected:
                 self.plan = [c["id"] for c in selected]
                 return selected
@@ -1645,9 +1663,71 @@ class ChainOrchestrator:
         except Exception:
             return False
 
+    def _oracle_name(self, step):
+        return step.get("oracle") or step.get("tool") or ""
+
+    def _negative_control_args(self, step):
+        """Synthesise negative-control args for an oracle-tagged step.
+
+        Only used when the step names an `oracle` and a `payload_arg` (or a
+        conventional payload key) so we know which argument to mutate. The
+        mutation must NOT fire if the oracle is sound.
+        """
+        try:
+            from .oracles.controls import negative_control
+        except Exception:
+            return None
+        oracle = step.get("oracle")
+        if not oracle:
+            return None
+        args = dict(step.get("args") or {})
+        payload_arg = step.get("payload_arg")
+        if payload_arg is None:
+            for cand in ("payload", "value", "param_value", "q", "input"):
+                if cand in args:
+                    payload_arg = cand
+                    break
+        if payload_arg is None or payload_arg not in args:
+            return None
+        args[payload_arg] = negative_control(oracle, args.get(payload_arg))
+        return args
+
     def _confirm_step(self, chain_id, step, original):
         import time as _t
+        oracle = self._oracle_name(step)
+        gate = getattr(self, "_oracle_gate", None)
+        if gate is not None and oracle and gate.is_disabled(oracle):
+            original["confirmation_status"] = "oracle_disabled"
+            original["verdict"] = "PASS"
+            original["reason"] = ("[oracle_unsound: disabled for session] "
+                                  + (original.get("reason") or ""))
+            return original
+
+        # Stage 1 — benign-args check (opt-in via step["benign_args"]).
+        benign_args = step.get("benign_args")
+        if benign_args is not None:
+            try:
+                benign = self._dispatch_tool(step["tool"], benign_args)
+            except Exception as e:
+                benign = {"verdict": "UNKNOWN", "reason": f"benign error: {e}"}
+            if isinstance(benign, dict) and benign.get("verdict") == "VULNERABLE":
+                if gate is not None and oracle:
+                    gate.disable_oracle(oracle, "fires on benign args")
+                original["confirmation_status"] = "tool_unsound"
+                original["verdict"] = "PASS"
+                original["reason"] = ("[tool_unsound: benign args returned "
+                                      "VULNERABLE] "
+                                      + (original.get("reason") or ""))
+                self._diag("confirmation", "warning",
+                           f"tool '{step['tool']}' fired on benign args; "
+                           f"suppressing finding")
+                return original
+
+        # Stage 2 — negative control (explicit control_args, else synthesised
+        # from the oracle's declared negative-control mutation).
         control_args = step.get("control_args")
+        if control_args is None:
+            control_args = self._negative_control_args(step)
         if control_args is not None:
             try:
                 control = self._dispatch_tool(step["tool"], control_args)
@@ -1659,6 +1739,9 @@ class ChainOrchestrator:
             cv = control.get("verdict")
             original["confirmation_control_verdict"] = cv or "UNKNOWN"
             if cv == "VULNERABLE":
+                if gate is not None and oracle:
+                    gate.disable_oracle(
+                        oracle, "negative control fired (over-matching)")
                 original["confirmation_status"] = "tool_unsound"
                 original["verdict"] = "PASS"
                 original["reason"] = ("[tool_unsound: control payload "
@@ -1666,7 +1749,7 @@ class ChainOrchestrator:
                                       + (original.get("reason") or ""))
                 self._diag("confirmation", "warning",
                            f"tool '{step['tool']}' returned VULNERABLE on "
-                           f"benign control; suppressing finding")
+                           f"negative control; suppressing finding")
                 return original
         _t.sleep(1.5)
         try:
@@ -2082,7 +2165,49 @@ class ChainOrchestrator:
                        f"planner phase failed: {type(e).__name__}: {e}")
 
         self.plan = seen_plan
+        self._persist_ev_stats()
         return self._final_report()
+
+    def _persist_ev_stats(self):
+        """Append per-chain EV stats to stats/chains.jsonl (Phase 6)."""
+        if getattr(self, "legacy_scoring", False):
+            return
+        try:
+            cfg = (self.engine_cfg.get("scoring") or {})
+            if cfg.get("persist_stats", True) is False:
+                return
+            from . import chainscore
+            framework = self.get_fact("framework") or "generic"
+            entries = []
+            for res in self.chain_results:
+                cid = res.get("chain_id") or res.get("id")
+                if not cid:
+                    continue
+                verdict = res.get("verdict")
+                entries.append({
+                    "chain_id": cid,
+                    "vuln_class": chainscore._vuln_class({"id": cid}),
+                    "framework": framework,
+                    "attempts": 1,
+                    "hits": 1 if verdict == "VULNERABLE" else 0,
+                })
+                for step in res.get("steps") or []:
+                    orc = step.get("oracle") or step.get("tool")
+                    if not orc:
+                        continue
+                    status = step.get("confirmation_status")
+                    sv = step.get("verdict")
+                    confirmed = 1 if (sv == "VULNERABLE"
+                                      and status == "confirmed") else 0
+                    fp = 1 if status in ("tool_unsound", "oracle_disabled",
+                                         "unconfirmed") else 0
+                    if confirmed or fp:
+                        entries.append({"oracle": orc, "confirmed": confirmed,
+                                        "fp": fp})
+            if entries:
+                chainscore.record_run(entries)
+        except Exception:
+            pass
 
     def _run_bundle_analysis(self, bundles):
         try:

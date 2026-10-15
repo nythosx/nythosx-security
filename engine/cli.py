@@ -2801,6 +2801,10 @@ def cmd_chain(args):
         console.print(f"[red]{e}[/red]")
         return 1
 
+    if RUNTIME.get("legacy_scoring"):
+        orch.legacy_scoring = True
+        console.print("[dim]scoring: legacy heuristic (A/B)[/dim]")
+
     if sca_path:
         orch.add_fact("sca_requested", True, source="cli")
         orch.set_context("sca_path", sca_path)
@@ -3444,6 +3448,51 @@ def cmd_chain_stats(args):
     return 0
 
 
+def cmd_verify_fix(args):
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: verify-fix <finding_id> "
+                      "[--json][/cyan]")
+        console.print("  Re-runs the minimal PoC for a confirmed finding.")
+        console.print("  On PASS emits a signed 'fixed & verified' record "
+                      "into findings/verified/.")
+        return 0
+    from . import evidence_synth, confirm as _confirm, ledger as _ledger
+    from .roe_guard import ROEGuard as _ROEGuard
+    from pathlib import Path as _Path
+    _ROOT = _Path(__file__).parent.parent.absolute()
+    finding_id = args[0]
+    as_json = "--json" in args
+    finding = _ledger.get_finding(finding_id)
+    if finding is None:
+        console.print(f"[red]No finding with id {finding_id}[/red]")
+        return 1
+    capability = finding.get("pattern_id") or ""
+    target = finding.get("target") or ""
+    ctx = {"target": target,
+           "roe_guard": _ROEGuard(engine_cfg=load_engine())}
+
+    def poc_runner():
+        res = _confirm.confirm(capability, finding, ctx)
+        return {"verdict": "VULNERABLE" if res.get("confirmed") else "PASS",
+                "reason": res.get("reason")}
+
+    record = evidence_synth.verify_fix(finding_id, poc_runner)
+    out_dir = _ROOT / "findings" / "verified"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"finding_{evidence_synth._safe(finding_id)}.json"
+    import json as _json
+    out_path.write_text(_json.dumps(record, indent=2, default=str),
+                        encoding="utf-8")
+    if as_json:
+        console.print(_json.dumps(record, indent=2, default=str))
+    else:
+        color = "green" if record["verdict"].startswith("fixed") else "red"
+        console.print(f"[{color}]{record['verdict']}[/{color}] "
+                      f"(finding {finding_id}) — {record.get('reason')}")
+        console.print(f"[dim]Signed record: {out_path}[/dim]")
+    return 0
+
+
 def cmd_extract(args):
     if not args:
         console.print("[red]Usage: extract <url> [--rows N] [--pages N] [--token TOKEN] [--session NAME][/red]")
@@ -3663,6 +3712,7 @@ COMMANDS = {
     "auto": cmd_auto,
     "chain": cmd_chain,
     "chain-stats": cmd_chain_stats,
+    "verify-fix": cmd_verify_fix,
     "profile": cmd_profile,
     "enumerate": cmd_enumerate,
     "login": cmd_login,
@@ -3718,6 +3768,7 @@ _GLOBAL_FLAGS = {
     "--iteration-max": ("iteration_max", "int"),
     "--duration": ("duration_override", "int"),
     "--max-requests": ("max_requests_override", "int"),
+    "--legacy-scoring": ("legacy_scoring", "flag"),
 }
 
 RUNTIME = {
@@ -3736,6 +3787,7 @@ RUNTIME = {
     "iteration_max": None,
     "duration_override": None,
     "max_requests_override": None,
+    "legacy_scoring": False,
 }
 
 

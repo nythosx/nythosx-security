@@ -1,0 +1,50 @@
+# Phase 4 — one-line remediation per finding class. Keys match a finding's
+# class / capability / pattern_id / kind (prefix or substring also matches).
+# Values here override the built-in defaults in engine/evidence_synth.py.
+
+idor: >-
+  Enforce object-level authorization: verify the authenticated subject owns or
+  is permitted to access the requested resource ID before returning it.
+bola: >-
+  Enforce object-level authorization on every record lookup; never trust a
+  client-supplied object identifier.
+sqli: >-
+  Use parameterized queries / prepared statements; never concatenate user
+  input into SQL.
+blind_sqli_extract: >-
+  Use parameterized queries and constant-time error handling so timing and
+  boolean responses do not leak data.
+xss: >-
+  Context-encode all output and apply a strict Content-Security-Policy; never
+  reflect raw user input into HTML or script contexts.
+stored-xss: >-
+  Sanitize and context-encode stored content on output; apply a strict CSP.
+ssrf: >-
+  Validate and allowlist outbound URLs; block internal address ranges and
+  cloud metadata endpoints.
+ssti: >-
+  Never render user input as a template; use a sandboxed, logic-less
+  templating layer.
+jwt_weak_secret: >-
+  Rotate to a high-entropy signing key, pin the algorithm server-side, and
+  reject alg:none.
+jwt-weak-secret: >-
+  Rotate to a high-entropy signing key, pin the algorithm server-side, and
+  reject alg:none.
+mass_assignment: >-
+  Bind only an explicit allowlist of writable fields; reject unknown keys in
+  the request body.
+missing_access_control: >-
+  Require authentication and role checks on all sensitive endpoints; deny by
+  default.
+nosql: >-
+  Reject operator objects ($gt, $ne, ...) in user input; cast and validate
+  types before building the query.
+crlf: >-
+  Strip or encode CR and LF characters from any value placed into a response
+  header.
+open_redirect: >-
+  Allowlist redirect destinations; never redirect to a raw user-supplied URL.
+data_exposure: >-
+  Scope every data response to the authenticated subject and paginate with
+  server-side authorization checks.

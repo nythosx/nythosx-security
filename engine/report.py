@@ -183,6 +183,20 @@ details.why-wrap summary { cursor: pointer; color: #58a6ff; font-size: 12px; }
 {% endfor %}
 </tbody>
 </table>
+{% if capability_chains %}
+<h2>Capability Attack Paths</h2>
+<p class="meta">Multi-step paths an attacker can traverse by combining confirmed findings.</p>
+{% for cc in capability_chains %}
+<pre class="evidence-block">{{ cc }}</pre>
+{% endfor %}
+{% endif %}
+{% if evidence_blocks %}
+<h2>Evidence</h2>
+<p class="meta">Three-row evidence per confirmed finding — reproduction, masked impact, and baseline/exploit differential with remediation.</p>
+{% for b in evidence_blocks %}
+<pre class="evidence-block">{{ b }}</pre>
+{% endfor %}
+{% endif %}
 {% if data_rows %}
 <h2>Extracted Data Rows</h2>
 <p class="meta">Masked data rows recovered from the target. First character of each sensitive value is preserved; the remainder is rotated.</p>
@@ -313,6 +327,26 @@ Severity: {{ c.severity }} · Confidence: {{ '%.0f'|format((c.confidence or 0) *
 {% if f.why.gap %}- **Gap:** {{ f.why.gap }}{% endif %}
 {% if f.why.impact %}- **Impact:** {{ f.why.impact }}{% endif %}
 {% if f.why.fix %}- **Fix:** {{ f.why.fix }}{% endif %}
+
+{% endfor %}
+{% endif %}
+{% if capability_chains %}
+## Capability Attack Paths
+
+Multi-step paths an attacker can traverse by combining confirmed findings.
+
+{% for cc in capability_chains %}
+{{ cc }}
+
+{% endfor %}
+{% endif %}
+{% if evidence_blocks %}
+## Evidence
+
+Three-row evidence per confirmed finding — reproduction, masked impact, and baseline/exploit differential with remediation.
+
+{% for b in evidence_blocks %}
+{{ b }}
 
 {% endfor %}
 {% endif %}
@@ -737,6 +771,54 @@ def _extract_data_rows(findings):
     return out
 
 
+def build_evidence_blocks(findings):
+    """Render Phase-4 three-row evidence blocks for confirmed findings."""
+    try:
+        from . import evidence_synth
+    except Exception:
+        return []
+    blocks = []
+    for f in findings or []:
+        if f.get("verdict") != "VULNERABLE":
+            continue
+        ev = f.get("evidence") or {}
+        has_records = any(isinstance(ev.get(k), list) and ev.get(k)
+                          for k in ("extracted_records", "records", "rows",
+                                    "items"))
+        req = ev.get("request") or {}
+        resp = ev.get("response") or {}
+        if not (has_records or req or resp):
+            continue
+        finding = {
+            "id": f.get("id"),
+            "reason": f.get("reason"),
+            "finding_class": f.get("pattern_id") or f.get("category"),
+            "evidence": ev,
+        }
+        try:
+            block = evidence_synth.build_evidence_block(
+                finding, request=req, response=resp,
+                baseline=ev.get("baseline"))
+            blocks.append(evidence_synth.render_markdown(block, finding))
+        except Exception:
+            continue
+    return blocks
+
+
+def build_capability_chains(findings):
+    """Render Phase-5 capability-graph attack paths as markdown."""
+    try:
+        from . import capgraph
+    except Exception:
+        return []
+    try:
+        graph = capgraph.CapabilityGraph().build(findings)
+        chains = graph.chain_findings()
+        return [graph.render_markdown(c) for c in chains]
+    except Exception:
+        return []
+
+
 def _build_context(target, engine_cfg=None):
     if engine_cfg is None:
         from .config import load_engine
@@ -804,6 +886,8 @@ def _build_context(target, engine_cfg=None):
         "impact_summary": impact_summary,
         "data_svg": data_svg,
         "narrative_summary": narrative_summary,
+        "evidence_blocks": build_evidence_blocks(findings),
+        "capability_chains": build_capability_chains(findings),
     }
 
 

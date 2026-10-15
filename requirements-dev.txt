@@ -1,3 +1,5 @@
 -r requirements.txt
 pytest>=9.1,<10
 jsonschema>=4.26,<5
+coverage>=7.6,<8
+pytest-cov>=6.0,<7

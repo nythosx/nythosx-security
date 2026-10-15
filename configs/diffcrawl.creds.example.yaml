@@ -1,0 +1,31 @@
+# Auth-context differential crawler credentials (Phase 2).
+# Copy to diffcrawl.creds.yaml (gitignored) and fill in real values.
+# Only two low-privilege operator-owned accounts plus an optional admin.
+# ID substitution is bounded to these accounts' known_ids plus ±2 neighbors.
+
+login:
+  url: https://nythosx.com/api/login
+  type: json            # json | form
+  username_field: email
+  password_field: password
+  token_path: token     # JSON path to a bearer token, or null for cookies
+
+accounts:
+  user_a:
+    username: operator+a@nythosx.com
+    password: CHANGE_ME
+    known_ids: [1001]   # resource IDs this account legitimately owns
+  user_b:
+    username: operator+b@nythosx.com
+    password: CHANGE_ME
+    known_ids: [1002]
+  admin:                # optional; used only for admin∩anon differential
+    username: operator+admin@nythosx.com
+    password: CHANGE_ME
+    known_ids: [1]
+
+crawl:
+  endpoints:
+    - {method: GET, path: /api/me}
+    - {method: GET, path: /api/doc/{id}, id_param: id}
+    - {method: GET, path: /api/admin/users}

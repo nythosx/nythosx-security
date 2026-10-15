@@ -1,0 +1,13 @@
+# Phase 6 — per-vuln-class impact value (tunable dollar weights) used by the
+# expected-value chain scorer. Ordering reflects relative business impact:
+# credential/session > data exposure > defacement > info disclosure.
+
+credential_access: 1000
+session_hijack: 1000
+data_exposure: 600
+bizlogic: 550
+mass_assignment: 500
+graphql_deep: 450
+defacement: 200
+info_disclosure: 50
+default: 100

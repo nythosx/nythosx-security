@@ -220,6 +220,32 @@ def recent_findings(limit=30, target=None):
     return rows
 
 
+def get_finding(finding_id):
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT id, timestamp, pattern_id, target, category, verdict, "
+            "severity, reason, wstg_id, cwe_id, evidence_path, evidence_json "
+            "FROM findings WHERE id = ?",
+            (int(finding_id),),
+        ).fetchone()
+    except Exception:
+        return None
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    cols = ["id", "timestamp", "pattern_id", "target", "category", "verdict",
+            "severity", "reason", "wstg_id", "cwe_id", "evidence_path",
+            "evidence_json"]
+    out = dict(zip(cols, row))
+    try:
+        out["evidence"] = json.loads(out.get("evidence_json") or "{}")
+    except Exception:
+        out["evidence"] = {}
+    return out
+
+
 def findings_for_target(target):
     conn = _connect()
     rows = conn.execute(
