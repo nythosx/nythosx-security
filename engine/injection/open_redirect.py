@@ -7,6 +7,7 @@ from ..contract import Capability, ScanResult
 from ..roe_guard import ROEGuard, ROEViolation
 from .payloads import OPEN_REDIRECT_PAYLOADS
 from .. import http as _http
+from ..util import any_handler_reached, unreached_reason
 
 
 CAPABILITY = Capability(
@@ -98,10 +99,12 @@ def scan(target_url, param=None, headers=None, roe_guard=None, timeout=8):
                     f"→ {findings[0]['location'][:80]}"),
             evidence={"findings": findings, "attempts": attempts[:30]},
         )
-    if not attempts:
+    if not any_handler_reached(attempts):
         return ScanResult(
             capability="open_redirect_scan", target=target_url,
-            verdict="UNKNOWN", reason="no attempts made",
+            verdict="UNKNOWN",
+            reason=unreached_reason(attempts),
+            evidence={"attempts": attempts[:30]},
         )
     return ScanResult(
         capability="open_redirect_scan", target=target_url,

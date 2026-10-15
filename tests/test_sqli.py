@@ -1,3 +1,4 @@
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -58,7 +59,8 @@ class _UnionVuln(BaseHTTPRequestHandler):
         q = parse_qs(urlparse(self.path).query)
         val = (q.get("q") or [""])[0]
         if "UNION" in val.upper() and "SC_UNION_7733" in val:
-            body = val.encode()
+            markers = re.findall(r"SC_UNION_7733_\d+", val)
+            body = ("<td>" + "</td><td>".join(markers) + "</td>").encode()
         else:
             body = b"not union"
         self.send_response(200)

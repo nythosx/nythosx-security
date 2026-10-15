@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
+import httpx
+
 from .chain_engine import register_tool
 from .config import load_engine
-from . import http as _http
 
 
 def _verify_tls():
@@ -33,7 +34,7 @@ def _tool_firebase_probe(orch, args):
     attempts = []
     for candidate in _firebase_candidates(target):
         try:
-            with _http.Client(timeout=8, verify=verify,
+            with httpx.Client(timeout=8, verify=verify,
                               follow_redirects=False) as c:
                 r = c.get(candidate)
         except Exception as e:

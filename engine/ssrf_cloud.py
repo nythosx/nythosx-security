@@ -167,48 +167,61 @@ def _target_side_scan(base_url, params=None, headers=None, timeout=10,
     params = params or COMMON_SSRF_PARAMS[:10]
     attempts = []
     findings = []
-    for pname in params:
-        for label, murl in METADATA_URLS:
-            h = _headers_from_kwargs(headers, None, pname, murl)
-            try:
-                with _http.Client(timeout=timeout) as c:
-                    r = c.get(base_url, params={pname: murl}, headers=h,
-                              follow_redirects=False)
-            except _http.ROEBlock as e:
-                return {
-                    "verdict": "UNKNOWN",
-                    "reason": f"ROE_BLOCK: {e}",
-                    "evidence": {},
-                }
-            except Exception as e:
-                attempts.append({
-                    "param": pname, "target": label,
-                    "error": f"{type(e).__name__}: {e}",
-                })
-                continue
-            body = r.text or ""
-            attempt = {
-                "param": pname,
-                "target": label,
-                "status": r.status_code,
-                "body_len": len(body),
-            }
-            markers = [m for m, _ in METADATA_MARKERS if m in body]
-            if markers:
-                attempt["markers"] = markers
-                creds = _extract_credentials(body)
-                findings.append({
+    try:
+        client = _http.Client(timeout=timeout)
+    except Exception as e:
+        return {
+            "verdict": "UNKNOWN",
+            "reason": f"client init failed: {type(e).__name__}: {e}",
+            "evidence": {},
+        }
+    try:
+        for pname in params:
+            for label, murl in METADATA_URLS:
+                h = _headers_from_kwargs(headers, None, pname, murl)
+                try:
+                    r = client.get(base_url, params={pname: murl}, headers=h,
+                                   follow_redirects=False)
+                except _http.ROEBlock as e:
+                    return {
+                        "verdict": "UNKNOWN",
+                        "reason": f"ROE_BLOCK: {e}",
+                        "evidence": {},
+                    }
+                except Exception as e:
+                    attempts.append({
+                        "param": pname, "target": label,
+                        "error": f"{type(e).__name__}: {e}",
+                    })
+                    continue
+                body = r.text or ""
+                attempt = {
                     "param": pname,
                     "target": label,
-                    "markers": markers,
-                    "credentials": creds,
-                    "preview": body[:400],
-                })
-            attempts.append(attempt)
+                    "status": r.status_code,
+                    "body_len": len(body),
+                }
+                markers = [m for m, _ in METADATA_MARKERS if m in body]
+                if markers:
+                    attempt["markers"] = markers
+                    creds = _extract_credentials(body)
+                    findings.append({
+                        "param": pname,
+                        "target": label,
+                        "markers": markers,
+                        "credentials": creds,
+                        "preview": body[:400],
+                    })
+                attempts.append(attempt)
+                if findings:
+                    break
             if findings:
                 break
-        if findings:
-            break
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
 
     if findings:
         return {

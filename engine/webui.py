@@ -1,5 +1,6 @@
 import io
 import json
+import secrets as _secrets
 import time
 import threading
 import uuid
@@ -222,6 +223,18 @@ def _roe_ok(url):
 
 
 class _Handler(BaseHTTPRequestHandler):
+    def _body_bytes(self):
+        if getattr(self, "_cached_body", None) is None:
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+            except (TypeError, ValueError):
+                length = 0
+            try:
+                self._cached_body = self.rfile.read(length) if length else b""
+            except Exception:
+                self._cached_body = b""
+        return self._cached_body
+
     def _send(self, code, body, ctype="application/json"):
         if isinstance(body, (dict, list)):
             body = json.dumps(body).encode()
@@ -241,6 +254,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "cross-origin request rejected"})
         if not _check_token(self):
             return self._send(401, {"error": "missing or invalid token"})
+        if self.path == "/api/csrf":
+            return self._send(200, {"token": _CSRF_TOKEN})
         if self.path == "/" or self.path.startswith("/?"):
             import os as _os
             classic = (
@@ -318,9 +333,8 @@ class _Handler(BaseHTTPRequestHandler):
                                      "error": f"{type(e).__name__}: {e}"})
 
     def _extract(self):
-        length = int(self.headers.get("Content-Length", 0))
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            payload = json.loads(self._body_bytes() or b"{}")
         except Exception:
             return self._send(400, {"error": "invalid JSON"})
         url = (payload.get("url") or "").strip()
@@ -361,9 +375,8 @@ class _Handler(BaseHTTPRequestHandler):
         })
 
     def _recon(self):
-        length = int(self.headers.get("Content-Length", 0))
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            payload = json.loads(self._body_bytes() or b"{}")
         except Exception:
             return self._send(400, {"error": "invalid JSON"})
         url = (payload.get("url") or "").strip()
@@ -480,19 +493,22 @@ class _Handler(BaseHTTPRequestHandler):
             progress.unsubscribe(job_id, q)
 
     def do_POST(self):
+        self._cached_body = None
+        self._body_bytes()
         if not _check_origin(self):
             return self._send(403, {"error": "cross-origin request rejected"})
         if not _check_token(self):
             return self._send(401, {"error": "missing or invalid token"})
+        if not _check_csrf(self):
+            return self._send(403, {"error": "missing or invalid CSRF token"})
         if self.path == "/api/extract":
             return self._extract()
         if self.path == "/api/recon":
             return self._recon()
         if self.path != "/api/scan":
             return self._send(404, {"error": "not found"})
-        length = int(self.headers.get("Content-Length", 0))
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            payload = json.loads(self._body_bytes() or b"{}")
         except Exception:
             return self._send(400, {"error": "invalid JSON"})
         url = (payload.get("url") or "").strip()
@@ -528,8 +544,14 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 WEBUI_TOKEN = None
+_CSRF_TOKEN = _secrets.token_urlsafe(32)
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+def _check_csrf(handler):
+    header = handler.headers.get("X-CSRF-Token", "")
+    return header == _CSRF_TOKEN
 
 
 def _check_origin(handler):
@@ -1550,9 +1572,10 @@ form.addEventListener("submit", async function(e){
 
   var res;
   try{
+    var csrfJ = await (await fetch("/api/csrf")).json();
     res = await fetch("/api/scan", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: {"Content-Type": "application/json", "X-CSRF-Token": csrfJ.token},
       body: JSON.stringify({url: url, min_severity: sev})
     });
   } catch(err){
@@ -1730,6 +1753,9 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
 .findings-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
 .findings-body::-webkit-scrollbar { width: 5px; }
 .findings-body::-webkit-scrollbar-thumb { background: var(--ph-dimmer); border-radius: 999px; }
+.recon-loading { display: flex; align-items: center; gap: 10px; padding: 14px 6px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; color: var(--ph-dim); text-transform: uppercase; }
+.recon-spinner { width: 12px; height: 12px; border: 2px solid var(--ph-line); border-top-color: var(--accent, #39f); border-radius: 50%; animation: recon-spin 0.7s linear infinite; flex: none; }
+@keyframes recon-spin { to { transform: rotate(360deg); } }
 .findings-empty { color: var(--ph-dim); font-size: 11px; font-family: var(--mono); padding: 20px 6px; line-height: 1.7; text-align: center; }
 .fcard { border: 1px solid var(--ph-line); border-left: 3px solid var(--ph-dim); border-radius: 10px; padding: 9px 12px; background: var(--bg-s); font-family: var(--mono); font-size: 10.5px; animation: cardIn 340ms cubic-bezier(.2,.9,.3,1); line-height: 1.5; }
 .fcard.vuln { border-left-color: var(--red); background: #fffafa; }
@@ -2223,14 +2249,40 @@ function handleLiveExtraction(d) {
     window.__scanRecon = data;
     if (window.__articleReady) window.__articleReady();
   }
+  function reconLoading(on) {
+    var body = document.getElementById('reconBody');
+    var pane = document.getElementById('reconPane');
+    var cnt = document.getElementById('reconCount');
+    if (!body || !pane) return;
+    if (on) {
+      pane.style.display = 'flex';
+      if (cnt) { cnt.textContent = '…'; cnt.classList.remove('has'); }
+      body.innerHTML = '<div class="recon-loading"><span class="recon-spinner"></span>' +
+        'probing live endpoints &amp; harvesting data…</div>';
+    }
+  }
   function fetchRecon(url) {
     if (!url) return;
-    fetch('/api/recon', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: url })
+    reconLoading(true);
+    fetch('/api/csrf').then(function (cr) { return cr.json(); }).then(function (cj) {
+      return fetch('/api/recon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': cj.token },
+        body: JSON.stringify({ url: url })
+      });
     }).then(function (r) { return r.json(); })
-      .then(function (d) { renderRecon(d); })
-      .catch(function () {});
+      .then(function (d) {
+        if (!d || d.error) {
+          var body = document.getElementById('reconBody');
+          if (body) body.innerHTML = '<div class="findings-empty">recon unavailable</div>';
+          return;
+        }
+        renderRecon(d);
+      })
+      .catch(function () {
+        var body = document.getElementById('reconBody');
+        if (body) body.innerHTML = '<div class="findings-empty">recon failed</div>';
+      });
   }
   function endpointBadgeClass(status, verdict) {
     if (verdict === 'blocked' || verdict === 'unreachable') return 'ep-dim';
@@ -2436,10 +2488,12 @@ function handleLiveExtraction(d) {
     hTarget.textContent = url;
     setStatus('running', 'running');
     startTimer();
-    fetch('/api/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: url, min_severity: 'medium' }),
+    fetch('/api/csrf').then(function (cr) { return cr.json(); }).then(function (cj) {
+      return fetch('/api/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': cj.token },
+        body: JSON.stringify({ url: url, min_severity: 'medium' }),
+      });
     })
     .then(function (r) {
       return r.json().then(function (data) { return { ok: r.ok, data: data }; });
@@ -2644,6 +2698,12 @@ def _inject_article_ui(html):
   font:13px/1 inherit;padding:8px 14px;border:none;border-radius:999px;
   background:rgba(128,128,128,0.16);color:inherit;cursor:pointer}
 #articleOpenBtn:hover{background:rgba(128,128,128,0.28)}
+#articleOpenBtn.report-inline-btn{position:static;top:auto;right:auto;z-index:auto;
+  margin-left:8px;padding:2px 10px;border-radius:999px;font:inherit;font-size:9.5px;
+  font-weight:700;letter-spacing:0.12em;text-transform:uppercase;line-height:1.6;
+  background:var(--accent,#39f);color:#fff}
+#articleOpenBtn.report-inline-btn:hover{filter:brightness(1.1);background:var(--accent,#39f)}
+#reconPane .findings-hd .count{margin-left:auto}
 #articleOverlay{position:fixed;inset:0;z-index:9999;display:none;overflow-y:auto;
   background:#fbfaf8;color:#1b1b1a}
 @media (prefers-color-scheme:dark){#articleOverlay{background:#16181b;color:#dfe2e6}}
@@ -2668,7 +2728,7 @@ def _inject_article_ui(html):
 #articleDoc ul.rows li{margin:0 0 5px;word-break:break-word}
 #articleDoc ul.rows ul.rows{padding-left:18px;margin:4px 0 2px;opacity:.9}
 </style>
-<button id="articleOpenBtn" type="button">Read as article</button>
+<button id="articleOpenBtn" type="button">Report</button>
 <div id="articleOverlay"><button id="articleClose" type="button">close &times;</button>
 <article id="articleDoc"></article></div>
 <script>
@@ -2684,6 +2744,13 @@ def _inject_article_ui(html):
   var overlay=document.getElementById('articleOverlay');
   var doc=document.getElementById('articleDoc');
   var closeBtn=document.getElementById('articleClose');
+  var reconHd=document.querySelector('#reconPane .findings-hd');
+  if(reconHd){
+    btn.className='report-inline-btn';
+    btn.removeAttribute('style');
+    var cntEl=reconHd.querySelector('.count');
+    reconHd.insertBefore(btn,cntEl);
+  }
   btn.addEventListener('click',function(){doc.innerHTML=build();overlay.style.display='block';
     overlay.scrollTop=0;window.scrollTo(0,0);});
   closeBtn.addEventListener('click',function(){overlay.style.display='none';});

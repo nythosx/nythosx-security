@@ -13,6 +13,46 @@ from . import triage as _triage
 _PLACEHOLDER_RE = re.compile(r"(\{[^}]+\}|:[A-Za-z_][A-Za-z0-9_]*)")
 _TRAILING_ID_RE = re.compile(r"/\d+/?$")
 
+_USER_OWNED_NOUNS = frozenset((
+    "order", "invoice", "transaction", "account", "user", "customer",
+    "profile", "payment", "card", "statement", "message", "notification",
+    "document", "beneficiary", "transfer",
+))
+
+_USER_OWNED_FIELDS = None
+
+
+def _user_owned_fields():
+    global _USER_OWNED_FIELDS
+    if _USER_OWNED_FIELDS is not None:
+        return _USER_OWNED_FIELDS
+    from pathlib import Path
+    p = Path(__file__).parent.parent / "wordlists" / "user_owned_fields.txt"
+    if not p.exists():
+        _USER_OWNED_FIELDS = frozenset()
+        return _USER_OWNED_FIELDS
+    try:
+        lines = [l.strip().lower() for l in p.read_text(encoding="utf-8").splitlines()
+                 if l.strip() and not l.startswith("#")]
+    except Exception:
+        lines = []
+    _USER_OWNED_FIELDS = frozenset(lines)
+    return _USER_OWNED_FIELDS
+
+
+def _is_user_owned(endpoint, sample_keys):
+    pl = str(endpoint).lower()
+    for noun in _USER_OWNED_NOUNS:
+        if noun in pl:
+            return True
+    fields = _user_owned_fields()
+    for k in sample_keys or ():
+        kl = str(k).lower()
+        if kl in fields:
+            return True
+    return False
+
+
 SENSITIVE_KEYS = ("email", "phone", "ssn", "token", "password", "secret",
                   "address", "name", "username", "user", "account", "balance",
                   "card", "iban", "dob", "owner", "ip", "session")
@@ -104,7 +144,17 @@ def _diff_sequence(base, results_unauth):
     distinct = {}
     for i, r in objs:
         distinct.setdefault(r["hash"], []).append(i)
-    enumerable = len(objs) >= 2 and len(distinct) >= 2
+    _sk = set()
+    for _, r in objs:
+        o = r.get("obj")
+        if isinstance(o, dict):
+            _sk.update(o.keys())
+        elif isinstance(o, list):
+            for it in o[:3]:
+                if isinstance(it, dict):
+                    _sk.update(it.keys())
+    user_owned = _is_user_owned(base, _sk)
+    enumerable = len(objs) >= 2 and len(distinct) >= 2 and user_owned
     sample_keys = set()
     for _, r in objs:
         o = r.get("obj")

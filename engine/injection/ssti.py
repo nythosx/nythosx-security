@@ -7,6 +7,7 @@ from ..contract import Capability, ScanResult
 from ..roe_guard import ROEGuard, ROEViolation
 from .payloads import SSTI_PAYLOADS, COMMON_INJECTION_PARAMS
 from .. import http as _http
+from ..util import any_handler_reached, unreached_reason
 
 
 CAPABILITY = Capability(
@@ -97,20 +98,12 @@ def scan(target_url, param=None, method="GET", headers=None, roe_guard=None,
                     f"({findings[0]['engine']})"),
             evidence={"findings": findings, "attempts": attempts[:30]},
         )
-    statuses = [a["status"] for a in attempts if a["status"] is not None]
-    if not statuses:
-        from ..util import summarize_failures
-        why = summarize_failures(attempts)
+    if not any_handler_reached(attempts):
         return ScanResult(
             capability="ssti_scan", target=target_url,
             verdict="UNKNOWN",
-            reason=f"all requests failed ({why})" if why else "all requests failed",
+            reason=unreached_reason(attempts),
             evidence={"attempts": attempts[:30]},
-        )
-    if all(s in (404, 405) for s in statuses):
-        return ScanResult(
-            capability="ssti_scan", target=target_url,
-            verdict="UNKNOWN", reason="endpoint not found",
         )
     return ScanResult(
         capability="ssti_scan", target=target_url,

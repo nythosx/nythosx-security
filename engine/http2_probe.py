@@ -183,6 +183,21 @@ def scan(target_url, method="POST", headers=None, roe_guard=None,
             verdict="UNKNOWN",
             reason=f"HTTP/2 baseline failed: {baseline.get('error')}",
         )
+    if baseline.get("status") is None:
+        return ScanResult(
+            capability="http2_scan", target=target_url,
+            verdict="UNKNOWN",
+            reason="HTTP/2 baseline probe did not receive a valid response header",
+            evidence={"baseline": baseline},
+        )
+    if baseline.get("status") in (404, 410, 405, 501):
+        return ScanResult(
+            capability="http2_scan", target=target_url,
+            verdict="UNKNOWN",
+            reason=(f"HTTP/2 baseline returned {baseline.get('status')} — "
+                    f"endpoint not found or method not accepted"),
+            evidence={"baseline": baseline},
+        )
 
     findings = []
 

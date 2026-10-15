@@ -10,6 +10,7 @@ from .config import load_engine
 from .contract import Capability, ScanResult
 from .roe_guard import ROEGuard, ROEViolation
 from . import http as _http
+from .util import any_handler_reached, unreached_reason
 
 
 CAPABILITY = Capability(
@@ -239,17 +240,17 @@ def scan(target_url, method="POST", headers=None, timeout=8, roe_guard=None):
             evidence={"findings": findings, "attempts": attempts},
         )
 
-    live = [a for a in attempts if a.get("status") is not None]
-    if not live:
+    if not any_handler_reached(attempts):
         return ScanResult(
             capability="deserialization_scan", target=target_url,
-            verdict="UNKNOWN", reason="all probes failed",
+            verdict="UNKNOWN",
+            reason=unreached_reason(attempts),
             evidence={"attempts": attempts},
         )
     return ScanResult(
         capability="deserialization_scan", target=target_url,
         verdict="PASS", severity="low",
-        reason=f"no deserialization error signatures across {len(live)} probes",
+        reason=f"no deserialization error signatures across {len(attempts)} probes",
         evidence={"attempts": attempts},
     )
 

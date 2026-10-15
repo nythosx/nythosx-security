@@ -35,26 +35,39 @@ def test_bypass(url, roe_guard=None, count=30, timeout=8,
     verify = _verify_tls()
     statuses = []
     bodies = []
-    for i in range(count):
-        headers = {"Accept": "application/json"}
-        ip = _fake_ip(i)
-        for h in BYPASS_HEADERS:
-            headers[h] = ip
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+    try:
+        client = _http.Client(timeout=timeout, verify=verify,
+                              follow_redirects=False)
+    except Exception as e:
+        return {"verdict": "UNKNOWN",
+                "reason": f"client init failed: {type(e).__name__}: {e}",
+                "evidence": {}}
+    try:
+        for i in range(count):
+            headers = {"Accept": "application/json"}
+            ip = _fake_ip(i)
+            for h in BYPASS_HEADERS:
+                headers[h] = ip
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            try:
+                r = client.request(method.upper(), url, headers=headers,
+                                    skip_rate_limit=True)
+            except _http.ROEBlock as e:
+                return {"verdict": "UNKNOWN",
+                        "reason": f"ROE_BLOCK: {e}",
+                        "evidence": {}}
+            except Exception:
+                statuses.append(None)
+                bodies.append("")
+                continue
+            statuses.append(r.status_code)
+            bodies.append(r.text or "")
+    finally:
         try:
-            with _http.Client(timeout=timeout, verify=verify,
-                              follow_redirects=False) as c:
-                r = c.request(method.upper(), url, headers=headers)
-        except _http.ROEBlock as e:
-            return {"verdict": "UNKNOWN", "reason": f"ROE_BLOCK: {e}",
-                    "evidence": {}}
+            client.close()
         except Exception:
-            statuses.append(None)
-            bodies.append("")
-            continue
-        statuses.append(r.status_code)
-        bodies.append(r.text or "")
+            pass
 
     real = [s for s in statuses if s is not None]
     if not real:

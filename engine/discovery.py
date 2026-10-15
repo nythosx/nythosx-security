@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from . import adapter_matcher
 from . import progress
 from . import http as _http
+from urllib.parse import urljoin as _urljoin
 
 
 def _budget_dead():
@@ -359,7 +360,123 @@ def _probe_one(origin, path, neg, timeout):
             "verdict": verdict, "json": json_resp, "size": len(body)}
 
 
+async def probe_paths_async(base_url, paths, limit=80, timeout=8):
+    import asyncio
+    from urllib.parse import urlparse as _urlparse
+    from .http_async import AsyncClient
+
+    parsed = _urlparse(base_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    neg = None
+    import random
+    import string as _string
+    rand_path = ("/zzz-" + "".join(
+        random.choices(_string.ascii_lowercase + _string.digits, k=20)))
+    try:
+        async with AsyncClient(timeout=timeout, follow_redirects=True) as c:
+            r = await c.get(origin + rand_path)
+        body = r.text or ""
+        neg = {
+            "status": r.status_code,
+            "is_html": "text/html" in r.headers.get("Content-Type", "").lower(),
+            "size": len(body),
+        }
+    except Exception as e:
+        import sys as _sys
+        _sys.stderr.write(
+            f"[probe_paths_async soft-404] {origin}{rand_path}: "
+            f"{type(e).__name__}: {e}\n")
+        neg = None
+
+    uniq = sorted(set(p for p in paths if p))[:limit]
+    total = len(uniq)
+    family_misses = {}
+    skipped_families = set()
+    results = []
+    sem = asyncio.Semaphore(20)
+
+    async def _one(client, path):
+        async with sem:
+            url = _urljoin(origin + "/", path.lstrip("/"))
+            try:
+                r = await client.get(url)
+            except Exception as e:
+                import sys as _sys
+                _sys.stderr.write(
+                    f"[probe_paths_async] {url}: {type(e).__name__}: {e}\n")
+                return {"path": path, "url": url,
+                        "status": None, "verdict": "unreachable",
+                        "error": f"{type(e).__name__}: {e}"}
+            body = r.text or ""
+            ct = r.headers.get("Content-Type", "").lower()
+            json_resp = is_json_response(r)
+            catch_all = (
+                neg is not None and r.status_code == neg["status"]
+                and "text/html" in ct and not json_resp
+                and abs(len(body) - neg["size"]) <= max(80, int(neg["size"] * 0.15))
+            )
+            if r.status_code == 404:
+                verdict = "not_found"
+            elif catch_all:
+                verdict = "catch_all"
+            elif json_resp:
+                verdict = "live_api"
+            elif r.status_code in (401, 403):
+                verdict = "auth_required"
+            elif 200 <= r.status_code < 300:
+                verdict = "exists"
+            else:
+                verdict = "other"
+            return {"path": path, "url": str(r.url), "status": r.status_code,
+                    "verdict": verdict, "json": json_resp, "size": len(body)}
+
+    try:
+        async with AsyncClient(timeout=timeout, follow_redirects=True) as c:
+            tasks = []
+            for path in uniq:
+                fam = _path_family(path)
+                if family_misses.get(fam, 0) >= _FAMILY_SKIP_AFTER:
+                    if fam not in skipped_families:
+                        skipped_families.add(fam)
+                    results.append({"path": path,
+                                    "url": _urljoin(origin + "/", path.lstrip("/")),
+                                    "status": None, "verdict": "skipped",
+                                    "reason": f"{_FAMILY_SKIP_AFTER} misses under /{fam}"})
+                    continue
+                tasks.append((path, _one(c, path)))
+            if tasks:
+                entries = await asyncio.gather(
+                    *[t for _, t in tasks], return_exceptions=True)
+                for (path, _), entry in zip(tasks, entries):
+                    if isinstance(entry, BaseException):
+                        entry = {"path": path,
+                                 "url": _urljoin(origin + "/", path.lstrip("/")),
+                                 "status": None, "verdict": "unreachable",
+                                 "error": f"{type(entry).__name__}: {entry}"}
+                    fam = _path_family(path)
+                    family_misses[fam] = (
+                        family_misses.get(fam, 0) + 1
+                        if entry.get("verdict") in _MISS_VERDICTS else 0
+                    )
+                    results.append(entry)
+                    try:
+                        progress.emit(progress.active_job(), "endpoint_probe", entry)
+                    except Exception:
+                        pass
+    except Exception as e:
+        import sys as _sys
+        _sys.stderr.write(
+            f"[probe_paths_async] {type(e).__name__}: {e}\n")
+    return results
+
+
 def probe_paths(base_url, paths, limit=80, timeout=8):
+    from .http_async import run_sync
+    return run_sync(probe_paths_async(base_url, paths, limit=limit, timeout=timeout))
+
+
+def _probe_paths_sync_original(base_url, paths, limit=80, timeout=8):
     """HTTP-probe each JS-extracted candidate path for real.
 
     extract_api_paths_from_js only finds *string literals* that look like

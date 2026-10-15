@@ -8,6 +8,7 @@ from ..config import load_engine
 from ..contract import Capability, ScanResult
 from ..roe_guard import ROEGuard, ROEViolation
 from .. import http as _http
+from ..util import any_handler_reached, unreached_reason
 
 
 CAPABILITY = Capability(
@@ -102,6 +103,14 @@ def scan(auth_endpoint, headers=None, roe_guard=None, timeout=8):
             evidence={"findings": findings,
                       "no_state_status": r.status_code,
                       "with_state_status": r2.status_code if r2 else None},
+        )
+    if r.status_code in (404, 410):
+        return ScanResult(
+            capability="oauth_state_scan", target=auth_endpoint,
+            verdict="UNKNOWN",
+            reason=(f"authorization endpoint returned {r.status_code} — "
+                    f"endpoint not found"),
+            evidence={"status": r.status_code},
         )
     return ScanResult(
         capability="oauth_state_scan", target=auth_endpoint,

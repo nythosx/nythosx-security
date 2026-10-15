@@ -378,6 +378,7 @@ def _cors_misconfig(oracle, context):
     steps = context.get("steps", [])
     if not steps:
         return {"verdict": "UNKNOWN", "reason": "no steps", "evidence": {}}
+    from .util import matches_hostname
     test_origin = (oracle.get("test_origin") or "https://attacker.example.com").lower()
     test_host = test_origin.split("://")[-1]
     suspicious = None
@@ -389,8 +390,9 @@ def _cors_misconfig(oracle, context):
         if not acao:
             continue
         saw_acao = True
-        reflected = acao.lower() == test_origin or (
-            acao != "*" and test_host and test_host in acao.lower())
+        reflected = acao == "*" and False
+        if not reflected and acao and acao != "*":
+            reflected = matches_hostname(test_host, acao)
         if reflected:
             with_creds = acac == "true"
             return {

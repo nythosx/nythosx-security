@@ -433,14 +433,15 @@ def fetch_vuln_details(vuln_ids, timeout=15):
 
 
 def _severity_from_vuln(vuln):
+    from .cvss import cvss_vector_to_score, score_to_severity
     for entry in (vuln.get("severity") or []):
-        m = re.search(r"(\d+\.\d+)", str(entry.get("score") or ""))
-        if m:
-            val = float(m.group(1))
-            if val >= 9.0: return "critical"
-            if val >= 7.0: return "high"
-            if val >= 4.0: return "medium"
-            if val > 0:    return "low"
+        vector = str(entry.get("score") or "").strip()
+        if not vector:
+            continue
+        score = cvss_vector_to_score(vector)
+        if score is not None:
+            return score_to_severity(score)
+        return "unknown"
     s = ((vuln.get("database_specific") or {}).get("severity") or "").lower()
     return s if s in SEVERITY_RANK else "medium"
 

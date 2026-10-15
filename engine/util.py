@@ -1,6 +1,149 @@
+import enum
 import os
+import re
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
+
+
+class ProbeOutcome(str, enum.Enum):
+    HANDLER_REACHED = "handler_reached"
+    METHOD_REJECTED = "method_rejected"
+    NOT_FOUND = "not_found"
+    SERVER_ERROR = "server_error"
+    UNREACHABLE = "unreachable"
+
+
+_NOT_FOUND = frozenset((404, 410))
+_METHOD_REJECTED = frozenset((405, 501))
+
+
+def classify_probe_outcome(status, error=None):
+    if error:
+        return ProbeOutcome.UNREACHABLE
+    if status is None:
+        return ProbeOutcome.UNREACHABLE
+    if status in _NOT_FOUND:
+        return ProbeOutcome.NOT_FOUND
+    if status in _METHOD_REJECTED:
+        return ProbeOutcome.METHOD_REJECTED
+    if 500 <= status < 600:
+        return ProbeOutcome.SERVER_ERROR
+    if 200 <= status < 400:
+        return ProbeOutcome.HANDLER_REACHED
+    if 400 <= status < 500:
+        return ProbeOutcome.HANDLER_REACHED
+    return ProbeOutcome.UNREACHABLE
+
+
+def any_handler_reached(attempts, status_key="status", error_key="error"):
+    for a in attempts or []:
+        outcome = classify_probe_outcome(a.get(status_key), a.get(error_key))
+        if outcome is ProbeOutcome.HANDLER_REACHED:
+            return True
+    return False
+
+
+def unreached_reason(attempts, status_key="status"):
+    if not attempts:
+        return "no probes were sent"
+    statuses = sorted({a.get(status_key) for a in attempts
+                       if a.get(status_key) is not None})
+    if not statuses:
+        return f"all {len(attempts)} probes failed to reach the target"
+    return (f"all {len(attempts)} probes returned {statuses} — "
+            f"endpoint not found or method not accepted")
+
+
+_UNREACHABLE_STRINGS = (
+    "404", "410", "not found", "no such", "connection refused",
+    "name or service not known", "invalidstatus", "unexpected status",
+)
+
+
+def error_looks_like_unreachable(err):
+    if not err:
+        return False
+    low = str(err).lower()
+    return any(sig in low for sig in _UNREACHABLE_STRINGS)
+
+
+def _hostname_of(value):
+    if not value:
+        return ""
+    v = str(value).strip().lower()
+    if not v:
+        return ""
+    if "://" in v:
+        try:
+            return urlparse(v).hostname or ""
+        except Exception:
+            return ""
+    v = v.split("/", 1)[0]
+    v = v.split("?", 1)[0]
+    v = v.split("#", 1)[0]
+    v = v.split(":", 1)[0]
+    return v.strip(".")
+
+
+def matches_hostname(pattern, value):
+    if not pattern or not value:
+        return False
+    pat = _hostname_of(pattern)
+    val = _hostname_of(value)
+    if not pat or not val:
+        return False
+    if pat == val:
+        return True
+    return val.endswith("." + pat)
+
+
+def is_reflection(body, sent_payload):
+    if not body or not sent_payload:
+        return False
+    return sent_payload in body
+
+
+_ERROR_KEYS = frozenset(("error", "errors", "err", "failure", "fail"))
+_FALSEY_KEYS = frozenset(("success", "ok"))
+_ERROR_STATUS_STRINGS = frozenset(("error", "failed", "failure"))
+
+
+def response_is_success(body, max_depth=6):
+    if not body:
+        return False
+    import json as _json
+    try:
+        data = _json.loads(body)
+    except Exception:
+        return False
+    return _walk_success(data, 0, max_depth)
+
+
+def _walk_success(node, depth, max_depth):
+    if depth > max_depth:
+        return True
+    if isinstance(node, dict):
+        for k, v in node.items():
+            kl = str(k).lower()
+            if kl in _ERROR_KEYS and v:
+                return False
+            if kl in _FALSEY_KEYS and v is False:
+                return False
+            if kl == "status":
+                if isinstance(v, str) and v.lower() in _ERROR_STATUS_STRINGS:
+                    return False
+                if isinstance(v, int) and not isinstance(v, bool) and v >= 400:
+                    return False
+            if not _walk_success(v, depth + 1, max_depth):
+                return False
+        return True
+    if isinstance(node, list):
+        for item in node:
+            if not _walk_success(item, depth + 1, max_depth):
+                return False
+        return True
+    return True
 
 
 def safe_name(s, maxlen=80):
@@ -29,10 +172,6 @@ def atomic_write_json(path, obj, indent=2):
 
 
 def strict_yaml_load(text):
-    """yaml.safe_load with duplicate-key detection.
-
-    Raises yaml.constructor.ConstructorError on duplicate mapping keys.
-    """
     import yaml
 
     class _StrictLoader(yaml.SafeLoader):
@@ -59,23 +198,11 @@ def strict_yaml_load(text):
 
 
 def strict_yaml_load_file(path):
-    from pathlib import Path as _P
-    return strict_yaml_load(_P(path).read_text(encoding="utf-8"))
+    return strict_yaml_load(Path(path).read_text(encoding="utf-8"))
 
 
 def summarize_failures(items, error_key="error", limit=3):
-    """Collapse a list of failed request attempts into a short, generic
-    "why" string, e.g. "2x ROE_BLOCK: METHOD NOT ALLOWED: POST; 1x timeout".
-
-    Every pattern/oracle that reports "all requests failed" was discarding
-    the real per-attempt error (ROE block, timeout, connect error, rate
-    limit) that the HTTP layer already captured, leaving no way to tell a
-    scope restriction apart from a dead target or a bug — on ANY target,
-    not a specific one. This makes that reason visible without hardcoding
-    any target- or pattern-specific text.
-    """
     from collections import Counter
-
     errors = [str(i.get(error_key)) for i in items if i.get(error_key)]
     if not errors:
         return None
@@ -85,6 +212,7 @@ def summarize_failures(items, error_key="error", limit=3):
     if extra > 0:
         parts.append(f"+{extra} more")
     return "; ".join(parts)
+
 
 def mask_value(s, keep=1, cipher="rot13"):
     if s is None:
@@ -175,8 +303,8 @@ def unwrap_rows(parsed, envelope_keys=None):
         return [parsed]
     return []
 
+
 def join_smart(base_url, path):
-    from urllib.parse import urlparse
     if not path:
         return base_url or ""
     if not base_url:

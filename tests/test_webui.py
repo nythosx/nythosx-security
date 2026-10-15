@@ -32,6 +32,13 @@ def permissive_roe(monkeypatch):
     })
 
 
+def _csrf_post(server, path, **kwargs):
+    token = httpx.get(server + "/api/csrf", timeout=5).json()["token"]
+    headers = dict(kwargs.pop("headers", {}) or {})
+    headers["X-CSRF-Token"] = token
+    return httpx.post(server + path, headers=headers, **kwargs)
+
+
 def test_index_serves_html(server):
     r = httpx.get(server + "/", timeout=5)
     assert r.status_code == 200
@@ -41,7 +48,7 @@ def test_index_serves_html(server):
 
 
 def test_scan_requires_url(server):
-    r = httpx.post(server + "/api/scan", json={}, timeout=5)
+    r = _csrf_post(server, "/api/scan", json={}, timeout=5)
     assert r.status_code == 400
 
 
@@ -51,7 +58,7 @@ def test_scan_rejects_out_of_scope(server, monkeypatch):
         "scope": {"in_scope": ["127.0.0.1"], "out_of_scope": [],
                   "allowed_methods": ["GET"], "forbidden_paths": []},
     })
-    r = httpx.post(server + "/api/scan", json={"url": "http://example.com"}, timeout=5)
+    r = _csrf_post(server, "/api/scan", json={"url": "http://example.com"}, timeout=5)
     assert r.status_code == 403
     body = r.json()
     assert body["error"] == "URL not in ROE scope"
@@ -95,7 +102,7 @@ def test_full_job_flow(server, tmp_path, monkeypatch):
 
     monkeypatch.setattr(auto_mod, "run_auto", fake_run_auto)
 
-    r = httpx.post(server + "/api/scan", json={"url": target}, timeout=5)
+    r = _csrf_post(server, "/api/scan", json={"url": target}, timeout=5)
     assert r.status_code == 200
     job_id = r.json()["job_id"]
 

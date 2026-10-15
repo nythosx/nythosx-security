@@ -40,12 +40,16 @@ class ROEGuard:
 
     @staticmethod
     def _normalize_path(path):
-        """Return (raw, normalized) path forms."""
         raw = path or "/"
-        try:
-            dec = unquote(raw)
-        except Exception:
-            dec = raw
+        dec = raw
+        for _ in range(5):
+            try:
+                nxt = unquote(dec)
+            except Exception:
+                break
+            if nxt == dec:
+                break
+            dec = nxt
         dec = re.sub(r"/+", "/", dec)
         try:
             dec = posixpath.normpath(dec)

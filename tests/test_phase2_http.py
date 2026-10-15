@@ -272,6 +272,7 @@ ALLOWED_RAW_HTTPX = {
     # exception class — these are third-party cloud provider endpoints,
     # not the scan target itself.
     "engine/cloud_storage.py",
+    "engine/firebase_probe.py",
 }
 
 

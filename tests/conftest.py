@@ -97,6 +97,21 @@ def _autouse_permissive_roe(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _clear_module_caches():
+    try:
+        from engine.brains import bundle_analyst as _ba
+        _ba.clear_cache()
+    except Exception:
+        pass
+    yield
+    try:
+        from engine.brains import bundle_analyst as _ba
+        _ba.clear_cache()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _reset_global_http_state():
     """Reset the shared request budget and rate limiter before each test.
 
@@ -108,6 +123,8 @@ def _reset_global_http_state():
     from engine import budget as _budget, ratelimit as _rl
     from engine import http as _http
     _http._configured = True
+    with _http._circuit_breaker_lock:
+        _http._circuit_breaker_state.clear()
     _budget.configure(max_requests=None, max_per_host=None,
                       max_duration_seconds=None)
     _rl.reset_shared_limiters()

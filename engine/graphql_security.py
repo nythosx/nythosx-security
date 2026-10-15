@@ -67,7 +67,6 @@ def _post(endpoint, payload, headers, timeout, verify, roe_guard,
 GRAPHQL_ERROR_SIGNATURES = (
     "cannot query field",
     "syntax error",
-    "graphql",
     "unknown field",
     "field '",
     "expected name",

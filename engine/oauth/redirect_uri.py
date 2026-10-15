@@ -8,6 +8,7 @@ from ..config import load_engine
 from ..contract import Capability, ScanResult
 from ..roe_guard import ROEGuard, ROEViolation
 from .. import http as _http
+from ..util import any_handler_reached, unreached_reason
 
 
 CAPABILITY = Capability(
@@ -106,10 +107,12 @@ def scan(auth_endpoint, target_host=None, headers=None, roe_guard=None,
             reason=f"redirect_uri bypass via {findings[0]['bypass']}",
             evidence={"findings": findings, "attempts": attempts},
         )
-    if not attempts:
+    if not any_handler_reached(attempts):
         return ScanResult(
             capability="oauth_redirect_uri_scan", target=auth_endpoint,
-            verdict="UNKNOWN", reason="no attempts made",
+            verdict="UNKNOWN",
+            reason=unreached_reason(attempts),
+            evidence={"attempts": attempts[:30]},
         )
     return ScanResult(
         capability="oauth_redirect_uri_scan", target=auth_endpoint,

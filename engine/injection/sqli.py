@@ -4,6 +4,7 @@ import time
 from urllib.parse import urlencode
 
 from ..config import load_engine
+from ..util import is_reflection
 from ..contract import Capability, make_result
 from ..roe_guard import ROEGuard, ROEViolation
 from .. import http as _http
@@ -182,13 +183,16 @@ def probe_union(url, param, method="GET", headers=None, timeout=8,
             if r.get("blocked"):
                 return {"blocked": True, "error": r["error"]}
             body = r.get("body") or ""
+            marker_present = UNION_MARKER in body
+            payload_echoed = is_reflection(body, payload)
             attempts.append({
                 "columns": ncols,
                 "template": tmpl,
                 "status": r.get("status"),
-                "reflected": UNION_MARKER in body,
+                "reflected": marker_present,
+                "payload_echoed": payload_echoed,
             })
-            if UNION_MARKER in body:
+            if marker_present and not payload_echoed:
                 findings.append({
                     "columns": ncols,
                     "template": tmpl,

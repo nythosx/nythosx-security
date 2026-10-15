@@ -15,6 +15,7 @@ import httpx
 
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
+from .util import any_handler_reached, unreached_reason
 from . import http as _http
 
 
@@ -107,12 +108,14 @@ def timing_sqli(target_url, param=None, method="GET",
                 "reason": "no param provided for timing SQLi",
                 "evidence": {}}
     baselines = []
+    baseline_attempts = []
     for _ in range(baseline_samples):
         r = _send(target_url, method, params={param: "1"}, headers=headers,
                   timeout=timeout, roe_guard=roe_guard, verify=verify)
         if r.get("blocked"):
             return {"verdict": "UNKNOWN", "reason": r["error"],
                     "evidence": {}}
+        baseline_attempts.append(r)
         if r.get("status") is None:
             continue
         baselines.append(r["elapsed_ms"])
@@ -120,6 +123,10 @@ def timing_sqli(target_url, param=None, method="GET",
         return {"verdict": "UNKNOWN",
                 "reason": "baseline requests did not complete",
                 "evidence": {}}
+    if not any_handler_reached(baseline_attempts):
+        return {"verdict": "UNKNOWN",
+                "reason": unreached_reason(baseline_attempts),
+                "evidence": {"baseline_attempts": baseline_attempts}}
     baseline_ms = _median(baselines)
     attempts = []
     for tmpl, engine in SQLI_DELAY_PAYLOADS:
@@ -167,12 +174,14 @@ def timing_ssti(target_url, param=None, method="GET",
                 "reason": "no param provided for timing SSTI",
                 "evidence": {}}
     baselines = []
+    baseline_attempts = []
     for _ in range(baseline_samples):
         r = _send(target_url, method, params={param: "1"}, headers=headers,
                   timeout=timeout, roe_guard=roe_guard, verify=verify)
         if r.get("blocked"):
             return {"verdict": "UNKNOWN", "reason": r["error"],
                     "evidence": {}}
+        baseline_attempts.append(r)
         if r.get("status") is None:
             continue
         baselines.append(r["elapsed_ms"])
@@ -180,6 +189,10 @@ def timing_ssti(target_url, param=None, method="GET",
         return {"verdict": "UNKNOWN",
                 "reason": "baseline requests did not complete",
                 "evidence": {}}
+    if not any_handler_reached(baseline_attempts):
+        return {"verdict": "UNKNOWN",
+                "reason": unreached_reason(baseline_attempts),
+                "evidence": {"baseline_attempts": baseline_attempts}}
     baseline_ms = _median(baselines)
     attempts = []
     for tmpl, engine in SSTI_DELAY_PAYLOADS:
@@ -219,6 +232,7 @@ def timing_xxe(target_url, baseline_samples=2, threshold_ms=2500,
                headers=None, timeout=15, roe_guard=None, verify=None):
     """Blind XXE via external entity pointing at a non-routable host."""
     baselines = []
+    baseline_attempts = []
     for _ in range(baseline_samples):
         r = _send(target_url, "POST", data="<root/>",
                   headers={"Content-Type": "application/xml"},
@@ -226,6 +240,7 @@ def timing_xxe(target_url, baseline_samples=2, threshold_ms=2500,
         if r.get("blocked"):
             return {"verdict": "UNKNOWN", "reason": r["error"],
                     "evidence": {}}
+        baseline_attempts.append(r)
         if r.get("status") is None:
             continue
         baselines.append(r["elapsed_ms"])
@@ -233,6 +248,10 @@ def timing_xxe(target_url, baseline_samples=2, threshold_ms=2500,
         return {"verdict": "UNKNOWN",
                 "reason": "baseline XML requests did not complete",
                 "evidence": {}}
+    if not any_handler_reached(baseline_attempts):
+        return {"verdict": "UNKNOWN",
+                "reason": unreached_reason(baseline_attempts),
+                "evidence": {"baseline_attempts": baseline_attempts}}
     baseline_ms = _median(baselines)
     payload = XXE_DELAY_PAYLOAD.format(n=uuid.uuid4().hex[:8])
     r = _send(target_url, "POST", data=payload,

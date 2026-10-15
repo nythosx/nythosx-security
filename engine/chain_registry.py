@@ -1,4 +1,7 @@
 
+import threading
+
+
 def get_all_chains():
     return [
         {
@@ -1077,10 +1080,27 @@ def get_all_chains():
 
 _RAW_GET_ALL_CHAINS = get_all_chains
 
+_CACHE_LOCK = threading.Lock()
+_VALIDATED_CHAINS = None
+
 
 def get_all_chains():
-    from . import schema
-    chains = _RAW_GET_ALL_CHAINS()
-    for c in chains:
-        schema.validate_chain(c, where=f"chain:{c.get('id')}")
-    return chains
+    global _VALIDATED_CHAINS
+    if _VALIDATED_CHAINS is not None:
+        return _VALIDATED_CHAINS
+    with _CACHE_LOCK:
+        if _VALIDATED_CHAINS is not None:
+            return _VALIDATED_CHAINS
+        from . import schema
+        chains = _RAW_GET_ALL_CHAINS()
+        for c in chains:
+            schema.validate_chain(c, where=f"chain:{c.get('id')}")
+        _VALIDATED_CHAINS = chains
+        return _VALIDATED_CHAINS
+
+
+def reload():
+    global _VALIDATED_CHAINS
+    with _CACHE_LOCK:
+        _VALIDATED_CHAINS = None
+    return get_all_chains()

@@ -127,7 +127,102 @@ def _match_fingerprint(body):
     return None
 
 
+async def scan_async(urls, roe_guard=None, timeout=8):
+    import asyncio
+    from .http_async import AsyncClient, ROEBlock
+
+    if not urls:
+        return ScanResult(
+            capability="subdomain_takeover", target="(none)",
+            verdict="UNKNOWN", reason="no URLs provided",
+        )
+    verify = _verify_tls()
+    findings = []
+    attempts = []
+    sem = asyncio.Semaphore(20)
+
+    async def _one(client, url):
+        async with sem:
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            try:
+                r = await client.get(url, follow_redirects=True)
+            except ROEBlock as e:
+                return {"blocked": True, "error": f"ROE_BLOCK: {e}", "url": url}
+            except Exception as e:
+                return {"url": url, "status": None,
+                        "error": f"{type(e).__name__}: {e}"}
+            return {"url": url, "status": r.status_code,
+                    "body": (r.text or "")[:50000],
+                    "server": r.headers.get("Server", "")}
+
+    try:
+        async with AsyncClient(timeout=timeout, verify=verify,
+                                follow_redirects=True) as c:
+            tasks = [_one(c, u) for u in urls]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as e:
+        import sys as _sys
+        _sys.stderr.write(
+            f"[subdomain_takeover.scan_async] {type(e).__name__}: {e}\n")
+        return ScanResult(
+            capability="subdomain_takeover", target="(none)",
+            verdict="UNKNOWN",
+            reason=f"async scan failed to start: {type(e).__name__}: {e}",
+        )
+
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        if r.get("blocked"):
+            return ScanResult(
+                capability="subdomain_takeover", target=r["url"],
+                verdict="UNKNOWN", reason=r["error"],
+            )
+        attempts.append({"url": r.get("url"),
+                          "status": r.get("status"),
+                          "server": r.get("server", "")})
+        if r.get("status") is None:
+            continue
+        fp = _match_fingerprint(r.get("body") or "")
+        if fp:
+            findings.append({
+                "url": r["url"],
+                "service": fp["service"],
+                "severity": fp["severity"],
+                "status": r.get("status"),
+                "preview": (r.get("body") or "")[:200],
+            })
+    if findings:
+        services = sorted({f["service"] for f in findings})
+        return ScanResult(
+            capability="subdomain_takeover", target=findings[0]["url"],
+            verdict="VULNERABLE", severity="high",
+            reason=(f"{len(findings)} subdomain takeover candidate(s): "
+                    + ", ".join(services)),
+            evidence={"findings": findings, "attempts": attempts},
+        )
+    live = [a for a in attempts if a.get("status") is not None]
+    if not live:
+        return ScanResult(
+            capability="subdomain_takeover", target=urls[0],
+            verdict="UNKNOWN", reason="no URLs were reachable",
+            evidence={"attempts": attempts},
+        )
+    return ScanResult(
+        capability="subdomain_takeover", target=urls[0],
+        verdict="PASS", severity="low",
+        reason=(f"no takeover fingerprint across {len(live)} live host(s)"),
+        evidence={"attempts": attempts},
+    )
+
+
 def scan(urls, roe_guard=None, timeout=8):
+    from .http_async import run_sync
+    return run_sync(scan_async(urls, roe_guard=roe_guard, timeout=timeout))
+
+
+def _scan_sync_original(urls, roe_guard=None, timeout=8):
     if not urls:
         return ScanResult(
             capability="subdomain_takeover", target="(none)",
@@ -183,4 +278,4 @@ def scan(urls, roe_guard=None, timeout=8):
     )
 
 
-__all__ = ["scan", "CAPABILITY", "FINGERPRINTS"]
+__all__ = ["scan", "scan_async", "CAPABILITY", "FINGERPRINTS"]

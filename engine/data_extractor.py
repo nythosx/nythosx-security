@@ -206,17 +206,25 @@ def _stable_id_for_hash(row):
     return None
 
 
+def _strip_volatile(obj, depth=0, max_depth=10):
+    if depth > max_depth:
+        return obj
+    if isinstance(obj, dict):
+        return {k: _strip_volatile(v, depth + 1, max_depth)
+                for k, v in obj.items()
+                if str(k).lower() not in _VOLATILE_HASH_FIELDS}
+    if isinstance(obj, list):
+        return [_strip_volatile(item, depth + 1, max_depth) for item in obj]
+    return obj
+
+
 def _row_hash(row):
     import hashlib, json as _json
     stable = _stable_id_for_hash(row)
     if stable is not None:
         return hashlib.sha256(stable.encode()).hexdigest()[:16]
     try:
-        if isinstance(row, dict):
-            payload = {k: v for k, v in row.items()
-                       if str(k).lower() not in _VOLATILE_HASH_FIELDS}
-        else:
-            payload = row
+        payload = _strip_volatile(row) if isinstance(row, dict) else row
         s = _json.dumps(payload, sort_keys=True, default=str)
         return hashlib.sha256(s.encode()).hexdigest()[:16]
     except Exception:

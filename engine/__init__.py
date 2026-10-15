@@ -1,11 +1,8 @@
-"""SEC-CHECKER engine package.
+import sys as _sys
 
-Importing engine triggers registration of the banking capability
-modules so their tool handlers are available to ChainOrchestrator
-without any edit to chain_engine.py.
-"""
+LOAD_ERRORS = []
 
-for _name in (
+_MODULES = (
     "banking_recon",
     "data_extractor",
     "unauth_exposure",
@@ -24,11 +21,21 @@ for _name in (
     "oracles_phase4",
     "graphql_schema",
     "llm_security",
-):
+)
+
+_MAX_SILENT_FAILURES = 3
+
+for _name in _MODULES:
     try:
         __import__(f"engine.{_name}")
     except Exception as _e:
-        import sys as _sys
-        _sys.stderr.write(
-            f"[engine] optional module {_name!r} failed to import: "
-            f"{type(_e).__name__}: {_e}\n")
+        _err = f"{_name}: {type(_e).__name__}: {_e}"
+        LOAD_ERRORS.append(_err)
+        _sys.stderr.write(f"[engine] module {_name!r} failed to import: {_err}\n")
+
+if len(LOAD_ERRORS) > _MAX_SILENT_FAILURES:
+    raise RuntimeError(
+        f"engine: {len(LOAD_ERRORS)} capability modules failed to import; "
+        f"refusing to start with a degraded tool registry. "
+        f"Failures: " + "; ".join(LOAD_ERRORS)
+    )

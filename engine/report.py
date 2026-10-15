@@ -781,6 +781,14 @@ def _build_context(target, engine_cfg=None):
             "See Extracted Data section below for masked samples."
         )
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    narrative_summary = ""
+    try:
+        from .brains.narrative import NarrativeWriter
+        nw = NarrativeWriter(client=None)
+        narrative_summary = nw.executive_summary(
+            findings, chains, coverage, tone="business")
+    except Exception:
+        narrative_summary = ""
     return {
         "target": target,
         "timestamp": ts,
@@ -795,6 +803,7 @@ def _build_context(target, engine_cfg=None):
         "total_extracted": total_extracted,
         "impact_summary": impact_summary,
         "data_svg": data_svg,
+        "narrative_summary": narrative_summary,
     }
 
 

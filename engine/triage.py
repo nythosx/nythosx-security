@@ -54,13 +54,17 @@ def _norm(k):
     return re.sub(r"[^a-z0-9]", "", str(k).lower())
 
 
+def _token_match(hint, norm_key):
+    return bool(re.search(r"(?:^|_)" + re.escape(hint) + r"(?:_|$)", norm_key))
+
+
 def category_from_keys(keys):
     if not keys:
         return None
     norm = {_norm(k) for k in keys}
     scores = {}
     for category, hints in KEY_CATEGORY_HINTS:
-        hits = sum(1 for h in hints if any(h in n or n in h for n in norm))
+        hits = sum(1 for h in hints if any(_token_match(h, n) for n in norm))
         if hits:
             scores[category] = hits
     if not scores:

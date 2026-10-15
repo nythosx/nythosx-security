@@ -100,6 +100,7 @@ def _api_key(cfg):
 
 
 def _severity_from_metrics(metrics):
+    from .cvss import cvss_vector_to_score, score_to_severity
     for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
         arr = metrics.get(key) or []
         if not arr:
@@ -108,6 +109,10 @@ def _severity_from_metrics(metrics):
         sev = data.get("baseSeverity") or arr[0].get("baseSeverity")
         if sev:
             return str(sev).lower()
+        vector = data.get("vectorString") or ""
+        score = cvss_vector_to_score(vector)
+        if score is not None:
+            return score_to_severity(score)
     return "medium"
 
 

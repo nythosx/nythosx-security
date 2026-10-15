@@ -76,13 +76,37 @@ class CircuitBreaker:
             _circuit_breaker_state.pop(host, None)
 
 
-_default_breaker = None
+_cb_cfg_lock = threading.Lock()
+_cb_cfg = None
+
+
+def _cb_config():
+    global _cb_cfg
+    if _cb_cfg is not None:
+        return _cb_cfg
+    with _cb_cfg_lock:
+        if _cb_cfg is not None:
+            return _cb_cfg
+        try:
+            cfg = load_engine() or {}
+            cb = cfg.get("circuit_breaker") or {}
+            _cb_cfg = {
+                "threshold": int(cb.get("failures_threshold", 5)),
+                "cooldown_seconds": float(cb.get("cooldown_seconds", 60.0)),
+            }
+        except Exception:
+            _cb_cfg = {"threshold": 5, "cooldown_seconds": 60.0}
+        return _cb_cfg
+
+
+_cb_params = _cb_config()
+_default_breaker = CircuitBreaker(
+    threshold=_cb_params["threshold"],
+    cooldown_seconds=_cb_params["cooldown_seconds"],
+)
 
 
 def _get_breaker():
-    global _default_breaker
-    if _default_breaker is None:
-        _default_breaker = CircuitBreaker()
     return _default_breaker
 
 
@@ -214,6 +238,9 @@ class Client:
         if not skip_default_headers:
             for k, v in self._default_headers.items():
                 req_headers.setdefault(k, v)
+
+        if isinstance(kwargs.get("data"), (str, bytes, bytearray)):
+            kwargs["content"] = kwargs.pop("data")
 
         body_kwargs = {}
         for key in ("json", "data", "content"):

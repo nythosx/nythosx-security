@@ -182,10 +182,12 @@ class ChainOrchestrator:
 
     def _stop_condition(self):
         if self._budget_exceeded():
-            self.stopped_reason = "budget exceeded"
+            if not self.stopped_reason:
+                self.stopped_reason = "budget exceeded"
             return True
         if self.kill_on_vuln and self.findings:
-            self.stopped_reason = "kill_on_vuln: first finding recorded"
+            if not self.stopped_reason:
+                self.stopped_reason = "kill_on_vuln: first finding recorded"
             return True
         return False
 
@@ -727,28 +729,30 @@ class ChainOrchestrator:
                     time.sleep(2.0)
                     retry = self._execute_step(chain_id, step)
                     retry["retried"] = True
-                    retry["unknown_kind"] = "timeout"
                     result["steps"].append(retry)
                     if retry.get("verdict") != "UNKNOWN":
                         step_result = retry
-                        kind = retry.get("unknown_kind") or "timeout"
+                        kind = None
                     else:
-                        kind = "ambiguous"
-                step_result["unknown_kind"] = kind
-                try:
-                    _hooks.fire_post_unknown(self, chain_id, step, step_result)
-                except Exception:
-                    pass
-                if kind == "unreachable":
-                    result["verdict"] = "UNKNOWN"
-                    result["reason"] = (f"chain aborted: step '{step['id']}' "
-                                        f"could not reach target")
-                    result["aborted"] = True
-                    self._warn("chain_aborted", result["reason"],
-                               chain=chain_id, step=step["id"])
-                    break
-                if kind == "ambiguous":
-                    result["reduced_confidence"] = True
+                        kind = _classify_unknown(retry)
+                        retry["unknown_kind"] = kind
+                        step_result = retry
+                if kind is not None:
+                    step_result["unknown_kind"] = kind
+                    try:
+                        _hooks.fire_post_unknown(self, chain_id, step, step_result)
+                    except Exception:
+                        pass
+                    if kind == "unreachable":
+                        result["verdict"] = "UNKNOWN"
+                        result["reason"] = (f"chain aborted: step '{step['id']}' "
+                                            f"could not reach target")
+                        result["aborted"] = True
+                        self._warn("chain_aborted", result["reason"],
+                                   chain=chain_id, step=step["id"])
+                        break
+                    if kind == "ambiguous":
+                        result["reduced_confidence"] = True
 
             v = step_result.get("verdict", "UNKNOWN")
             if v == "VULNERABLE":
@@ -1623,24 +1627,58 @@ class ChainOrchestrator:
 
     def _confirm_step(self, chain_id, step, original):
         import time as _t
-        _t.sleep(0.4)
+        control_args = step.get("control_args")
+        if control_args is not None:
+            try:
+                control = self._dispatch_tool(step["tool"], control_args)
+            except Exception as e:
+                control = {"verdict": "UNKNOWN",
+                           "reason": f"control error: {e}"}
+            if not isinstance(control, dict):
+                control = {"verdict": "UNKNOWN"}
+            cv = control.get("verdict")
+            original["confirmation_control_verdict"] = cv or "UNKNOWN"
+            if cv == "VULNERABLE":
+                original["confirmation_status"] = "tool_unsound"
+                original["verdict"] = "PASS"
+                original["reason"] = ("[tool_unsound: control payload "
+                                      "returned VULNERABLE] "
+                                      + (original.get("reason") or ""))
+                self._diag("confirmation", "warning",
+                           f"tool '{step['tool']}' returned VULNERABLE on "
+                           f"benign control; suppressing finding")
+                return original
+        _t.sleep(1.5)
         try:
             retry = self._dispatch_tool(step["tool"], step.get("args", {}))
         except Exception as e:
-            retry = {"verdict": "UNKNOWN", "reason": f"confirmation error: {e}"}
+            retry = {"verdict": "UNKNOWN",
+                     "reason": f"confirmation error: {e}"}
         if not isinstance(retry, dict):
             retry = {"verdict": "UNKNOWN"}
         rv = retry.get("verdict")
+        original["confirmation_retry_verdict"] = rv or "UNKNOWN"
         if rv == "VULNERABLE":
             original["confirmation_status"] = "confirmed"
-            original["confirmation_retry_verdict"] = rv
+            original["confidence"] = self._confidence_from_retry(original, retry)
         else:
             original["confirmation_status"] = "unconfirmed"
-            original["confirmation_retry_verdict"] = rv or "UNKNOWN"
             original["verdict"] = "SUSPICIOUS"
             original["reason"] = ("[unconfirmed: retry returned "
-                                  + str(rv) + "] " + (original.get("reason") or ""))
+                                  + str(rv) + "] "
+                                  + (original.get("reason") or ""))
         return original
+
+    def _confidence_from_retry(self, original, retry):
+        base = 0.9
+        ev1 = original.get("evidence") or {}
+        ev2 = retry.get("evidence") or {}
+        sig1 = ev1.get("signal_strength")
+        sig2 = ev2.get("signal_strength")
+        if isinstance(sig1, (int, float)) and isinstance(sig2, (int, float)):
+            avg = (float(sig1) + float(sig2)) / 2.0
+            return max(0.5, min(1.0, avg))
+        return base
 
     def _tool_framework_probe(self, args):
         from .frameworks import scan_all

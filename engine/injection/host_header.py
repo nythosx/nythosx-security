@@ -7,6 +7,7 @@ from ..contract import Capability, ScanResult
 from ..roe_guard import ROEGuard, ROEViolation
 from .payloads import HOST_HEADER_PAYLOADS, HOST_HEADER_NAMES
 from .. import http as _http
+from ..util import any_handler_reached, unreached_reason
 
 
 CAPABILITY = Capability(
@@ -107,14 +108,11 @@ def scan(target_url, headers=None, roe_guard=None, timeout=8):
                     f"({findings[0]['type']})"),
             evidence={"findings": findings, "attempts": attempts[:30]},
         )
-    statuses = [a["status"] for a in attempts if a["status"] is not None]
-    if not statuses:
-        from ..util import summarize_failures
-        why = summarize_failures(attempts)
+    if not any_handler_reached(attempts):
         return ScanResult(
             capability="host_header_scan", target=target_url,
             verdict="UNKNOWN",
-            reason=f"all requests failed ({why})" if why else "all requests failed",
+            reason=unreached_reason(attempts),
             evidence={"attempts": attempts[:30]},
         )
     return ScanResult(

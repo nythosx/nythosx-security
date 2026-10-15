@@ -9,6 +9,7 @@ from ..contract import Capability, ScanResult
 from ..roe_guard import ROEGuard, ROEViolation
 from .payloads import NOSQL_PAYLOADS
 from .. import http as _http
+from ..util import any_handler_reached, unreached_reason
 
 
 CAPABILITY = Capability(
@@ -129,14 +130,11 @@ def scan(login_url, headers=None, roe_guard=None, timeout=8,
             reason=f"NoSQL auth bypass via {findings[0]['op']}",
             evidence={"findings": findings, "attempts": attempts},
         )
-    statuses = [a["status"] for a in attempts if a["status"] is not None]
-    if not statuses:
-        from ..util import summarize_failures
-        why = summarize_failures(attempts)
+    if not any_handler_reached(attempts):
         return ScanResult(
             capability="nosql_scan", target=login_url,
             verdict="UNKNOWN",
-            reason=f"all requests failed ({why})" if why else "all requests failed",
+            reason=unreached_reason(attempts),
             evidence={"attempts": attempts},
         )
     return ScanResult(

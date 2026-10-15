@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from .config import load_engine
 from .contract import Capability, ScanResult
 from .roe_guard import ROEGuard, ROEViolation
+from .util import error_looks_like_unreachable
 
 
 CAPABILITY = Capability(
@@ -136,6 +137,15 @@ def scan(target_url, headers=None, roe_guard=None, timeout=8):
             verdict=v, severity="high" if v == "VULNERABLE" else "medium",
             reason=f"WebSocket security issue: {findings[0]['type']}",
             evidence={"findings": findings, "ws_url": ws_url},
+        )
+    na_err = no_auth.get("error")
+    cs_err = cswsh.get("error")
+    if error_looks_like_unreachable(na_err) or error_looks_like_unreachable(cs_err):
+        return ScanResult(
+            capability="websocket_scan", target=target_url,
+            verdict="UNKNOWN",
+            reason="WebSocket handshake did not reach a real endpoint",
+            evidence={"no_auth": no_auth, "cswsh": cswsh, "ws_url": ws_url},
         )
     return ScanResult(
         capability="websocket_scan", target=target_url,

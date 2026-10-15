@@ -8,6 +8,7 @@ import httpx
 
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
+from .util import response_is_success
 from . import http as _http
 
 
@@ -168,17 +169,7 @@ def _looks_like_success(resp):
     for marker in SUCCESS_MARKERS:
         if marker in body:
             return True
-    try:
-        data = json.loads(resp.get("body") or "")
-        if isinstance(data, dict):
-            if data.get("error"):
-                return False
-            if data.get("errors"):
-                return False
-            return True
-    except Exception:
-        pass
-    return False
+    return response_is_success(resp.get("body") or "")
 
 
 def _request(url, method="GET", headers=None, json_body=None, data=None,
@@ -286,14 +277,7 @@ def probe_price_tampering(endpoint_url, method="POST", baseline_body=None,
 
     for param_name in numeric_params:
         for tamper_name, tamper_value in NUMERIC_TAMPERS:
-            if isinstance(tamper_value, float) and (
-                tamper_value != tamper_value or
-                tamper_value == float("inf") or
-                tamper_value == float("-inf")
-            ):
-                value_to_send = tamper_value
-            else:
-                value_to_send = tamper_value
+            value_to_send = tamper_value
             modified = json.loads(json.dumps(baseline_body)) if isinstance(baseline_body, dict) else dict(baseline_body)
             if "." in param_name:
                 outer, inner = param_name.split(".", 1)

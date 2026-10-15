@@ -9,6 +9,7 @@ from .config import load_engine
 from .contract import Capability, ScanResult
 from .roe_guard import ROEGuard, ROEViolation
 from . import http as _http
+from .util import any_handler_reached, unreached_reason
 
 
 CAPABILITY = Capability(
@@ -146,11 +147,12 @@ def scan(upload_url, headers=None, roe_guard=None, timeout=15,
             reason="SVG upload accepted (potential stored XSS)",
             evidence={"findings": findings, "attempts": attempts},
         )
-    statuses = [a["status"] for a in attempts if a["status"] is not None]
-    if not statuses:
+    if not any_handler_reached(attempts):
         return ScanResult(
             capability="upload_scan", target=upload_url,
-            verdict="UNKNOWN", reason="all uploads failed",
+            verdict="UNKNOWN",
+            reason=unreached_reason(attempts),
+            evidence={"attempts": attempts[:30]},
         )
     return ScanResult(
         capability="upload_scan", target=upload_url,

@@ -8,6 +8,7 @@ from ..roe_guard import ROEGuard, ROEViolation
 from .payloads import (XXE_FILE_PAYLOADS, XXE_TEMPLATE_BASIC,
                         XXE_TEMPLATE_OOB)
 from .. import http as _http
+from ..util import any_handler_reached, unreached_reason
 
 
 CAPABILITY = Capability(
@@ -95,20 +96,12 @@ def scan(target_url, headers=None, roe_guard=None, timeout=8,
             reason=f"XXE file read confirmed via {findings[0]['path']}",
             evidence={"findings": findings, "attempts": attempts},
         )
-    statuses = [a["status"] for a in attempts if a["status"] is not None]
-    if not statuses:
-        from ..util import summarize_failures
-        why = summarize_failures(attempts)
+    if not any_handler_reached(attempts):
         return ScanResult(
             capability="xxe_scan", target=target_url,
             verdict="UNKNOWN",
-            reason=f"all requests failed ({why})" if why else "all requests failed",
+            reason=unreached_reason(attempts),
             evidence={"attempts": attempts},
-        )
-    if all(s in (404, 405) for s in statuses):
-        return ScanResult(
-            capability="xxe_scan", target=target_url,
-            verdict="UNKNOWN", reason="endpoint not found",
         )
     return ScanResult(
         capability="xxe_scan", target=target_url,

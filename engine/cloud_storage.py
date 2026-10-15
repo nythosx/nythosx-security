@@ -138,7 +138,9 @@ def _probe(url, timeout, verify):
                 "error": f"{type(e).__name__}: {e}"}
 
 
-def scan(domain, timeout=8, endpoints=None, max_buckets=None):
+async def scan_async(domain, timeout=8, endpoints=None, max_buckets=None):
+    import asyncio
+    import httpx
     verify = _verify_tls()
     buckets = candidate_buckets(domain)
     if max_buckets:
@@ -150,22 +152,40 @@ def scan(domain, timeout=8, endpoints=None, max_buckets=None):
         )
     eps = endpoints or DEFAULT_ENDPOINTS
     results = []
-    for bucket in buckets:
-        for ep in eps:
+    sem = asyncio.Semaphore(20)
+
+    async def _one(client, bucket, ep):
+        async with sem:
             url = ep["url_template"].format(bucket=bucket, account=bucket)
-            r = _probe(url, timeout, verify)
-            if r.get("status") is None:
-                continue
-            classification = classify(r["status"], r.get("body"))
+            try:
+                r = await client.get(url, follow_redirects=False)
+            except Exception:
+                return None
+            classification = classify(r.status_code, r.text)
             if classification in ("not_found", "unreachable"):
-                continue
-            results.append({
+                return None
+            return {
                 "bucket": bucket,
                 "provider": ep["provider"],
                 "url": url,
-                "status": r["status"],
+                "status": r.status_code,
                 "classification": classification,
-            })
+            }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, verify=verify,
+                                      follow_redirects=False) as c:
+            tasks = []
+            for bucket in buckets:
+                for ep in eps:
+                    tasks.append(_one(c, bucket, ep))
+            for r in await asyncio.gather(*tasks, return_exceptions=True):
+                if isinstance(r, dict):
+                    results.append(r)
+    except Exception as e:
+        import sys as _sys
+        _sys.stderr.write(
+            f"[cloud_storage.scan_async] {type(e).__name__}: {e}\n")
     public = [r for r in results if r["classification"] == "public"]
     available = [r for r in results if r["classification"] == "available"]
     private = [r for r in results if r["classification"] == "private"]
@@ -202,5 +222,11 @@ def scan(domain, timeout=8, endpoints=None, max_buckets=None):
     )
 
 
-__all__ = ["scan", "CAPABILITY", "candidate_buckets", "classify",
-           "DEFAULT_ENDPOINTS"]
+def scan(domain, timeout=8, endpoints=None, max_buckets=None):
+    from .http_async import run_sync
+    return run_sync(scan_async(domain, timeout=timeout, endpoints=endpoints,
+                                max_buckets=max_buckets))
+
+
+__all__ = ["scan", "scan_async", "CAPABILITY", "candidate_buckets",
+           "classify", "DEFAULT_ENDPOINTS"]

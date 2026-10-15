@@ -71,6 +71,27 @@ def resolve_chains(findings, threshold=0.7):
     except Exception:
         pass
 
+    try:
+        from ..brains.chain_synth import ChainSynthesizer
+        synth = ChainSynthesizer(client=None)
+        existing_ids = [c.id for c in all_chains]
+        synth_chains = synth.synthesize(findings, existing_ids)
+        for sc in synth_chains:
+            all_chains.append(AttackChain(
+                id=sc["id"],
+                name=sc["name"],
+                prerequisites=list(sc["requires"]),
+                narrative=sc["narrative"],
+                severity="high",
+                verdict=ChainVerdict.INCOMPLETE.value,
+                confidence=sc["confidence"],
+                matched=[],
+                missing=list(sc["requires"]),
+                steps=[],
+            ))
+    except Exception:
+        pass
+
     out = []
     for chain in all_chains:
         matched = []

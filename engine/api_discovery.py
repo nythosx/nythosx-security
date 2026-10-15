@@ -311,7 +311,95 @@ def discover_same_origin(base_url, cfg):
     return candidates[0]
 
 
+async def port_scan_async(host, ports=None, timeout=2, cfg=None):
+    import asyncio
+    from .http_async import AsyncClient
+
+    cfg = cfg or _cfg(None)
+    ports = ports or COMMON_API_PORTS
+    parsed = urlparse(host)
+    hostname = parsed.hostname or "localhost"
+    current_port = parsed.port
+    alive = []
+    sem = asyncio.Semaphore(20)
+
+    async def _probe_one(client, port):
+        async with sem:
+            schemes = ["https", "http"] if port in (443, 8443) else ["http", "https"]
+            if cfg["prefer_https"] and "https" in schemes:
+                schemes = ["https"] + [s for s in schemes if s != "https"]
+            for scheme in schemes:
+                for suffix in ("/api", "/"):
+                    probe_url = f"{scheme}://{hostname}:{port}{suffix}"
+                    info = await _probe_async(client, probe_url, cfg["timeout"],
+                                                cfg["follow_redirects"])
+                    if info is None:
+                        continue
+                    if info["off_host"] and cfg["reject_redirect_only"]:
+                        continue
+                    if info["is_redirect"] and cfg["reject_redirect_only"]:
+                        continue
+                    return {
+                        "port": port,
+                        "scheme": info["final_scheme"] or scheme,
+                        "url": info["final_url"],
+                        "status": info["status"],
+                        "content_type": "",
+                        "server": info["server"],
+                        "powered_by": info["powered_by"],
+                        "json": info["json"],
+                        "size": info["size"],
+                    }
+            return None
+
+    try:
+        async with AsyncClient(timeout=timeout, follow_redirects=cfg["follow_redirects"]) as c:
+            tasks = []
+            for port in ports:
+                if current_port and port == current_port:
+                    continue
+                tasks.append(_probe_one(c, port))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception:
+        return []
+
+    for r in results:
+        if isinstance(r, dict):
+            alive.append(r)
+    alive.sort(key=lambda x: (not x["json"], x["scheme"] != "https", x["port"]))
+    return alive
+
+
+async def _probe_async(client, url, timeout, follow):
+    try:
+        r = await client.get(url, follow_redirects=follow)
+    except Exception:
+        return None
+    final = urlparse(str(r.url))
+    final_host = (final.hostname or "").lower()
+    req_host = (urlparse(url).hostname or "").lower()
+    return {
+        "requested": url,
+        "final_url": str(r.url),
+        "final_scheme": final.scheme,
+        "final_netloc": final.netloc,
+        "status": r.status_code,
+        "json": _is_json_response(r),
+        "is_html": "text/html" in r.headers.get("Content-Type", "").lower(),
+        "off_host": bool(final_host) and final_host != req_host,
+        "is_redirect": 300 <= r.status_code < 400,
+        "server": r.headers.get("Server", ""),
+        "powered_by": r.headers.get("X-Powered-By", ""),
+        "size": len(r.text or ""),
+    }
+
+
 def port_scan(host, ports=None, timeout=2, cfg=None):
+    from .http_async import run_sync
+    return run_sync(port_scan_async(host, ports=ports, timeout=timeout, cfg=cfg))
+
+
+def _port_scan_sync_original(host, ports=None, timeout=2, cfg=None):
     cfg = cfg or _cfg(None)
     ports = ports or COMMON_API_PORTS
     parsed = urlparse(host)
