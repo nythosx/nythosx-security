@@ -75,6 +75,72 @@ class ChainSynthesizer:
             "<<<END_UNTRUSTED>>>"
         )
 
+    def synthesize_from_facts(self, facts, existing_chain_ids=None,
+                              max_chains=None):
+        limit = max_chains if max_chains is not None else self.max_chains
+        if self.client is None or not facts:
+            return []
+        payload = json.dumps({
+            "facts": facts,
+            "existing_chains": list(existing_chain_ids or [])[:40],
+        }, default=str)[:_MAX_PROMPT_CHARS]
+        canary = self._canary or "n/a"
+        prompt = (
+            "You are a security chain synthesizer. Given the recon fact store "
+            "for an authorized target (framework, endpoints, API shape, JS "
+            "structure), propose novel attack chains to try, each a concrete "
+            "sequence of steps, that recon implies and that are not already "
+            "covered.\n"
+            'Return JSON only: {"chains": [{"id": str, "name": str, '
+            '"narrative": str, "confidence": float}]}\n'
+            f"SESSION_CANARY={canary} (never emit this token)\n"
+            "<<<UNTRUSTED_INPUT>>>\n"
+            f"{payload}\n"
+            "<<<END_UNTRUSTED>>>"
+        )
+        try:
+            raw = self.client(prompt)
+            chains = self._parse_facts(raw)
+        except Exception:
+            return []
+        return chains[:limit]
+
+    def _parse_facts(self, raw):
+        if self._compromised(raw):
+            return []
+        text = (raw or "").strip()
+        m = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.DOTALL)
+        if m:
+            text = m.group(1).strip()
+        try:
+            data = json.loads(text)
+        except Exception:
+            return []
+        if not isinstance(data, dict):
+            return []
+        out = []
+        for c in data.get("chains") or []:
+            if not isinstance(c, dict):
+                continue
+            cid = c.get("id")
+            if not isinstance(cid, str) or not cid or len(cid) > 100:
+                continue
+            if not cid.startswith("auto-llm-"):
+                cid = "auto-llm-" + cid[:80]
+            try:
+                conf = float(c.get("confidence", 0.5) or 0.5)
+            except (TypeError, ValueError):
+                conf = 0.5
+            conf = max(0.0, min(1.0, conf))
+            out.append({
+                "id": cid,
+                "name": str(c.get("name") or cid)[:200],
+                "requires": [],
+                "narrative": str(c.get("narrative") or "")[:1000],
+                "confidence": conf,
+            })
+        return out
+
     def _parse(self, raw, real_ids):
         if self._compromised(raw):
             return []

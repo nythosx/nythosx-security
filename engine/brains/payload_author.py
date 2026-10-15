@@ -26,6 +26,55 @@ _FALLBACK = {
 }
 
 
+def _parse_str_list(raw, cap):
+    if not raw:
+        return []
+    txt = raw.strip()
+    m = re.search(r"\[.*\]", txt, re.S)
+    if m:
+        txt = m.group(0)
+    try:
+        data = json.loads(txt)
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    seen = set()
+    for x in data:
+        if isinstance(x, (str, int, float)) and not isinstance(x, bool):
+            s = x if isinstance(x, str) else json.dumps(x)
+            if 0 < len(s) <= 500 and s not in seen:
+                seen.add(s)
+                out.append(x)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def propose_strings(kind, context=None, capability="payload_author", cap=20):
+    try:
+        from .. import llm_service
+        client = llm_service.get_client(capability)
+    except Exception:
+        return []
+    if client is None:
+        return []
+    prompt = (
+        "You propose additional test values for an authorized security scan. "
+        "Given the test kind and target context, output ONLY a JSON array of "
+        "up to " + str(cap) + " values tailored to this target. No prose.\n\n"
+        "KIND: " + str(kind) + "\nCONTEXT:\n"
+        + json.dumps(context or {}, default=str)[:_MAX_PROMPT_CHARS]
+        + "\n\nRespond with a JSON array only."
+    )
+    try:
+        raw = client(prompt)
+    except Exception:
+        return []
+    return _parse_str_list(raw, cap)
+
+
 class PayloadAuthor:
     def __init__(self, client=None, max_variants=15):
         self.client = client

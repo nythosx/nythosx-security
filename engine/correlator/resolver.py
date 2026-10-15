@@ -73,7 +73,12 @@ def resolve_chains(findings, threshold=0.7):
 
     try:
         from ..brains.chain_synth import ChainSynthesizer
-        synth = ChainSynthesizer(client=None)
+        try:
+            from .. import llm_service
+            _synth_client = llm_service.get_client("chain_synth")
+        except Exception:
+            _synth_client = None
+        synth = ChainSynthesizer(client=_synth_client)
         existing_ids = [c.id for c in all_chains]
         synth_chains = synth.synthesize(findings, existing_ids)
         for sc in synth_chains:

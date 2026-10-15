@@ -336,6 +336,19 @@ def extract_auth_schemes(spec):
 
 
 def _make_fuzz_values(schema):
+    values = _make_fuzz_values_base(schema)
+    try:
+        from .brains import payload_author
+        extra = payload_author.propose_strings(
+            "openapi_fuzz", {"schema": schema}, capability="fuzzing", cap=10)
+    except Exception:
+        extra = []
+    for v in extra:
+        values.append({"type": "llm", "value": v})
+    return values
+
+
+def _make_fuzz_values_base(schema):
     values = []
     if not isinstance(schema, dict):
         return [{"type": "string", "value": "test"}]
