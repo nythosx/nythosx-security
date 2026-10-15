@@ -1515,24 +1515,35 @@ function flowRun(){
   reset();
   panelReset();
   flowHideReport();
-  flowStartTimer();
+  flowResetTimer();
   document.getElementById('tgt').textContent = url;
-  if(nodeEls['target'] && nodeEls['target']._url) nodeEls['target']._url.textContent = url;
-  setBadge('running','running');
-  setNode('start','done-pass');
-  setNode('target','active');
-  setTargetStatus('\u25cf probing');
+  setBadge('checking','running');
+  setTargetStatus('\u25cf checking scope\u2026');
   fetch('/api/csrf').then(function(r){ return r.json(); }).then(function(cj){
     return fetch('/api/scan', {method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':cj.token}, body: JSON.stringify(Object.assign({url:url, min_severity:'medium'}, flowCreds()))});
   }).then(function(r){ return r.json().then(function(data){ return {ok:r.ok, data:data}; }); })
     .then(function(res){
-      if(!res.ok){ setBadge('error','error'); setTargetStatus('\u25cf ' + ((res.data && res.data.error) || 'rejected')); return; }
+      if(!res.ok){
+        var err = (res.data && res.data.error) || 'scan rejected';
+        flowStopTimer(); flowResetTimer();
+        setBadge('rejected','error');
+        setTargetStatus('\u25cf ' + err);
+        consoleLog('core', err + (res.data && res.data.hint ? ' \u2014 ' + res.data.hint : ''), 'err');
+        trStep(err, '', 'vuln');
+        return;
+      }
       flowJob = res.data.job_id;
+      flowStartTimer();
+      if(nodeEls['target'] && nodeEls['target']._url) nodeEls['target']._url.textContent = url;
+      setBadge('running','running');
+      setNode('start','done-pass');
+      setNode('target','active');
+      setTargetStatus('\u25cf probing');
       if(flowES){ flowES.close(); }
       flowES = new EventSource('/api/scan/' + flowJob + '/stream');
       flowES.onmessage = function(m){ try{ var _ev=JSON.parse(m.data); flowHandle(_ev); panelHandle(_ev); }catch(e){} };
       flowES.onerror = function(){ };
-    }).catch(function(e){ setBadge('error','error'); setTargetStatus('\u25cf network error'); });
+    }).catch(function(e){ flowStopTimer(); flowResetTimer(); setBadge('error','error'); setTargetStatus('\u25cf network error'); });
 }
 document.getElementById('goBtn').addEventListener('click', flowRun);
 document.getElementById('flowUrl').addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); flowRun(); } });
