@@ -95,17 +95,18 @@ def make_brain_from_config(cfg=None, max_per_iter=20):
             cfg = (load_engine() or {}).get("brain") or {}
         except Exception:
             cfg = {}
-    provider = cfg.get("provider") or "openai"
-    if provider in ("rule_based", "rule", "none", ""):
+    lcfg = cfg.get("llm") or {}
+    provider = (lcfg.get("provider") or cfg.get("provider") or "openai").lower()
+    if provider in ("rule_based", "rule", "none", "", "llm"):
         return RuleBasedBrain(max_per_iter=max_per_iter)
+    model = lcfg.get("model") or cfg.get("model") or "gpt-4o-mini"
     client = make_llm_client(
         provider=provider,
-        model=cfg.get("model") or "gpt-4o-mini",
-        base_url=cfg.get("base_url"),
-        env_name=cfg.get("api_key_env"),
+        model=model,
+        base_url=lcfg.get("base_url") or cfg.get("base_url"),
+        env_name=lcfg.get("api_key_env") or cfg.get("api_key_env"),
     )
-    return LLMBrain(client=client, model=cfg.get("model") or "gpt-4o-mini",
-                    max_per_iter=max_per_iter)
+    return LLMBrain(client=client, model=model, max_per_iter=max_per_iter)
 
 
 _SYSTEM_PROMPT = (
