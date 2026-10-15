@@ -1943,30 +1943,30 @@ class ChainOrchestrator:
                 self.add_fact(key, fact_val, source=step["id"])
 
     def _triage_suspicious(self, chain_id, step, result):
+        finding = {
+            "tool": step.get("tool"),
+            "chain": chain_id,
+            "verdict": result.get("verdict", "SUSPICIOUS"),
+            "reason": result.get("reason", ""),
+            "evidence": result.get("evidence") or {},
+        }
         try:
-            decision = self.triage_brain.triage_response(
-                baseline=None,
-                candidate={"status": 0, "body_len": 0,
-                            "reason": result.get("reason", "")},
-                context={"tool": step.get("tool"),
-                         "chain": chain_id,
-                 "evidence": result.get("evidence") or {}},
-            )
+            decision = self.triage_brain.triage_finding(finding)
         except Exception as e:
             self._diag("triage", "warning",
-                       f"LLM triage failed: {type(e).__name__}: {e}")
+                       f"triage failed: {type(e).__name__}: {e}")
             return result
         if decision is None:
             return result
-        escalate = bool(getattr(decision, "escalate", False))
+        genuine = bool(getattr(decision, "escalate", True))
         reason = getattr(decision, "reason", "") or ""
-        if not escalate and reason:
+        if not genuine:
             result["verdict"] = "PASS"
             result["triage_override"] = True
             result["triage_reason"] = reason[:300]
             self._diag("triage", "info",
-                       f"{step.get('tool')}: LLM rejected SUSPICIOUS "
-                       f"({reason[:120]})")
+                       f"{step.get('tool')}: triage downgraded SUSPICIOUS "
+                       f"→ PASS ({reason[:120]})")
         else:
             result["triage_confirmed"] = True
             if reason:

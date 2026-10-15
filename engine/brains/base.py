@@ -24,5 +24,8 @@ class ScanBrain(Protocol):
     def triage_response(self, baseline, candidate, context=None) -> TriageDecision:
         ...
 
+    def triage_finding(self, finding) -> TriageDecision:
+        ...
+
 
 __all__ = ["ScanBrain"]

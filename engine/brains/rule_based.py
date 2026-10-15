@@ -160,6 +160,10 @@ class RuleBasedBrain:
     def triage(self, finding):
         return TriageDecision(keep=True)
 
+    def triage_finding(self, finding):
+        return TriageDecision(keep=True, escalate=True,
+                              reason="no LLM — kept for human review")
+
     def should_stop(self, state):
         return False
 
