@@ -56,14 +56,33 @@ def _payload_matches_location(payload, location):
     return True
 
 
+def _augmented_redirect_payloads(target_url):
+    try:
+        from ..brains import payload_author
+        extra = payload_author.propose_strings(
+            "open_redirect", {"target": target_url}, capability="open_redirect",
+            cap=15)
+    except Exception:
+        extra = []
+    extra = [p for p in extra if isinstance(p, str) and p]
+    seen = set()
+    out = []
+    for p in extra + list(OPEN_REDIRECT_PAYLOADS):
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
 def scan(target_url, param=None, headers=None, roe_guard=None, timeout=8):
     verify = _verify_tls()
     params = [param] if param else REDIRECT_PARAMS
 
     attempts = []
     findings = []
+    payloads = _augmented_redirect_payloads(target_url)
     for pname in params:
-        for payload in OPEN_REDIRECT_PAYLOADS:
+        for payload in payloads:
             viol = _roe_block(roe_guard, target_url, "GET")
             if viol:
                 return ScanResult(

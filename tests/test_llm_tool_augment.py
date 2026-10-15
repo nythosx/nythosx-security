@@ -74,6 +74,21 @@ def test_chain_synth_from_facts():
     assert ChainSynthesizer(client=None).synthesize_from_facts({"a": 1}) == []
 
 
+def test_open_redirect_payloads_augmented(monkeypatch):
+    from engine.injection import open_redirect as orr
+    from engine.injection.payloads import OPEN_REDIRECT_PAYLOADS
+    monkeypatch.setattr(llm_service, "get_client",
+                        lambda capability=None, cfg=None: None)
+    assert orr._augmented_redirect_payloads("http://t/") == list(
+        OPEN_REDIRECT_PAYLOADS)
+    monkeypatch.setattr(
+        llm_service, "get_client",
+        lambda capability=None, cfg=None: (lambda p: '["//evil.test"]'))
+    got = orr._augmented_redirect_payloads("http://t/")
+    assert got[0] == "//evil.test"
+    assert set(OPEN_REDIRECT_PAYLOADS).issubset(set(got))
+
+
 def test_bundle_trace():
     def client(p):
         return json.dumps({"taints": [

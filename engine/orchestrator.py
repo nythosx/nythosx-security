@@ -176,7 +176,66 @@ class Orchestrator:
         except Exception:
             pass
 
+        try:
+            self._run_planner_phase(state, target, job_id)
+        except Exception:
+            pass
+
         return state
+
+    def _run_planner_phase(self, state, target, job_id):
+        try:
+            from . import llm_service
+            client = llm_service.get_client("exploit_planner")
+        except Exception:
+            client = None
+        if client is None:
+            return
+        from urllib.parse import urlparse
+        from .brains.exploit_planner import ExploitPlanner
+        from . import http as _http
+        host = (urlparse(target).hostname or "").lower()
+        if not host:
+            return
+        planner = ExploitPlanner(
+            client=client, roe_guard=getattr(self, "roe_guard", None),
+            allowed_hosts=[host], allow_write_methods=False)
+        pstate = {"target": target, "history": []}
+        last_response = None
+        self._emit(job_id, "phase", {"name": "planner", "status": "running"})
+        for _ in range(planner.max_turns):
+            try:
+                step = planner.next_step(pstate, last_response)
+            except Exception:
+                step = None
+            if not step:
+                break
+            try:
+                with _http.Client(timeout=10, follow_redirects=False) as c:
+                    r = c.request(step["method"], step["url"])
+                last_response = {"status": r.status_code,
+                                 "body_preview": (r.text or "")[:800]}
+            except Exception as e:
+                last_response = {"status": None,
+                                 "body_preview": f"{type(e).__name__}: {e}"[:200]}
+            pstate["history"].append({
+                "method": step["method"], "url": step["url"],
+                "reason": step.get("reason"),
+                "status": last_response.get("status"),
+            })
+            self._emit(job_id, "activity", {
+                "message": "planner: %s %s -> %s" % (
+                    step["method"], step["url"], last_response.get("status"))})
+        if pstate["history"]:
+            try:
+                state.planner_trace = pstate["history"]
+            except Exception:
+                pass
+            self._emit(job_id, "diagnostic", {
+                "category": "planner",
+                "message": "planner explored %d step(s)" % len(pstate["history"]),
+                "history": pstate["history"]})
+        self._emit(job_id, "phase", {"name": "planner", "status": "done"})
 
     def _sweep_gaps(self, state, hypotheses, job_id, max_workers):
         results = self._fan_out(hypotheses, state, job_id, max_workers)

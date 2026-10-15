@@ -307,6 +307,10 @@ class ChainOrchestrator:
                 self.add_fact("js_total_kb",
                               sum(b["size"] for b in bundles) // 1024)
                 self._infer_facts_from_paths(api_paths)
+                try:
+                    self._run_bundle_analysis(bundles)
+                except Exception as e:
+                    self.recon["errors"].append(f"bundle_analysis: {e}")
         except Exception as e:
             self.recon["errors"].append(f"js_extraction: {e}")
 
@@ -2071,8 +2075,115 @@ class ChainOrchestrator:
                                    f"chain {chain.get('id')} raised "
                                    f"{type(e).__name__}: {e}")
 
+        try:
+            self._run_planner_phase()
+        except Exception as e:
+            self._diag("planner", "warning",
+                       f"planner phase failed: {type(e).__name__}: {e}")
+
         self.plan = seen_plan
         return self._final_report()
+
+    def _run_bundle_analysis(self, bundles):
+        try:
+            from . import llm_service
+            client = llm_service.get_client("bundle_analyst")
+        except Exception:
+            client = None
+        if client is None or not bundles:
+            return
+        from .brains.bundle_analyst import BundleAnalyst
+        from . import discovery as _disc
+        analyst = BundleAnalyst(client=client)
+        top = sorted(bundles, key=lambda b: b.get("size", 0),
+                     reverse=True)[:2]
+        all_eps, all_secrets, all_taints, auth_seq = [], [], [], []
+        for b in top:
+            try:
+                text = _disc.fetch_js_text(b["url"])
+            except Exception:
+                text = ""
+            if not text:
+                continue
+            try:
+                a = analyst.analyze(text)
+                t = analyst.trace(text)
+            except Exception:
+                continue
+            all_eps.extend(a.get("endpoints") or [])
+            all_secrets.extend(a.get("secrets") or [])
+            all_taints.extend(t.get("taints") or [])
+            if not auth_seq:
+                auth_seq = t.get("auth_sequence") or []
+        if all_eps:
+            self.add_fact("bundle_endpoints", all_eps[:100],
+                          source="bundle_analyst")
+        if all_secrets:
+            self.add_fact("bundle_secret_count", len(all_secrets),
+                          source="bundle_analyst")
+        if all_taints:
+            self.recon["bundle_taints"] = all_taints
+            self.add_fact("bundle_taint_count", len(all_taints),
+                          source="bundle_analyst")
+        if auth_seq:
+            self.recon["auth_sequence"] = auth_seq
+
+    def _run_planner_phase(self):
+        try:
+            from . import llm_service
+            client = llm_service.get_client("exploit_planner")
+        except Exception:
+            client = None
+        if client is None:
+            return
+        from urllib.parse import urlparse
+        from .brains.exploit_planner import ExploitPlanner
+        from . import http as _http
+        host = (urlparse(self.target).hostname or "").lower()
+        if not host:
+            return
+        planner = ExploitPlanner(
+            client=client, roe_guard=self.roe_guard,
+            allowed_hosts=[host], allow_write_methods=False)
+        try:
+            facts = self.fact_store.to_dict()
+        except Exception:
+            facts = {}
+        pstate = {"target": self.target, "history": [], "facts": facts}
+        last_response = None
+        self._emit("phase", {"name": "planner", "status": "running"})
+        for _ in range(planner.max_turns):
+            try:
+                step = planner.next_step(pstate, last_response)
+            except Exception:
+                step = None
+            if not step:
+                break
+            try:
+                with _http.Client(timeout=10, follow_redirects=False) as c:
+                    r = c.request(step["method"], step["url"])
+                last_response = {"status": r.status_code,
+                                 "body_preview": (r.text or "")[:800]}
+            except Exception as e:
+                last_response = {"status": None,
+                                 "body_preview": f"{type(e).__name__}: {e}"[:200]}
+            pstate["history"].append({
+                "method": step["method"], "url": step["url"],
+                "reason": step.get("reason"),
+                "status": last_response.get("status")})
+            self._emit("activity", {
+                "message": "planner: %s %s -> %s" % (
+                    step["method"], step["url"], last_response.get("status"))})
+        if pstate["history"]:
+            try:
+                self.recon["planner_trace"] = pstate["history"]
+            except Exception:
+                pass
+            self._emit("diagnostic", {
+                "category": "planner",
+                "message": "planner explored %d step(s)" % len(pstate["history"]),
+                "history": pstate["history"]})
+        self._emit("phase", {"name": "planner", "status": "done"})
 
     def _run_pending_parallel(self, chains, max_workers=4):
         from concurrent.futures import ThreadPoolExecutor, as_completed
