@@ -57,3 +57,7 @@ a_resume.py
 
 # coverage
 .coverage
+
+# vault key + plaintext backups (never commit)
+configs/.vault_key
+*.plain.bak
