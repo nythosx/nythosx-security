@@ -129,7 +129,16 @@ _BROAD_WILDCARD_RANGES = {"10.*", "192.168.*", "172.16.*", "172.17.*",
 def is_broad_scope_wildcard(pattern):
     if not pattern or not isinstance(pattern, str):
         return False
+    normalized = pattern.rstrip('.').lower()
+    if normalized in _BROAD_WILDCARD_EXACT:
+        return True
+    if normalized == "*":
+        return True
     if pattern in _BROAD_WILDCARD_EXACT:
+        return True
+    if pattern == "*.":
+        return True
+    if normalized.endswith(".*") and normalized[:-2] in _BROAD_WILDCARD_TLDS:
         return True
     if pattern.startswith("*.") and pattern[2:].lower() in _BROAD_WILDCARD_TLDS:
         return True

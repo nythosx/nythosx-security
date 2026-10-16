@@ -62,6 +62,13 @@ def enable():
         _state["enabled"] = True
 
 
+def is_dead():
+    try:
+        return snapshot_human().get("reason") is not None
+    except Exception:
+        return False
+
+
 def is_configured():
     with _lock:
         return _state["started_at"] is not None
@@ -202,6 +209,7 @@ def snapshot_human():
 
 __all__ = [
     "BudgetExceeded", "configure", "disable", "enable", "is_configured",
+    "is_dead",
     "record", "set_phase", "snapshot", "snapshot_human",
     "auto_configure_from_configs",
 ]

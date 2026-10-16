@@ -9,12 +9,7 @@ from . import http as _http
 from urllib.parse import urljoin as _urljoin
 
 
-def _budget_dead():
-    try:
-        from . import budget
-        return budget.snapshot_human().get("reason") is not None
-    except Exception:
-        return False
+from .budget import is_dead as _budget_dead
 
 
 def fetch(url, headers=None, timeout=15, method="GET", json_body=None, data=None,

@@ -140,6 +140,28 @@ class ROEGuard:
     def check_path_normalized(self, url, method="GET"):
         return self.check_url(url, method)
 
+    def evaluate(self, url, method="GET", capability=""):
+        try:
+            self.check_url(url, method)
+        except ROEViolation as e:
+            return {"allowed": False, "reason": str(e),
+                    "approval_required": False}
+        if not capability:
+            return {"allowed": True, "reason": "in scope",
+                    "approval_required": False}
+        try:
+            from . import registry
+            checker = getattr(registry, "requires_approval", None)
+            if not callable(checker):
+                return {"allowed": True, "reason": "in scope",
+                        "approval_required": False}
+            req = bool(checker(capability, url))
+            return {"allowed": True, "reason": "in scope",
+                    "approval_required": req}
+        except Exception:
+            return {"allowed": True, "reason": "in scope",
+                    "approval_required": False}
+
     def walkthrough(self, url, method="GET"):
         try:
             self.check_url(url, method)

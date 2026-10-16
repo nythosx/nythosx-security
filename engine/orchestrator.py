@@ -199,7 +199,8 @@ class Orchestrator:
             return
         planner = ExploitPlanner(
             client=client, roe_guard=getattr(self, "roe_guard", None),
-            allowed_hosts=[host], allow_write_methods=False)
+            allowed_hosts=[],
+            allow_write_methods=bool(getattr(self, "allow_destructive", False)))
         pstate = {"target": target, "history": []}
         last_response = None
         self._emit(job_id, "phase", {"name": "planner", "status": "running"})

@@ -14,6 +14,9 @@ _API_KEY_ENVS = ("SECCHECKER_LLM_API_KEY", "LLM_API_KEY", "ANTHROPIC_API_KEY",
 _UNTRUSTED_OPEN = "<<<UNTRUSTED_INPUT>>>"
 _UNTRUSTED_CLOSE = "<<<END_UNTRUSTED>>>"
 
+_STATE_JSON_CAP = 60000
+_CONVERSATION_LIMIT = 8
+
 
 def _new_canary():
     return "SC_CANARY_" + secrets.token_hex(8)
@@ -158,6 +161,25 @@ def _wrap_untrusted(text):
     return _UNTRUSTED_OPEN + "\n" + (text or "") + "\n" + _UNTRUSTED_CLOSE
 
 
+def _render_conversation(conversation, limit=_CONVERSATION_LIMIT):
+    if not conversation:
+        return "(none)"
+    lines = []
+    for i, entry in enumerate(conversation[-limit:], 1):
+        if not isinstance(entry, dict):
+            continue
+        step = str(entry.get("step") or "?")[:60]
+        tool = str(entry.get("tool") or "?")[:60]
+        verdict = str(entry.get("verdict") or "?")[:24]
+        reason = str(entry.get("reason") or "")[:240]
+        lines.append(f"{i}. [{tool}/{step}] -> {verdict}: {reason}")
+        ev = entry.get("evidence")
+        if isinstance(ev, dict) and ev:
+            keys = list(ev.keys())[:8]
+            lines.append(f"   evidence keys: {keys}")
+    return "\n".join(lines) if lines else "(none)"
+
+
 def _strip_fences(text):
     text = (text or "").strip()
     if not text.startswith("```"):
@@ -282,6 +304,12 @@ class LLMBrain:
         self.fallback = fallback or RuleBasedBrain()
         self.capability_allowlist = capability_allowlist
         self._canary = _new_canary() if client else None
+        self.last_conversation = []
+
+    def set_conversation(self, conversation):
+        if isinstance(conversation, list):
+            self.last_conversation = list(
+                conversation)[-(_CONVERSATION_LIMIT * 2):]
 
     def _wrap_client(self, raw):
         if raw is None:
@@ -323,17 +351,19 @@ class LLMBrain:
             if cap:
                 findings.append({"capability": str(cap)[:80],
                                  "verdict": str(v)[:32]})
+        conv = getattr(state, "conversation", None) or []
         state_dict = {
             "target": state.target,
             "framework": fw,
             "endpoints": list(state.discovered_endpoints or [])[:30],
             "findings": findings[:30],
             "already_executed": sorted(state.executed_capabilities or [])[:30],
+            "recent_history": list(conv[-_CONVERSATION_LIMIT:]) if conv else [],
         }
         raw = json.dumps(state_dict, ensure_ascii=True, default=str)
         raw = _sanitize_untrusted(raw)
-        if len(raw) > 6000:
-            raw = raw[:6000] + "...[truncated]"
+        if len(raw) > _STATE_JSON_CAP:
+            raw = raw[:_STATE_JSON_CAP] + "...[truncated]"
         canary = self._canary or "n/a"
         return (_SYSTEM_PROMPT
                 + f"\n\nSESSION_CANARY={canary}\n\n"
@@ -492,10 +522,15 @@ class LLMBrain:
         ev_str = _sanitize_untrusted(
             json.dumps(evidence, ensure_ascii=True, default=str))[:2500]
         canary = self._canary or "n/a"
+        conv_block = ""
+        if self.last_conversation:
+            conv_block = ("\n\nRECENT_HISTORY:\n"
+                          + _render_conversation(self.last_conversation))
         return (_SYSTEM_FP_TRIAGE
                 + f"\n\nSESSION_CANARY={canary}\n\n"
                 + _USER_FP_TRIAGE.format(finding_json=data_str,
-                                         evidence_json=ev_str))
+                                         evidence_json=ev_str)
+                + conv_block)
 
     def _parse_fp(self, text):
         if self._compromised(text):
@@ -624,4 +659,5 @@ class LLMBrain:
         }
 
 
-__all__ = ["LLMBrain", "_new_canary", "_UNTRUSTED_OPEN", "_UNTRUSTED_CLOSE"]
+__all__ = ["LLMBrain", "_new_canary", "_UNTRUSTED_OPEN", "_UNTRUSTED_CLOSE",
+           "_render_conversation", "_CONVERSATION_LIMIT", "_STATE_JSON_CAP"]

@@ -131,6 +131,71 @@ def clear_hooks():
         _pre_chain_hooks.clear()
 
 
+_DEFAULTS_INSTALLED = False
+
+
+def _default_post_finding(orch, chain_id, step, result):
+    try:
+        tool = step.get("tool") or step.get("id") or ""
+    except Exception:
+        tool = ""
+    if not isinstance(result, dict):
+        return None
+    verdict = result.get("verdict")
+    if hasattr(verdict, "value"):
+        verdict = verdict.value
+    if verdict != "VULNERABLE":
+        return None
+    target = getattr(orch, "target", "") or ""
+    evidence = result.get("evidence") or {}
+    outcome = result.get("outcome") or "NONE"
+    if hasattr(outcome, "value"):
+        outcome = outcome.value
+    try:
+        from . import artifacts
+        artifacts.write(
+            target=target,
+            kind=tool or "finding",
+            value=evidence,
+            chain_id=chain_id,
+            outcome=str(outcome),
+        )
+    except Exception:
+        pass
+    try:
+        from . import capgraph
+        caps = capgraph.granted_capabilities({
+            "verdict": "VULNERABLE",
+            "capability": tool,
+            "pattern_id": tool,
+        })
+    except Exception:
+        caps = []
+    for cap in caps or []:
+        fk = capgraph.capability_to_fact(cap)
+        if not fk:
+            continue
+        try:
+            fs = getattr(orch, "fact_store", None)
+            if fs is not None:
+                fs.add(fk, True, source="capgraph", confidence=0.9)
+        except Exception:
+            pass
+        try:
+            orch.add_fact(fk, True, source="capgraph")
+        except Exception:
+            pass
+    return None
+
+
+def install_default_hooks():
+    global _DEFAULTS_INSTALLED
+    if _DEFAULTS_INSTALLED:
+        return
+    register_post_finding_hook(_default_post_finding)
+    _DEFAULTS_INSTALLED = True
+
+
 def list_hooks():
     with _lock:
         return {
@@ -143,6 +208,7 @@ def list_hooks():
 
 __all__ = [
     "register_post_finding_hook", "register_post_unknown_hook",
+    "install_default_hooks",
     "register_post_chain_hook", "register_pre_chain_hook",
     "fire_post_finding", "fire_post_unknown", "fire_post_chain",
     "fire_pre_chain", "clear_hooks", "list_hooks",

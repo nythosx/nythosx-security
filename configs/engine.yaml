@@ -187,3 +187,15 @@ banking:
   - /check_balance/1
   - /api/v1/statements
   - /api/v1/cards
+
+outcome:
+  track: true
+
+approval:
+  mode: off
+
+harvest:
+  enabled: false
+
+exploit:
+  enabled: false

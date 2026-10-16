@@ -19,6 +19,7 @@ from engine import audit
 _TOOL_SCOPES = {
     "sec_route": "scan:read",
     "sec_manifest": "scan:read",
+    "sec_requires_approval": "scan:read",
     "sec_scan": "scan:read",
     "sec_list_patterns": "scan:read",
     "sec_chains": "scan:read",

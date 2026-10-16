@@ -251,7 +251,8 @@ register_tool("bola_scan", _tool_bola_scan)
 
 def harvest_sequential_ids(base_url, endpoint_template, token,
                            id_range=range(1, 501), max_records=100,
-                           headers=None, timeout=10, roe_guard=None):
+                           headers=None, timeout=10, roe_guard=None,
+                           mode="probe", target=None, hard_ceiling=5000):
     """Walk the ID space of an endpoint and collect records.
 
     endpoint_template: path with {id} placeholder, e.g. /api/orders/{id}
@@ -264,8 +265,11 @@ def harvest_sequential_ids(base_url, endpoint_template, token,
     if "{id}" not in endpoint_template and not _re.search(r"/\d+(?=/?$)", endpoint_template):
         return harvested
 
+    consecutive_miss = 0
     for obj_id in id_range:
-        if len(harvested) >= max_records:
+        if mode == "probe" and len(harvested) >= max_records:
+            break
+        if len(harvested) >= hard_ceiling:
             break
         path = endpoint_template
         if "{id}" in path:
@@ -273,11 +277,21 @@ def harvest_sequential_ids(base_url, endpoint_template, token,
         elif _re.search(r"/\d+(?=/?$)", path):
             path = _re.sub(r"/\d+(?=/?$)", "/" + str(obj_id), path, count=1)
         r = _get(base_url, path, token, timeout, False)
-        if r.get("status") != 200:
+        status = r.get("status")
+        if status in (429, 403):
+            break
+        if status != 200:
+            consecutive_miss += 1
+            if mode == "harvest" and consecutive_miss >= 20:
+                break
             continue
         rows = _rows(r)
         if not rows:
+            consecutive_miss += 1
+            if mode == "harvest" and consecutive_miss >= 20:
+                break
             continue
+        consecutive_miss = 0
         sample = rows[0] if isinstance(rows[0], dict) else {}
         owner_field = None
         owner_value = None
@@ -287,8 +301,15 @@ def harvest_sequential_ids(base_url, endpoint_template, token,
                 owner_field = k
                 owner_value = sample.get(k)
                 break
-        harvested.append({"id": obj_id, "owner_field": owner_field,
-                          "owner_value": owner_value, "rows": rows[:3]})
+        entry = {"id": obj_id, "owner_field": owner_field,
+                 "owner_value": owner_value, "rows": rows[:3]}
+        harvested.append(entry)
+        if mode == "harvest" and target:
+            try:
+                from . import artifacts
+                artifacts.write(target, "bola_record", entry)
+            except Exception:
+                pass
     return harvested
 
 
@@ -305,11 +326,13 @@ def _tool_bola_harvest(orch, args):
                 "reason": "bola_harvest requires a bearer token"}
     max_records = int(args.get("max_records") or 100)
     endpoint_template = template.replace("{{ api_base }}", base)
+    mode = args.get("mode") or ("harvest" if getattr(orch, "harvest_mode", False) else "probe")
     harvested = harvest_sequential_ids(
         base, endpoint_template, token,
         max_records=max_records,
         timeout=int(args.get("timeout") or 10),
         roe_guard=orch.roe_guard,
+        mode=mode, target=orch.target,
     )
     if not harvested:
         return {"verdict": "PASS",

@@ -9,16 +9,45 @@ Modes:
     observe hits from here; callers must use the external service's UI
     or API. Verdicts that depend on a hit will be UNKNOWN.
 """
+import re
 import threading
 import time
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+_CMD_OUTPUT_RE = re.compile(
+    r"\buid=\d+\b|\bgid=\d+\b|\bgroups=\S+|^root:[^:]+:\d+:",
+    re.MULTILINE,
+)
+
+
+def looks_like_command_output(text):
+    if not text:
+        return False
+    try:
+        return _CMD_OUTPUT_RE.search(text) is not None
+    except Exception:
+        return False
+
+
 class _Collector(BaseHTTPRequestHandler):
+    def _read_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except Exception:
+            return b""
+        if length <= 0:
+            return b""
+        try:
+            return self.rfile.read(min(length, 65536))
+        except Exception:
+            return b""
+
     def _record(self):
         token = self.path.lstrip("/").split("/", 1)[0].split("?", 1)[0]
+        body = self._read_body()
         interaction = {
             "token": token,
             "method": self.command,
@@ -26,15 +55,37 @@ class _Collector(BaseHTTPRequestHandler):
             "headers": {k: v for k, v in self.headers.items()},
             "client": self.client_address[0],
             "time": time.time(),
+            "body": body,
+            "body_text": body.decode("utf-8", "replace")[:8192]
+                if body else "",
         }
         self.server.oob._add(token, interaction)
-        body = b'{"ok":true}'
+        if body:
+            self.server.oob._add_output(token, body)
+        if self.command == "GET" and self.path.rstrip("/").endswith("/next"):
+            cmd = self.server.oob._pop_command(token)
+            if cmd:
+                data = cmd.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                try:
+                    self.wfile.write(data)
+                except Exception:
+                    pass
+                return
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body_out = b'{"ok":true}'
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(body_out)))
         self.end_headers()
         try:
-            self.wfile.write(body)
+            self.wfile.write(body_out)
         except Exception:
             pass
 
@@ -50,6 +101,8 @@ class _Collector(BaseHTTPRequestHandler):
 class OOBServer:
     def __init__(self, host="127.0.0.1", port=0, external_url=None):
         self._interactions = defaultdict(list)
+        self._outputs = defaultdict(list)
+        self._commands = defaultdict(deque)
         self._lock = threading.Lock()
         self._httpd = None
         self._thread = None
@@ -81,6 +134,9 @@ class OOBServer:
                 pass
             self._httpd = None
             self._thread = None
+        with self._lock:
+            self._outputs.clear()
+            self._commands.clear()
 
     def set_external_url(self, url):
         self._external_url = url.rstrip("/") if url else None
@@ -125,6 +181,50 @@ class OOBServer:
         with self._lock:
             return len(self._interactions.get(token, []))
 
+    def _add_output(self, token, body):
+        if not body:
+            return
+        with self._lock:
+            self._outputs[token].append(bytes(body))
+
+    def poll_output(self, token):
+        with self._lock:
+            chunks = list(self._outputs.get(token, []))
+        return b"".join(chunks)
+
+    def output_for(self, token):
+        return self.poll_output(token)
+
+    def clear_output(self, token):
+        with self._lock:
+            self._outputs.pop(token, None)
+
+    def send_command(self, token, command):
+        if not token or command is None:
+            return False
+        with self._lock:
+            self._commands[token].append(str(command))
+        return True
+
+    def _pop_command(self, token):
+        with self._lock:
+            q = self._commands.get(token)
+            if not q:
+                return None
+            return q.popleft()
+
+    def wait_for_output(self, token, timeout=5.0, poll=0.1):
+        if self._external_url:
+            return False
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._outputs.get(token):
+                    return True
+            time.sleep(poll)
+        with self._lock:
+            return bool(self._outputs.get(token))
+
     def wait_for_hit(self, token, timeout=5.0, poll=0.1):
         if self._external_url:
             # We cannot observe the external service from here.
@@ -144,4 +244,4 @@ class OOBServer:
         return False
 
 
-__all__ = ["OOBServer"]
+__all__ = ["OOBServer", "looks_like_command_output"]

@@ -4,12 +4,7 @@ from .chain_engine import register_tool
 from .util import join_smart
 
 
-def _budget_dead():
-    try:
-        from . import budget
-        return budget.snapshot_human().get("reason") is not None
-    except Exception:
-        return False
+from .budget import is_dead as _budget_dead
 
 BANKING_PATHS = [
     "/api/v1/accounts",

@@ -55,6 +55,57 @@ _UNKNOWN_TIMEOUT_MARKERS = (
 )
 
 
+_SENSITIVE_KEY_MARKERS = (
+    "secret", "token", "password", "passwd", "pwd",
+    "api_key", "apikey", "auth", "credential", "session",
+    "private_key", "access_key",
+)
+
+
+def _redact_evidence(evidence, max_keys=20, max_str=400):
+    if not isinstance(evidence, dict):
+        return {}
+    out = {}
+    for i, (k, v) in enumerate(evidence.items()):
+        if i >= max_keys:
+            out["_truncated"] = True
+            break
+        kl = str(k).lower()
+        if any(m in kl for m in _SENSITIVE_KEY_MARKERS):
+            out[k] = "<redacted>"
+        elif isinstance(v, str):
+            out[k] = v[:max_str] + ("..." if len(v) > max_str else "")
+        elif isinstance(v, (int, float, bool)) or v is None:
+            out[k] = v
+        elif isinstance(v, list):
+            out[k] = f"<list len={len(v)}>"
+        elif isinstance(v, dict):
+            out[k] = f"<dict keys={list(v.keys())[:6]}>"
+        else:
+            out[k] = str(v)[:max_str]
+    return out
+
+
+def _infer_outcome(tool, verdict, evidence):
+    from .contract import Outcome
+    if not verdict or str(verdict).upper() != "VULNERABLE":
+        return Outcome.NONE
+    t = str(tool or "").lower()
+    ev = evidence or {}
+    if "jwt" in t and ev.get("secret"):
+        return Outcome.SESSION_MATERIAL
+    if "ssrf" in t and (ev.get("providers") or ev.get("findings")):
+        return Outcome.ACCESS_GRANTED
+    if "bola" in t or "extract" in t or "pagination" in t:
+        if ev.get("extracted_records") or ev.get("rows") or ev.get("findings"):
+            return Outcome.DATA_LEAKED
+    if "blind" in t and ev.get("extracted_value"):
+        return Outcome.DATA_LEAKED
+    if "xxe" in t and ev.get("files_read"):
+        return Outcome.DATA_LEAKED
+    return Outcome.ACCESS_GRANTED
+
+
 def _classify_unknown(result):
     """Classify an UNKNOWN verdict into unreachable / timeout / ambiguous."""
     reason = (result.get("reason") or "").lower()
@@ -115,6 +166,27 @@ class ChainOrchestrator:
         self.context = {}
         self.chain_results = []
         self.plan = []
+        self.approval_mode = False
+        self.pending_approval = []
+        self.harvest_mode = False
+        self.state_conversation = []
+        self.llm_max_conversation = 12
+        self._exploited_classes = set()
+        self._exploit_pilot = None
+        try:
+            from . import hooks as _hooks
+            _hooks.install_default_hooks()
+        except Exception:
+            pass
+        try:
+            from . import artifacts as _artifacts
+            for _e in _artifacts.load_for(self.target):
+                _k = _e.get("kind")
+                _v = _e.get("value")
+                if _k and _v is not None:
+                    self.context[f"artifact_{_k}"] = _v
+        except Exception:
+            pass
         self.recon = {
             "framework": None,
             "api_base": None,
@@ -741,6 +813,9 @@ class ChainOrchestrator:
                     and self.triage_brain is not None
                     and not self._budget_exceeded()):
                 step_result = self._triage_suspicious(chain_id, step, step_result)
+            if (step_result.get("verdict") == "VULNERABLE"
+                    and not self._budget_exceeded()):
+                step_result = self._maybe_exploit(chain_id, step, step_result)
             result["steps"].append(step_result)
             self.attempts.append({
                 "chain": chain_id,
@@ -862,6 +937,116 @@ class ChainOrchestrator:
             return any(results)
         return not any(results)
 
+    def _get_exploit_pilot(self):
+        if self._exploit_pilot is not None:
+            return self._exploit_pilot
+        try:
+            from . import exploit as _exploit_mod
+        except Exception:
+            self._exploit_pilot = False
+            return False
+        try:
+            pilot = _exploit_mod.ExploitPilot(
+                roe_guard=self.roe_guard,
+                target=self.target,
+                context={
+                    "jwt_token": self.get_context("jwt_token"),
+                    "jwt_cracked_secret": self.get_context(
+                        "jwt_cracked_secret"),
+                    "jwt_admin_uid": self.get_context("jwt_admin_uid"),
+                    "jwt_read_paths": self.get_context("jwt_read_paths"),
+                    "target": self.target,
+                    "roe_guard": self.roe_guard,
+                },
+            )
+        except Exception as e:
+            self._diag("exploit", "warning",
+                       f"pilot init failed: {type(e).__name__}: {e}")
+            self._exploit_pilot = False
+            return False
+        self._exploit_pilot = pilot
+        return pilot
+
+    def _maybe_exploit(self, chain_id, step, result):
+        pilot = self._get_exploit_pilot()
+        if not pilot or not getattr(pilot, "enabled", False):
+            return result
+        tool = step.get("tool") or ""
+        if not tool or tool in self._exploited_classes:
+            return result
+        finding = {
+            "class": tool,
+            "capability": tool,
+            "pattern_id": tool,
+            "finding_class": tool,
+            "target": self.target,
+            "evidence": result.get("evidence") or {},
+        }
+        try:
+            ex = pilot.try_exploit(finding)
+        except Exception as e:
+            self._diag("exploit", "warning",
+                       f"pilot raised {type(e).__name__}: {e}")
+            return result
+        if ex is None:
+            return result
+        status = getattr(ex, "status", "")
+        achieved = bool(getattr(ex, "achieved", False))
+        if achieved:
+            result["exploited"] = True
+            result["exploit_result"] = ex.to_dict()
+            self._exploited_classes.add(tool)
+            self._emit("exploit_verified", {
+                "tool": tool,
+                "capability_gained": getattr(ex, "capability_gained", ""),
+                "primitive": getattr(ex, "primitive", ""),
+                "proof_hash": getattr(ex, "proof_hash", ""),
+            })
+            try:
+                from . import artifacts as _artifacts
+                _artifacts.write(
+                    target=self.target,
+                    kind=f"exploit_{getattr(ex, 'primitive', 'unknown')}",
+                    value=ex.to_dict(),
+                    chain_id=chain_id,
+                    outcome=getattr(ex, "capability_gained", ""),
+                )
+            except Exception:
+                pass
+        elif status == "REFLECTED_ONLY":
+            result["verdict"] = "SUSPICIOUS"
+            result["reason"] = (
+                "[exploit-verify: reflected but not executed] "
+                + (result.get("reason") or ""))
+            result["exploit_result"] = ex.to_dict()
+            self._exploited_classes.add(tool)
+        elif status == "STALE":
+            result["verdict"] = "SUSPICIOUS"
+            result["reason"] = (
+                "[exploit-verify: STALE — finding may be fixed] "
+                + (result.get("reason") or ""))
+            result["exploit_result"] = ex.to_dict()
+            self._exploited_classes.add(tool)
+        return result
+
+    def _record_exchange(self, chain_id, step, result):
+        if not isinstance(result, dict):
+            return
+        entry = {
+            "chain": chain_id,
+            "step": step.get("id") if isinstance(step, dict) else None,
+            "tool": step.get("tool") if isinstance(step, dict) else None,
+            "verdict": result.get("verdict", "UNKNOWN"),
+            "reason": (result.get("reason") or "")[:400],
+            "evidence": _redact_evidence(result.get("evidence") or {}),
+            "duration_ms": result.get("duration_ms", 0),
+            "ts": time.time(),
+        }
+        self.state_conversation.append(entry)
+        cap = int(getattr(self, "llm_max_conversation", 12))
+        if len(self.state_conversation) > cap:
+            self.state_conversation = self.state_conversation[-cap:]
+
     def _execute_step(self, chain_id, step):
         step_id = step["id"]
         tool = step["tool"]
@@ -879,6 +1064,7 @@ class ChainOrchestrator:
                           "reason": "tool returned non-dict"}
             result["duration_ms"] = round(
                 (time.monotonic() - start) * 1000, 1)
+            self._record_exchange(chain_id, step, result)
             _ev = result.get("evidence") or {}
             self._emit("step_done", {
                 "chain": chain_id,
@@ -897,12 +1083,14 @@ class ChainOrchestrator:
                 "step": step_id,
                 "error": err,
             })
-            return {
+            result = {
                 "verdict": "UNKNOWN",
                 "reason": err,
                 "error": traceback.format_exc()[:500],
                 "duration_ms": round((time.monotonic() - start) * 1000, 1),
             }
+            self._record_exchange(chain_id, step, result)
+            return result
 
     def _resolve_args(self, args):
         return {k: self._resolve_value(v) for k, v in args.items()}
@@ -937,6 +1125,17 @@ class ChainOrchestrator:
                            f"re-run with allow_destructive=True to authorize"),
                 "evidence": {"skipped": True, "reason": "destructive_gate"},
             }
+        try:
+            from . import approval as _approval
+            if _approval.should_pause({"tool": tool, "args": args}, self):
+                _approval.record_pending(self, "", {"id": tool, "tool": tool, "args": args})
+                return {
+                    "verdict": "UNKNOWN",
+                    "reason": f"paused for approval: tool '{tool}'",
+                    "evidence": {"paused": True, "reason": "approval_required"},
+                }
+        except Exception:
+            pass
         resolved = self._resolve_args(args)
         handler = _EXTRA_HANDLERS.get(tool) or self._TOOL_HANDLERS.get(tool)
         if not handler:
@@ -2098,7 +2297,13 @@ class ChainOrchestrator:
             "evidence": result.get("evidence") or {},
         }
         try:
-            decision = self.triage_brain.triage_finding(finding)
+            brain = self.triage_brain
+            if hasattr(brain, "set_conversation"):
+                try:
+                    brain.set_conversation(self.state_conversation)
+                except Exception:
+                    pass
+            decision = brain.triage_finding(finding)
         except Exception as e:
             self._diag("triage", "warning",
                        f"triage failed: {type(e).__name__}: {e}")
@@ -2129,6 +2334,10 @@ class ChainOrchestrator:
         except (TypeError, ValueError):
             confidence = 0.5
         confidence = max(0.0, min(1.0, confidence))
+        inferred = result.get("outcome")
+        if not inferred:
+            inferred = _infer_outcome(step["tool"], "VULNERABLE", result.get("evidence") or {})
+            result["outcome"] = inferred
         self.findings.append({
             "chain": chain_id,
             "step": step["id"],
@@ -2137,6 +2346,7 @@ class ChainOrchestrator:
             "reason": result.get("reason", ""),
             "evidence": result.get("evidence") or {},
             "confidence": confidence,
+            "outcome": inferred.value if hasattr(inferred, "value") else str(inferred),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         try:
@@ -2329,7 +2539,8 @@ class ChainOrchestrator:
             return
         planner = ExploitPlanner(
             client=client, roe_guard=self.roe_guard,
-            allowed_hosts=[host], allow_write_methods=False)
+            allowed_hosts=[],
+            allow_write_methods=bool(getattr(self, "allow_destructive", False)))
         try:
             facts = self.fact_store.to_dict()
         except Exception:
@@ -2429,6 +2640,7 @@ class ChainOrchestrator:
             "chain_results": self.chain_results,
             "findings": self.findings,
             "attempts_count": len(self.attempts),
+            "state_conversation": list(self.state_conversation),
             "coverage": coverage,
             "stopped_reason": self.stopped_reason,
             "diagnostics": self.diagnostics,

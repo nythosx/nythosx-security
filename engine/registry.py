@@ -366,6 +366,79 @@ _DESTRUCTIVE_OVERRIDES = {
 }
 
 
+_ALWAYS_APPROVE = ()
+
+_APPROVAL_SCOPE_MAP = {
+    "race_scan": ("/api/v1/", "/api/v2/", "/api/internal/"),
+    "race_advanced": ("/api/v1/", "/api/v2/", "/api/internal/"),
+    "race_coupon": ("/api/v1/", "/api/v2/"),
+    "bizlogic_scan": _ALWAYS_APPROVE,
+    "bizlogic_price": _ALWAYS_APPROVE,
+    "bizlogic_coupon": _ALWAYS_APPROVE,
+    "skip_workflow_step": _ALWAYS_APPROVE,
+    "upload_scan": _ALWAYS_APPROVE,
+    "weak_password_scan": _ALWAYS_APPROVE,
+    "lockout_probe": _ALWAYS_APPROVE,
+    "weak_credential_enum": _ALWAYS_APPROVE,
+    "workflow_tamper": _ALWAYS_APPROVE,
+    "workflow_replay": _ALWAYS_APPROVE,
+    "timing_robust": _ALWAYS_APPROVE,
+    "timing_injection": _ALWAYS_APPROVE,
+    "bola_harvest": _ALWAYS_APPROVE,
+    "blind_sqli_extract": _ALWAYS_APPROVE,
+    "blind_ssrf": _ALWAYS_APPROVE,
+    "blind_xss": _ALWAYS_APPROVE,
+    "second_order_check": _ALWAYS_APPROVE,
+    "hunt": _ALWAYS_APPROVE,
+    "banking_hunt": _ALWAYS_APPROVE,
+}
+
+
+def _url_matches_pattern(url, pattern):
+    if not url or not pattern:
+        return False
+    import fnmatch
+    from urllib.parse import urlparse
+    if pattern.startswith("/"):
+        try:
+            p = urlparse(url).path or "/"
+        except Exception:
+            p = str(url)
+        if pattern.endswith("/") and not pattern.endswith("*"):
+            return p.startswith(pattern)
+        return fnmatch.fnmatch(p, pattern)
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        host = ""
+    if not host:
+        return False
+    pat = pattern.lower().rstrip(".")
+    return fnmatch.fnmatch(host, pat)
+
+
+def requires_approval(capability_name, url=""):
+    if not capability_name:
+        return False
+    caps = all_capabilities()
+    cap = caps.get(capability_name)
+    if cap is None:
+        return False
+    if not cap.destructive and not cap.opt_in:
+        return False
+    if capability_name not in _APPROVAL_SCOPE_MAP:
+        return True
+    scopes = _APPROVAL_SCOPE_MAP[capability_name]
+    if not scopes:
+        return True
+    if not url:
+        return True
+    for pat in scopes:
+        if _url_matches_pattern(url, pat):
+            return True
+    return False
+
+
 def _apply_destructive_overrides(caps):
     for name, reason in _DESTRUCTIVE_OVERRIDES.items():
         cap = caps.get(name)
@@ -416,5 +489,5 @@ def reset():
 
 __all__ = [
     "register", "all_capabilities", "get", "manifest",
-    "get_bundle", "bundles", "reset",
+    "get_bundle", "bundles", "reset", "requires_approval",
 ]

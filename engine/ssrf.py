@@ -1,7 +1,7 @@
 from .http_client import HttpClient
 from .config import load_engine
 from .roe_guard import ROEGuard
-from .oob import OOBServer
+from .oob import OOBServer, looks_like_command_output
 
 COMMON_SSRF_PARAMS = ["url", "uri", "link", "callback", "webhook", "next",
                       "redirect", "redirect_uri", "dest", "destination",
@@ -69,6 +69,25 @@ def _probe_impl(target_url, oob_server=None, method="GET", params=None, headers=
         if local_oob is not None:
             local_oob.stop()
 
+    rce_tokens = []
+    for token in token_map:
+        try:
+            body = oob.poll_output(token)
+        except Exception:
+            continue
+        if body and looks_like_command_output(body.decode("utf-8", "replace")):
+            rce_tokens.append({"token": token,
+                                "vector": token_map[token]["vector"],
+                                "preview": body.decode("utf-8", "replace")[:400]})
+
+    if rce_tokens:
+        out["result"] = {"verdict": "VULNERABLE",
+                         "outcome": "CODE_EXECUTED",
+                         "reason": "command output received via OOB callback",
+                         "evidence": {"callbacks": out["callbacks"],
+                                      "rce_tokens": rce_tokens}}
+        return out
+
     if out["callbacks"]:
         vectors = ", ".join(c["vector"] for c in out["callbacks"])
         out["result"] = {"verdict": "VULNERABLE",
@@ -98,6 +117,13 @@ def _wait_any(oob, tokens, timeout):
     return False
 
 def probe(*args, **kwargs):
-    from .contract import make_result
+    from .contract import make_result, coerce_outcome
     raw = _probe_impl(*args, **kwargs)
-    return make_result(raw, capability="ssrf", args=args, kwargs=kwargs)
+    result = make_result(raw, capability="ssrf", args=args, kwargs=kwargs)
+    try:
+        inner = raw.get("result") if isinstance(raw, dict) else None
+        if isinstance(inner, dict) and inner.get("outcome"):
+            result.outcome = coerce_outcome(inner["outcome"])
+    except Exception:
+        pass
+    return result

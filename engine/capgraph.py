@@ -39,6 +39,8 @@ _DEFAULT_MAP = {
     "jwt_weak_secret": {"requires": [START], "grants": "obtain_token"},
     "jwt-weak-secret": {"requires": [START], "grants": "obtain_token"},
     "jwt-chain": {"requires": [START], "grants": "obtain_token"},
+    "jwt_attack": {"requires": [START], "grants": "obtain_token"},
+    "jwt_attacks": {"requires": [START], "grants": "obtain_token"},
     "auth_bypass": {"requires": [START], "grants": "obtain_token"},
     "auth-bypass-probe": {"requires": [START], "grants": "obtain_token"},
     # IDOR/BOLA of a mutable object is a cross-account write primitive.
@@ -251,6 +253,47 @@ def _dedupe_paths(paths):
     return out
 
 
+CAP_TO_FACT = {
+    "obtain_token": "has_obtained_token",
+    "read_data": "has_read_data",
+    "write_data": "has_write_data",
+    "escalate_role": "has_elevated_role",
+    "ssrf_to_internal": "has_ssrf_to_internal",
+    "pivot_internal": "has_pivot_internal",
+    "execute_js_in_victim": "has_xss_executed",
+}
+
+
+def capability_to_fact(capability):
+    if not capability:
+        return None
+    return CAP_TO_FACT.get(str(capability))
+
+
+def granted_capabilities(finding):
+    if not finding:
+        return []
+    if isinstance(finding, dict):
+        verdict = finding.get("verdict")
+    else:
+        verdict = getattr(finding, "verdict", None)
+    if hasattr(verdict, "value"):
+        verdict = verdict.value
+    if verdict is not None and str(verdict).upper() != "VULNERABLE":
+        return []
+    cmap = load_capability_map()
+    cls = _finding_class(finding) if isinstance(finding, dict) else ""
+    if not cls:
+        return []
+    spec = _lookup(cmap, cls)
+    if not spec:
+        return []
+    grants = spec.get("grants")
+    if not grants:
+        return []
+    return [grants]
+
+
 def analyze(findings, capability_map=None, start=START, min_steps=2):
     """Convenience: build graph from findings and return chain findings."""
     g = CapabilityGraph(capability_map=capability_map, actor=start)
@@ -261,4 +304,5 @@ def analyze(findings, capability_map=None, start=START, min_steps=2):
 __all__ = [
     "CapabilityGraph", "Capability", "Edge", "CANONICAL_VERBS",
     "TARGET_VERBS", "load_capability_map", "analyze", "START",
+    "granted_capabilities", "capability_to_fact", "CAP_TO_FACT",
 ]

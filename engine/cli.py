@@ -2698,6 +2698,10 @@ def cmd_chain(args):
         console.print("  --json             output raw JSON report")
         console.print("  --fail-on SEV      exit 3 if a finding >= severity")
         console.print("  --export-nuclei ID export a chain to a Nuclei template")
+        console.print("  --engage           authorize destructive tools for this run")
+        console.print("  --harvest          adaptive extraction (walk until refused)")
+        console.print("  --approval MODE    off | auto | interactive (default off)")
+        console.print("  --nuclei PATH      load a Nuclei template and run it as a chain")
         console.print("")
         console.print("Global: --allow-destructive authorizes destructive chain tools.")
         console.print("")
@@ -2721,6 +2725,10 @@ def cmd_chain(args):
     as_json = bool(RUNTIME.get("json_output"))
     fail_on = None
     export_nuclei = None
+    engage = False
+    harvest = False
+    approval_mode = "off"
+    nuclei_path = None
     i = 1
     while i < len(args):
         if args[i] == "--budget" and i + 1 < len(args):
@@ -2743,6 +2751,18 @@ def cmd_chain(args):
             i += 1
         elif args[i] == "--export-nuclei" and i + 1 < len(args):
             export_nuclei = args[i + 1]
+            i += 2
+        elif args[i] == "--engage":
+            engage = True
+            i += 1
+        elif args[i] == "--harvest":
+            harvest = True
+            i += 1
+        elif args[i] == "--approval" and i + 1 < len(args):
+            approval_mode = args[i + 1].lower()
+            i += 2
+        elif args[i] == "--nuclei" and i + 1 < len(args):
+            nuclei_path = args[i + 1]
             i += 2
         elif args[i] == "--fail-on" and i + 1 < len(args):
             fail_on = args[i + 1]
@@ -2801,6 +2821,32 @@ def cmd_chain(args):
         console.print(f"[red]{e}[/red]")
         return 1
 
+    extra_chains = []
+    if nuclei_path:
+        try:
+            from . import nuclei_import
+            nuclei_import.ensure_registered()
+            loaded = nuclei_import.load_template(nuclei_path)
+            chain = nuclei_import.template_to_chain(loaded, nuclei_path)
+            extra_chains = [chain]
+            orch.add_fact("nuclei_enabled", True, source="cli")
+            console.print(f"[dim]nuclei template loaded: {chain['id']}[/dim]")
+        except Exception as e:
+            console.print(
+                f"[red]failed to load nuclei template: "
+                f"{type(e).__name__}: {e}[/red]"
+            )
+            return 1
+
+    if engage:
+        orch.allow_destructive = True
+    if harvest:
+        orch.harvest_mode = True
+    if approval_mode == "interactive":
+        orch.approval_mode = True
+    elif approval_mode == "auto":
+        orch.approval_mode = False
+
     if RUNTIME.get("legacy_scoring"):
         orch.legacy_scoring = True
         console.print("[dim]scoring: legacy heuristic (A/B)[/dim]")
@@ -2812,6 +2858,7 @@ def cmd_chain(args):
     if only_chains:
         all_chains = get_all_chains()
         filtered = [c for c in all_chains if c["id"] in only_chains]
+        filtered.extend(extra_chains)
         if not filtered:
             console.print(f"[red]No chains match: {only_chains}[/red]")
             return 1
@@ -2839,7 +2886,11 @@ def cmd_chain(args):
             orch.execute_chain(chain)
         report = orch._final_report()
     else:
-        report = orch.run()
+        if extra_chains:
+            run_chains = list(get_all_chains()) + list(extra_chains)
+        else:
+            run_chains = None
+        report = orch.run(chains=run_chains)
 
     if as_json:
         import json as _json

@@ -120,7 +120,8 @@ def _parse_link_header(link_header):
 
 def extract_with_pagination(url, token=None, method="GET", max_pages=50,
                              headers=None, timeout=10, verify=None,
-                             roe_guard=None, max_rows=5):
+                             roe_guard=None, max_rows=5, mode="probe",
+                             target=None, hard_ceiling=500):
     """Follow pagination links/params and collect rows from every page."""
     from urllib.parse import urlparse, urlencode, urlunparse, parse_qs
     if verify is None:
@@ -134,7 +135,8 @@ def extract_with_pagination(url, token=None, method="GET", max_pages=50,
     seen_hashes = set()
     pages_fetched = 0
     current = url
-    for page in range(max_pages):
+    effective_max = hard_ceiling if mode == "harvest" else max_pages
+    for page in range(effective_max):
         h = {"Accept": "application/json"}
         if token:
             h["Authorization"] = "Bearer " + token
@@ -167,6 +169,14 @@ def extract_with_pagination(url, token=None, method="GET", max_pages=50,
             new_rows += 1
         if new_rows == 0:
             break
+        if mode == "harvest" and target:
+            try:
+                from . import artifacts
+                artifacts.write(target, "pagination_page", {
+                    "url": current, "page": page + 1, "rows": rows[:max_rows],
+                })
+            except Exception:
+                pass
         nxt = _parse_link_header(r.headers.get("Link", ""))
         if nxt:
             current = nxt
@@ -236,8 +246,10 @@ def _tool_paginated_extract(orch, args):
     token = args.get("token") or orch.get_context("jwt_token")
     max_pages = int(args.get("max_pages") or 50)
     max_rows = int(args.get("max_rows") or 100)
+    mode = args.get("mode") or ("harvest" if getattr(orch, "harvest_mode", False) else "probe")
     result = extract_with_pagination(
         url, token=token, max_pages=max_pages, roe_guard=orch.roe_guard,
+        mode=mode, target=orch.target,
     )
     rows = result.get("rows") or []
     if not rows:

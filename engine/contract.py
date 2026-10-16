@@ -44,6 +44,19 @@ else:
             return self.value
 
 
+class Outcome(str, Enum):
+    NONE = "NONE"
+    ACCESS_GRANTED = "ACCESS_GRANTED"
+    IDENTITY = "IDENTITY"
+    SESSION_MATERIAL = "SESSION_MATERIAL"
+    DATA_LEAKED = "DATA_LEAKED"
+    CODE_EXECUTED = "CODE_EXECUTED"
+    PRIVILEGE_LEVEL = "PRIVILEGE_LEVEL"
+
+    def __str__(self):
+        return self.value
+
+
 VERDICT_RANK = {
     Verdict.VULNERABLE: 3,
     Verdict.SUSPICIOUS: 2,
@@ -98,12 +111,27 @@ def coerce_severity(v):
         return Severity.INFO
 
 
+def coerce_outcome(v):
+    if isinstance(v, Outcome):
+        return v
+    if v is None:
+        return Outcome.NONE
+    try:
+        return Outcome(str(v).upper())
+    except Exception:
+        return Outcome.NONE
+
+
 def _v(v):
     return v.value if isinstance(v, Verdict) else str(v)
 
 
 def _s(v):
     return v.value if isinstance(v, Severity) else str(v)
+
+
+def _o(v):
+    return v.value if isinstance(v, Outcome) else str(v)
 
 
 @dataclass
@@ -276,10 +304,13 @@ class ScanResult:
     cvss: dict = field(default_factory=dict)
     asvs_chapters: list = field(default_factory=list)
     mitre_techniques: list = field(default_factory=list)
+    outcome: Outcome = Outcome.NONE
+    artifact_ref: str = ""
 
     def __post_init__(self):
         self.verdict = coerce_verdict(self.verdict)
         self.severity = coerce_severity(self.severity)
+        self.outcome = coerce_outcome(self.outcome)
         self.findings = [
             f if isinstance(f, Finding) else Finding(**(f if isinstance(f, dict) else {}))
             for f in (self.findings or [])
@@ -336,6 +367,10 @@ class ScanResult:
             return self.asvs_chapters
         if key == "mitre_techniques":
             return self.mitre_techniques
+        if key == "outcome":
+            return _o(self.outcome)
+        if key == "artifact_ref":
+            return self.artifact_ref
         return self.raw.get(key)
 
     def get(self, key, default=None):
@@ -353,7 +388,7 @@ class ScanResult:
                    "confidence_breakdown", "iteration_id",
                    "data_rows", "extracted_data", "proof_of_impact",
                    "reproduction", "cvss", "asvs_chapters",
-                   "mitre_techniques"):
+                   "mitre_techniques", "outcome", "artifact_ref"):
             return True
         return key in self.raw
 
@@ -383,6 +418,8 @@ class ScanResult:
             "cvss": self.cvss,
             "asvs_chapters": self.asvs_chapters,
             "mitre_techniques": self.mitre_techniques,
+            "outcome": _o(self.outcome),
+            "artifact_ref": self.artifact_ref,
         }
 
 
@@ -561,9 +598,9 @@ def wrap_evaluate(raw, otype):
 
 
 __all__ = [
-    "Verdict", "Severity", "Finding", "ScanResult", "ScanBudget", "Capability",
+    "Verdict", "Severity", "Outcome", "Finding", "ScanResult", "ScanBudget", "Capability",
     "VERDICT_RANK", "SEVERITY_RANK", "CONFIDENCE_BY_VERDICT",
-    "coerce_verdict", "coerce_severity",
+    "coerce_verdict", "coerce_severity", "coerce_outcome",
     "make_result", "wrap_evaluate", "infer_verdict", "infer_reason",
     "infer_severity", "infer_target",
 ]

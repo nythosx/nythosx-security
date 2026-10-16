@@ -5,11 +5,7 @@ from .http_client import HttpClient
 from . import budget as _budget
 
 
-def _budget_dead():
-    try:
-        return _budget.snapshot_human().get("reason") is not None
-    except Exception:
-        return False
+from .budget import is_dead as _budget_dead
 
 ROOT = Path(__file__).parent.parent.absolute()
 WORDLIST_DIR = ROOT / "wordlists"

@@ -58,6 +58,12 @@ class ScanState:
     iterations: int = 0
     elapsed_seconds: float = 0.0
     executed_capabilities: set = field(default_factory=set)
+    pending_approval: list = field(default_factory=list)
+    artifact_session: str = ""
+    approval_mode: bool = False
+    harvest_mode: bool = False
+    conversation: list = field(default_factory=list)
+    last_exchange: dict = field(default_factory=dict)
 
     def mark_visited(self, capability, target):
         self.visited.add((capability, target))
@@ -86,6 +92,12 @@ class ScanState:
             "iterations": self.iterations,
             "elapsed_seconds": self.elapsed_seconds,
             "executed_capabilities": sorted(list(self.executed_capabilities)),
+            "pending_approval": list(self.pending_approval),
+            "artifact_session": self.artifact_session,
+            "approval_mode": self.approval_mode,
+            "harvest_mode": self.harvest_mode,
+            "conversation": list(self.conversation),
+            "last_exchange": dict(self.last_exchange),
         }
 
 

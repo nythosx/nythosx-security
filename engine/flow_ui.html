@@ -602,7 +602,7 @@ body.side-collapsed .side{opacity:0;pointer-events:none;border-left-width:0}
 
 <header>
   <div class="brand"><span class="dot"></span>sec-checker</div>
-  <input id="flowUrl" type="text" spellcheck="false" autocomplete="off" value="https://nythosx.com" style="background:var(--panel);border:1px solid var(--line2);border-radius:8px;color:var(--fg);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;padding:6px 10px;min-width:230px;outline:none">
+  <input id="flowUrl" type="text" spellcheck="false" autocomplete="off" value="" style="background:var(--panel);border:1px solid var(--line2);border-radius:8px;color:var(--fg);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;padding:6px 10px;min-width:230px;outline:none">
   <button class="hbtn" id="goBtn" style="color:var(--brand);border-color:var(--brand)">&#9654; SCAN</button>
   <span class="target-hdr" id="tgt"></span>
   <div class="sp"></div>
@@ -688,6 +688,7 @@ body.side-collapsed .side{opacity:0;pointer-events:none;border-left-width:0}
         <div class="sub" id="aiSub">initializing</div>
       </div>
     </div>
+    <input id="aiKey" type="password" placeholder="LLM API key (optional)" autocomplete="off" spellcheck="false" style="width:100%;margin-top:8px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;color:var(--fg);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;padding:7px 9px;outline:none">
     <div class="cap-chips" id="capChips">
       <span class="cap-chip" data-cap="payload_author"><span class="cd"></span>payload author <span class="cn">0</span></span>
       <span class="cap-chip" data-cap="bundle_analyst"><span class="cd"></span>bundle analyst <span class="cn">0</span></span>
@@ -1589,7 +1590,7 @@ function panelHandle(ev){ var d=ev.data||{}; switch(ev.type){
   case 'done': var c=d.counts||{}; trSummary('<b class="v">'+(c.VULNERABLE||0)+'</b> vuln \u00b7 <b class="s">'+(c.SUSPICIOUS||0)+'</b> susp \u00b7 <b class="p">'+(c.PASS||0)+'</b> pass \u00b7 <b class="u">'+(c.UNKNOWN||0)+'</b> unknown'); consoleLog('core','scan complete','hi'); setAIPanel(aiConfigured?'online':'offline', aiConfigured?'AI Brain online':'AI Brain offline', aiConfigured?'idle':'no key'); break;
   case 'error': consoleLog('core','ERROR: '+(d.message||''),'err'); setAIPanel('offline','AI Brain','error'); break;
 }}
-function flowCreds(){ function v(id){var e=document.getElementById(id); return e?(e.value||'').trim():'';} var u=v('credUser'),p=v('credPass'),lu=v('credLoginUrl'),tk=v('credToken'); var c={}; if(u)c.username=u; if(p)c.password=p; if(lu)c.login_url=lu; if(tk)c.token=tk; return Object.keys(c).length?{credentials:c}:{}; }
+function flowCreds(){ function v(id){var e=document.getElementById(id); return e?(e.value||'').trim():'';} var u=v('credUser'),p=v('credPass'),lu=v('credLoginUrl'),tk=v('credToken'),ak=v('aiKey'); var out={}; var c={}; if(u)c.username=u; if(p)c.password=p; if(lu)c.login_url=lu; if(tk)c.token=tk; if(Object.keys(c).length)out.credentials=c; if(ak)out.ai_key=ak; return out; }
 fetch('/api/ai_status').then(function(r){return r.json();}).then(function(s){ aiConfigured=!!(s&&s.configured); if(aiConfigured){ setAIPanel('online','AI Brain online',(s.provider||'?')+' / '+(s.model||'?')); } else { setAIPanel('offline','AI Brain offline','paste a key to enable triage'); } }).catch(function(){ setAIPanel('offline','AI Brain','status unknown'); });
 (function(){ var dockEl=document.getElementById('dock'); var dt=document.getElementById('dockToggle'); var dc=document.getElementById('dockChevron'); var st=document.getElementById('sideToggle');
   function setDock(col){ if(dockEl)dockEl.classList.toggle('collapsed',col); if(dt)dt.classList.toggle('off',col); }

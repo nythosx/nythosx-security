@@ -22,9 +22,17 @@ _jobs_lock = threading.Lock()
 _run_lock = threading.Lock()
 
 
+_JOB_CAP = 50
+
+
 def _set(job_id, **kw):
     with _jobs_lock:
         _jobs.setdefault(job_id, {}).update(kw)
+        while len(_jobs) > _JOB_CAP:
+            oldest = next(iter(_jobs))
+            if oldest == job_id:
+                break
+            del _jobs[oldest]
 
 
 def _get(job_id):
@@ -157,7 +165,8 @@ def _build_result(url, outcome, log_text):
     })
 
 
-def _run_job(job_id, url, min_severity, credentials=None, ai_key=None, use_brain=True):
+def _run_job(job_id, url, min_severity, credentials=None, ai_key=None, use_brain=True,
+             approve_destructive=False):
     buf = io.StringIO()
     # sec-checker runs one scan at a time (auto_mod.console is a shared
     # global swapped per job). If another scan is already running, say so
@@ -179,7 +188,8 @@ def _run_job(job_id, url, min_severity, credentials=None, ai_key=None, use_brain
                                           job_id=job_id,
                                           credentials=credentials,
                                           ai_key=ai_key,
-                                          use_brain=use_brain)
+                                          use_brain=use_brain,
+                                          allow_destructive=approve_destructive)
             result = _build_result(url, outcome, buf.getvalue())
             _set(job_id, status="done", phase="done", result=result)
             if not progress.is_done(job_id):
@@ -295,7 +305,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _defaults(self):
         from pathlib import Path as _P
-        out = {"target": "https://nythosx.com"}
+        out = {"target": ""}
         try:
             p = _P(__file__).parent.parent / "configs" / "credentials.yaml"
             if p.exists():
@@ -522,6 +532,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not isinstance(ai_key, str) or not ai_key.strip():
             ai_key = None
         use_brain = payload.get("use_brain", True) is not False
+        approve_destructive = bool(payload.get("approve_destructive", False))
         if not url:
             return self._send(400, {"error": "url is required"})
         if not url.startswith(("http://", "https://")):
@@ -537,7 +548,8 @@ class _Handler(BaseHTTPRequestHandler):
         progress.clear(job_id)
         _set(job_id, status="queued", phase="queued", url=url)
         threading.Thread(target=_run_job,
-                         args=(job_id, url, min_severity, credentials, ai_key, use_brain),
+                         args=(job_id, url, min_severity, credentials, ai_key, use_brain,
+                               approve_destructive),
                          daemon=True).start()
         return self._send(200, {"job_id": job_id})
 
@@ -851,7 +863,7 @@ padding:16px 18px;border-radius:10px;font-size:14px}
     <h1>Scan a target</h1>
     <p>Enter a URL. It studies what the target is, then runs the scan live as a flow of tools.</p>
     <form class="box" id="form">
-      <input id="url" type="text" placeholder="http://localhost:3000" value="https://nythosx.com" autocomplete="off" autofocus>
+      <input id="url" type="text" placeholder="http://localhost:3000" value="" autocomplete="off" autofocus>
       <button id="go" type="submit">Analyze &amp; Scan</button>
     </form>
     <div class="opts">
@@ -1827,7 +1839,7 @@ svg.exec { position: relative; display: block; width: 100%; height: 100%; }
         <h1>scan a target</h1>
         <p>Enter a URL. I will walk you through every step — what I found, what I tried, and why — in plain language.</p>
         <div class="input-row">
-          <input id="url" type="text" placeholder="https://target" value="https://nythosx.com" spellcheck="false" autocomplete="off">
+          <input id="url" type="text" placeholder="https://target" value="" spellcheck="false" autocomplete="off">
           <button id="startBtn">Analyze →</button>
         </div>
       </div>

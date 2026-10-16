@@ -5,12 +5,7 @@ from .util import unwrap_rows, join_smart
 from . import http as _http
 
 
-def _budget_dead():
-    try:
-        from . import budget
-        return budget.snapshot_human().get("reason") is not None
-    except Exception:
-        return False
+from .budget import is_dead as _budget_dead
 
 UNAUTH_PATHS = [
     "/api/v1/accounts",
