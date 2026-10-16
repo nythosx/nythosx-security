@@ -16,7 +16,7 @@ SKIP_DIRS = {
     ".git", ".github", "__pycache__", ".pytest_cache",
     ".venv", "venv", "env", ".env", "node_modules", "site-packages",
     ".mypy_cache", ".ruff_cache", ".idea", ".vscode", ".claude", ".claude1",
-    "evidence", "findings", "reports", "logs", "sessions",
+    "evidence", "findings", "reports", "logs", "sessions", "tests",
 }
 
 SKIP_FILES = {
@@ -58,9 +58,18 @@ def _collect_secrets():
     return sorted(set(found))
 
 
+def is_test_file(name: str) -> bool:
+    low = name.lower()
+    return (low.endswith(".py")
+            and (low.startswith("test_") or low.endswith("_test.py")
+                 or low == "conftest.py"))
+
+
 def included(path: Path) -> bool:
     name = path.name
     if name in SKIP_FILES:
+        return False
+    if is_test_file(name):
         return False
     if name.lower().endswith(".md"):
         return False
