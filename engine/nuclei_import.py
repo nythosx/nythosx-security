@@ -20,13 +20,26 @@ _SEV_TO_PRIORITY = {
 }
 
 
+def _request_blocks(template):
+    out = []
+    for proto in ("http", "requests", "dns", "network",
+                  "headless", "javascript"):
+        raw = template.get(proto)
+        if raw is None:
+            continue
+        if isinstance(raw, dict):
+            raw = [raw]
+        if not isinstance(raw, list):
+            continue
+        for r in raw:
+            if isinstance(r, dict):
+                out.append((proto, r))
+    return out
+
+
 def _http_block(template):
-    raw = template.get("http") or template.get("requests") or []
-    if isinstance(raw, dict):
-        raw = [raw]
-    if not isinstance(raw, list):
-        return []
-    return [r for r in raw if isinstance(r, dict)]
+    return [b for proto, b in _request_blocks(template)
+            if proto in ("http", "requests")]
 
 
 def load_template(path):
@@ -119,10 +132,18 @@ def _evaluate_matchers(req, status, body_text, header_text):
 def _tool_nuclei_http(orch, args):
     from . import http as _http
     req = args.get("request") or {}
+    protocol = str(args.get("protocol") or "http").lower()
     template_id = str(args.get("template_id") or "nuclei")
     if not isinstance(req, dict):
         return {"verdict": "UNKNOWN",
                 "reason": "nuclei_http: request block missing"}
+    if protocol in ("dns", "network", "headless", "javascript"):
+        return {"verdict": "UNKNOWN",
+                "reason": (f"nuclei protocol '{protocol}' not yet "
+                           f"implemented (template {template_id})"),
+                "evidence": {"protocol": protocol,
+                             "template_id": template_id,
+                             "request": req}}
     paths = req.get("path") or req.get("paths") or []
     if isinstance(paths, str):
         paths = [paths]
@@ -193,13 +214,14 @@ def template_to_chain(template, source_path=""):
     name = str(info.get("name") or tid)
     severity = str(info.get("severity") or "medium").lower()
     priority = _SEV_TO_PRIORITY.get(severity, 500)
-    http_block = _http_block(template)
+    blocks = _request_blocks(template)
     steps = []
-    for i, req in enumerate(http_block):
+    for i, (proto, req) in enumerate(blocks):
         steps.append({
-            "id": f"nuclei-http-{i}",
+            "id": f"nuclei-{proto}-{i}",
             "tool": "nuclei_http",
-            "args": {"request": req, "template_id": tid},
+            "args": {"request": req, "protocol": proto,
+                     "template_id": tid},
             "on_fail": "next",
         })
     chain = {

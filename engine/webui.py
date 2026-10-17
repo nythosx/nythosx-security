@@ -19,7 +19,18 @@ from . import redact
 
 _jobs = {}
 _jobs_lock = threading.Lock()
-_run_lock = threading.Lock()
+_run_locks = {}
+_run_locks_guard = threading.Lock()
+
+
+def _get_run_lock(url):
+    key = str(url or "")
+    with _run_locks_guard:
+        lock = _run_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _run_locks[key] = lock
+        return lock
 
 
 _JOB_CAP = 50
@@ -168,41 +179,51 @@ def _build_result(url, outcome, log_text):
 def _run_job(job_id, url, min_severity, credentials=None, ai_key=None, use_brain=True,
              approve_destructive=False):
     buf = io.StringIO()
-    # sec-checker runs one scan at a time (auto_mod.console is a shared
-    # global swapped per job). If another scan is already running, say so
-    # instead of sitting silently on the lock — the client would otherwise
-    # see no events at all and look hung.
-    if not _run_lock.acquire(blocking=False):
+    my_console = Console(file=buf, force_terminal=False, width=100)
+    target_lock = _get_run_lock(url)
+    if not target_lock.acquire(blocking=False):
         _set(job_id, status="queued", phase="queued")
         progress.emit(job_id, "activity", {
-            "message": "Queued: another scan is already running "
-                       "(sec-checker runs one scan at a time). Waiting for "
-                       "it to finish..."})
-        _run_lock.acquire()
+            "message": f"Queued: another scan against {url} is already running."})
+        target_lock.acquire()
     try:
-        old_console = auto_mod.console
-        auto_mod.console = Console(file=buf, force_terminal=False, width=100)
+        _set(job_id, status="running", phase="starting")
         try:
-            _set(job_id, status="running", phase="starting")
-            outcome = auto_mod.run_auto(url, min_severity=min_severity,
-                                          job_id=job_id,
-                                          credentials=credentials,
-                                          ai_key=ai_key,
-                                          use_brain=use_brain,
-                                          allow_destructive=approve_destructive)
-            result = _build_result(url, outcome, buf.getvalue())
-            _set(job_id, status="done", phase="done", result=result)
-            if not progress.is_done(job_id):
-                progress.emit(job_id, "done", {"counts": result.get("counts") or {},
-                                                 "report_target": result.get("report_target")})
-        except Exception as e:
-            _set(job_id, status="error", phase="error",
-                 error=f"{type(e).__name__}: {e}", log=buf.getvalue())
-            progress.emit(job_id, "error", {"message": f"{type(e).__name__}: {e}"})
-        finally:
-            auto_mod.console = old_console
+            outcome = auto_mod.run_auto(
+                url, min_severity=min_severity, job_id=job_id,
+                credentials=credentials, ai_key=ai_key,
+                use_brain=use_brain,
+                allow_destructive=approve_destructive,
+                console=my_console,
+            )
+        except TypeError as _te:
+            if "console" not in str(_te):
+                raise
+            _old = auto_mod.console
+            auto_mod.console = my_console
+            try:
+                outcome = auto_mod.run_auto(
+                    url, min_severity=min_severity, job_id=job_id,
+                    credentials=credentials, ai_key=ai_key,
+                    use_brain=use_brain,
+                    allow_destructive=approve_destructive,
+                )
+            finally:
+                auto_mod.console = _old
+        result = _build_result(url, outcome, buf.getvalue())
+        _set(job_id, status="done", phase="done", result=result)
+        if not progress.is_done(job_id):
+            progress.emit(job_id, "done", {
+                "counts": result.get("counts") or {},
+                "report_target": result.get("report_target"),
+            })
+    except Exception as e:
+        _set(job_id, status="error", phase="error",
+             error=f"{type(e).__name__}: {e}", log=buf.getvalue())
+        progress.emit(job_id, "error",
+                      {"message": f"{type(e).__name__}: {e}"})
     finally:
-        _run_lock.release()
+        target_lock.release()
 
 
 def _resolve_session_headers(session_name, auth_str):

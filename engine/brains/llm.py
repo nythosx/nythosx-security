@@ -3,6 +3,7 @@ import os
 import re
 import secrets
 
+from .. import external_http
 from ..state import Hypothesis, ScanState, TriageDecision
 from .rule_based import RuleBasedBrain
 
@@ -35,8 +36,6 @@ def _read_api_key(explicit=None, env_name=None):
 
 def make_llm_client(provider="openai", model="gpt-4o-mini", base_url=None,
                     api_key=None, env_name=None, timeout=60):
-    import httpx
-
     key = _read_api_key(api_key, env_name)
     provider = (provider or "openai").lower()
 
@@ -45,7 +44,7 @@ def make_llm_client(provider="openai", model="gpt-4o-mini", base_url=None,
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         body = {"model": model, "temperature": 0,
                 "messages": [{"role": "user", "content": prompt}]}
-        with httpx.Client(timeout=timeout) as c:
+        with external_http.Client(timeout=timeout) as c:
             r = c.post(url, headers=headers, json=body)
             r.raise_for_status()
             data = r.json()
@@ -57,7 +56,7 @@ def make_llm_client(provider="openai", model="gpt-4o-mini", base_url=None,
                    "Content-Type": "application/json"}
         body = {"model": model, "max_tokens": 1024, "temperature": 0,
                 "messages": [{"role": "user", "content": prompt}]}
-        with httpx.Client(timeout=timeout) as c:
+        with external_http.Client(timeout=timeout) as c:
             r = c.post(url, headers=headers, json=body)
             r.raise_for_status()
             data = r.json()
@@ -70,7 +69,7 @@ def make_llm_client(provider="openai", model="gpt-4o-mini", base_url=None,
         headers = {"Content-Type": "application/json", "x-goog-api-key": key}
         body = {"contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"temperature": 0}}
-        with httpx.Client(timeout=timeout) as c:
+        with external_http.Client(timeout=timeout) as c:
             r = c.post(url, headers=headers, json=body)
             r.raise_for_status()
             data = r.json()
@@ -91,17 +90,23 @@ def make_llm_client(provider="openai", model="gpt-4o-mini", base_url=None,
     return client
 
 
-def make_brain_from_config(cfg=None, max_per_iter=20):
+def make_brain_from_config(cfg=None, max_per_iter=20, engine_cfg=None):
     if cfg is None:
         try:
             from ..config import load_engine
-            cfg = (load_engine() or {}).get("brain") or {}
+            engine_cfg = load_engine() or {}
+            cfg = engine_cfg.get("brain") or {}
         except Exception:
             cfg = {}
-    lcfg = cfg.get("llm") or {}
+            engine_cfg = {}
+    
+    # NEW: Support both nested (brain.llm) and root-level (llm) configurations
+    lcfg = cfg.get("llm") or (engine_cfg or {}).get("llm") or {}
+    
     provider = (lcfg.get("provider") or cfg.get("provider") or "openai").lower()
     if provider in ("rule_based", "rule", "none", "", "llm"):
         return RuleBasedBrain(max_per_iter=max_per_iter)
+    
     model = lcfg.get("model") or cfg.get("model") or "gpt-4o-mini"
     client = make_llm_client(
         provider=provider,

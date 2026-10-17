@@ -121,6 +121,28 @@ def _historical_hit_rate(chain_id, history):
     mult = HISTORY_FLOOR + hit_rate * HISTORY_SLOPE
     return max(HISTORY_FLOOR, min(HISTORY_CEIL, mult))
 
+def _program_memory_boost(chain, fact_store):
+    """Boost score if program memory shows high success for this chain's vuln class."""
+    try:
+        from . import program_memory as pm
+    except Exception:
+        return 1.0
+    
+    vuln_class = chain.get("vuln_class") or "default"
+    fw = fact_store.get("framework") if fact_store else "generic"
+    if fw is None:
+        fw = "generic"
+    
+    stats = pm.get_ev_stats(vuln_class, str(fw).lower())
+    attempts = stats.get("attempts", 0)
+    if attempts < 3:
+        return 1.0
+        
+    hit_rate = stats.get("hits", 0) / attempts
+    if hit_rate > 0.5:
+        return 1.0 + (hit_rate * 0.5)  # Up to 1.5x boost
+    return 1.0
+
 
 def _chain_cost(chain):
     total = 0.0

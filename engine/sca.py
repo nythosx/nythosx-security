@@ -18,6 +18,8 @@ from urllib.parse import quote
 
 import httpx
 
+from . import external_http
+
 try:
     import tomllib  # Python 3.11+
 except ImportError:
@@ -56,7 +58,7 @@ def _verify_tls():
 
 
 def _client(timeout=30):
-    return httpx.Client(timeout=timeout, verify=_verify_tls())
+    return external_http.Client(timeout=timeout, verify=_verify_tls())
 
 
 def discover_dependency_files(root):

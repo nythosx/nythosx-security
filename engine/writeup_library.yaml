@@ -684,3 +684,36 @@ patterns:
       directly.
     impact: Any page that frames the target can post messages and control its behaviour.
     fix: Always check `event.origin` against an allowlist before processing the message.
+
+  mcts_bizlogic:
+    family: business-logic
+    gap: The application's state machine can be bypassed or mutated via non-linear state transitions, breaking business invariants.
+    vars:
+      invariant:
+        path: evidence.invariant
+        default: state invariant
+    attack: The MCTS agent explored non-linear state transitions and found a path that breaks the {invariant}.
+    impact: Business logic bypass, financial loss, or unauthorized state changes.
+    fix: Enforce strict state machine transitions server-side and validate all state changes against the user's current context.
+    refs:
+      owasp: A06
+      cwe:
+        - CWE-840
+        - CWE-841
+      wstg: WSTG-BUSL-01
+  transport_bypass:
+    family: access-control
+    gap: The application's WAF or routing layer can be bypassed via protocol-level mutations (e.g., HTTP/2 desync, JA3 fingerprint rotation, chunked encoding).
+    vars:
+      mutation:
+        path: evidence.mutation
+        default: transport mutation
+    attack: The scanner successfully bypassed the access control gate using a {mutation}, resulting in a 200 OK response.
+    impact: Unauthorized access to sensitive endpoints, potential data exposure or privilege escalation.
+    fix: Normalize and validate requests at the edge. Ensure the WAF and backend parser share the exact same parsing logic.
+    refs:
+      owasp: A01
+      cwe:
+        - CWE-284
+        - CWE-444
+      wstg: WSTG-CONF-07

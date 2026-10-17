@@ -170,6 +170,12 @@ class Client:
             on_429_backoff_ms=(_rl_on_429 if _rl_on_429 is not None
                                else rl_cfg.get("on_429_backoff_ms", 5000)),
         )
+        _waf_cfg = cfg.get("waf") or {}
+        self._waf_retry_on_403 = bool(_waf_cfg.get("retry_on_403", True))
+        try:
+            self._waf_retry_max = max(1, int(_waf_cfg.get("retry_max", 6)))
+        except (TypeError, ValueError):
+            self._waf_retry_max = 6
         self._closed = False
 
     # -- enforcement ------------------------------------------------------
@@ -231,6 +237,7 @@ class Client:
         skip_rate_limit = kwargs.pop("skip_rate_limit", False)
         skip_default_headers = kwargs.pop("skip_default_headers", False)
         follow = kwargs.pop("follow_redirects", self._follow_default)
+        no_waf_retry = kwargs.pop("no_waf_retry", False)
 
         self._pre(method, url, skip_rate_limit=skip_rate_limit)
 
@@ -272,6 +279,36 @@ class Client:
 
         if r.status_code == 429:
             self._limiter.on_429()
+        
+        no_mutator_retry = kwargs.get("no_mutator_retry", False)
+        if r.status_code in (403, 406, 419) and not no_mutator_retry:
+            try:
+                from .transport_mutator import TransportMutator
+                mutator = TransportMutator()
+                mut_res = mutator.run(method, url, headers=req_headers, 
+                                      json_body=body_kwargs.get("json"), 
+                                      data=body_kwargs.get("content") or body_kwargs.get("data"), 
+                                      params=kwargs.get("params"))
+                if mut_res.get("status") and mut_res["status"] not in (403, 406, 419, 429, 503):
+                    class MutResp:
+                        pass
+                    mr = MutResp()
+                    mr.status_code = mut_res["status"]
+                    mr.text = mut_res["body"]
+                    mr.headers = mut_res["headers"]
+                    mr.url = r.url
+                    mr.cookies = r.cookies
+                    r = mr
+            except Exception:
+                pass
+
+        if (not no_waf_retry and self._waf_retry_on_403
+                and r.status_code == 403):
+            try:
+                r = self._waf_retry(method, url, kwargs, r,
+                                    skip_rate_limit, req_headers)
+            except Exception:
+                pass
         if follow:
             r = self._follow(r, headers=req_headers or None,
                              method=method, body_kwargs=body_kwargs)
@@ -299,6 +336,128 @@ class Client:
                           error=str(error) if error else None)
         except Exception:
             pass
+
+    def _waf_retry(self, method, url, original_kwargs, initial_response,
+                   skip_rate_limit, req_headers):
+        from .waf import probe
+        from .waf.encoder import adaptive_encode
+        from .waf.fingerprint import identify
+        payload_info = probe.extract_payload(method, url, original_kwargs)
+        if not payload_info:
+            return initial_response
+        payload = payload_info["value"]
+        fp = identify({
+            "headers": dict(initial_response.headers),
+            "body": (initial_response.text or "")[:4000],
+        })
+        waf_name = fp.get("waf")
+        attempts = [{"encoding": "raw",
+                     "status": initial_response.status_code}]
+        _preferred = ()
+        try:
+            from .program_memory import get_waf_bypasses
+            _preferred = tuple(get_waf_bypasses(waf_name or "unknown"))
+        except Exception:
+            pass
+
+        cached = {"response": None}
+
+        def _feedback(mutated):
+            retry_kwargs = probe.substitute(original_kwargs, mutated,
+                                             payload_info)
+            retry_url = retry_kwargs.pop("_retry_url", url)
+            if not skip_rate_limit:
+                try:
+                    self._limiter.acquire(str(retry_url))
+                except Exception:
+                    return 0, ""
+            try:
+                budget.record(str(retry_url))
+            except budget.BudgetExceeded:
+                return 0, ""
+            try:
+                r2 = self._client.request(method, retry_url,
+                                           headers=req_headers or None,
+                                           follow_redirects=False,
+                                           **retry_kwargs)
+            except Exception as e:
+                attempts.append({"encoding": "?",
+                                 "error": str(e)[:120]})
+                return 0, ""
+            attempts.append({"encoding": "?",
+                             "status": r2.status_code})
+            if r2.status_code and r2.status_code not in (
+                    403, 406, 419, 429, 503):
+                cached["response"] = r2
+            return r2.status_code or 0, r2.text or ""
+
+        name, _mutated = adaptive_encode(
+            payload, waf=waf_name,
+            feedback_fn=_feedback,
+            max_rounds=self._waf_retry_max,
+            preferred_order=_preferred,
+        )
+        if name and cached["response"] is not None:
+            r2 = cached["response"]
+            attempts.append({"encoding": name,
+                             "status": r2.status_code})
+            try:
+                from .program_memory import record_waf_bypass
+                record_waf_bypass(waf_name or "unknown", name, success=True)
+            except Exception:
+                pass
+            try:
+                r2.headers["X-SC-WAF-Bypass"] = name
+                r2.headers["X-SC-WAF-Vendor"] = waf_name or "unknown"
+            except Exception:
+                pass
+            return r2
+        if initial_response.status_code == 403:
+            try:
+                from .waf.rag_mutator import llm_mutate
+                from . import llm_service
+                _client = llm_service.get_client("waf_mutator")
+                if _client is not None:
+                    _block_body = (initial_response.text or "")[:500]
+                    _novel = llm_mutate(_client, payload,
+                                         waf_name or "unknown", _block_body)
+                    for _idx, _variant in enumerate(_novel):
+                        if not isinstance(_variant, str) or _variant == payload:
+                            continue
+                        _retry_kwargs = probe.substitute(
+                            original_kwargs, _variant, payload_info)
+                        _retry_url = _retry_kwargs.pop("_retry_url", url)
+                        try:
+                            budget.record(str(_retry_url))
+                        except budget.BudgetExceeded:
+                            break
+                        try:
+                            _r3 = self._client.request(
+                                method, _retry_url,
+                                headers=req_headers or None,
+                                follow_redirects=False, **_retry_kwargs)
+                        except Exception as _e:
+                            attempts.append({"encoding": f"llm_{_idx}",
+                                             "error": str(_e)[:120]})
+                            continue
+                        attempts.append({"encoding": f"llm_{_idx}",
+                                         "status": _r3.status_code})
+                        if _r3.status_code != 403:
+                            try:
+                                _r3.headers["X-SC-WAF-Bypass"] = f"llm_{_idx}"
+                                _r3.headers["X-SC-WAF-Vendor"] = (
+                                    waf_name or "unknown")
+                            except Exception:
+                                pass
+                            return _r3
+            except Exception:
+                pass
+        try:
+            initial_response.headers["X-SC-WAF-Vendor"] = waf_name or "unknown"
+            initial_response.headers["X-SC-WAF-Attempts"] = str(len(attempts))
+        except Exception:
+            pass
+        return initial_response
 
     def get(self, url, **kwargs):
         return self.request("GET", url, **kwargs)

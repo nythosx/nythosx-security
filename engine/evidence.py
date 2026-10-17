@@ -84,6 +84,22 @@ def save_evidence(pattern_id, target, context, verdict, oracle_result,
             data.setdefault("chain_ids", [])
         summary_path.write_text(json.dumps(data, indent=2, default=str),
                                 encoding="utf-8")
+    try:
+        from . import evidence_warehouse as _wh
+        _wh.ingest(
+            target=target,
+            endpoint=str(path),
+            kind=f"evidence:{pattern_id}",
+            status=0,
+            body=json.dumps({
+                "verdict": verdict,
+                "reason": oracle_result.get("reason", ""),
+                "evidence": oracle_result.get("evidence", {}),
+            }, default=str),
+            chain_id=",".join(chain_ids or []),
+        )
+    except Exception:
+        pass
     return path
 
 def bundle_evidence(target, extra_paths=None):

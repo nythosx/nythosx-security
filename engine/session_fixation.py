@@ -25,6 +25,14 @@ def _session_cookie(r):
 
 
 def _tool_session_fixation(orch, args):
+    from .auth_t2 import session_chain
+    url = args.get("url") or orch.target
+    login_path = args.get("login_path") or "/api/login"
+    roe_guard = getattr(orch, "roe_guard", None)
+    # Delegate to T2 chain for full pre-plant -> login -> verify
+    return session_chain.run_chain(url.rstrip("/") + login_path, url, roe_guard=roe_guard)
+
+def _legacy_tool_session_fixation(orch, args):
     url = args.get("url") or orch.target
     login_path = args.get("login_path") or "/api/login"
     verify = _verify_tls()

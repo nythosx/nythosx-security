@@ -28,11 +28,14 @@ _RECON_FACTS = {
     "ct_subdomain_count", "live_subdomains", "ct_subdomains",
     "has_subdomain_takeover", "has_public_bucket", "has_hpp_signal",
     "banking_requested",
+    "has_multi_identity",
     "has_sqli_param", "has_ssti_param", "has_xss_param", "has_crlf_param",
     "has_nosql_param", "has_mass_assignment_param",
     "has_numeric_injection_param", "has_container_param",
     "has_loose_string_param",
     "has_drupal",
+    "has_discovered_workflow",
+    "has_mfa",
 }
 
 _CONTEXT_KEYS = {
@@ -40,6 +43,9 @@ _CONTEXT_KEYS = {
     "jwt_token", "jwt_token_source", "login_info",
     "sca_path",
     "oauth_auth_endpoint", "websocket_url", "upload_url",
+    "workflow_steps", "workflow_endpoints", "workflow_final_path",
+    "saml_acs_url", "saml_response",
+    "mfa_url", "mfa_base_body",
 }
 
 _VALID_RESULT_KEYS = {"verdict", "reason", "evidence", "error", "duration_ms"}

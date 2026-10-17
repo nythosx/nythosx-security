@@ -185,6 +185,14 @@ _STATIC = {
         "injection",
         cost="medium",
     ),
+    "mcts_bizlogic": _cap(
+        "mcts_bizlogic",
+        "Autonomous state-space exploitation using Monte Carlo Tree Search to find business logic flaws.",
+        "business-logic",
+        cost="high",
+        destructive=False,
+        idempotent=True,
+    ),
     "cve_correlation": _cap(
         "cve_correlation",
         "Correlate detected framework/server versions against NVD for known CVEs.",

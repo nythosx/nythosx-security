@@ -1,12 +1,15 @@
 from rich.console import Console
 
 console = Console()
+_default_console = console
 
 
 def run_auto(url, min_severity="medium", credentials=None, skip_discovery=False,
              api_override=None, adapter_override=None, auto_baseline=False,
              job_id=None, allow_destructive=False, banking=False, ai_key=None,
-             use_brain=True):
+             use_brain=True, console=None):
+    if console is None:
+        console = _default_console
     """Route the auto scan through ChainOrchestrator.
 
     This replaces the legacy parallel-pattern fan-out with the adaptive
@@ -84,7 +87,10 @@ def run_auto(url, min_severity="medium", credentials=None, skip_discovery=False,
 
     try:
         from .cli import _print_chain_report
-        _print_chain_report(report)
+        try:
+            _print_chain_report(report, console=console)
+        except TypeError:
+            _print_chain_report(report)
     except Exception:
         console.print(f"[cyan]Chain verdict:[/cyan] {report.get('verdict')}")
         console.print(f"[dim]Findings: {len(report.get('findings') or [])}[/dim]")

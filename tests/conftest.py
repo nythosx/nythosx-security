@@ -124,6 +124,28 @@ def _no_live_llm(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_async_run(monkeypatch):
+    """Route every asyncio.run() call through a fresh worker thread.
+
+    Some pytest setups execute sync tests inside a managed event loop.
+    In that context asyncio.run() raises 'cannot be called from a
+    running event loop' even from a plainly synchronous test function.
+    A worker thread always starts with no running loop, so wrapping the
+    call restores the expected semantics without touching test bodies.
+    """
+    import asyncio
+    import concurrent.futures
+    original = asyncio.run
+
+    def _isolated(coro, **kwargs):
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=1) as pool:
+            return pool.submit(original, coro, **kwargs).result()
+
+    monkeypatch.setattr(asyncio, "run", _isolated)
+
+
+@pytest.fixture(autouse=True)
 def _reset_global_http_state():
     """Reset the shared request budget and rate limiter before each test.
 

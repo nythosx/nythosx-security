@@ -90,6 +90,8 @@ def validate_engine(data, where="engine.yaml"):
         "iteration": dict,
         "confirm": dict,
         "banking": dict,
+        "mcts": dict,
+        "transport_mutation": dict,
     }, where)
     if data.get("banking") is not None:
         validate_banking(data["banking"], where + ".banking")
@@ -117,6 +119,17 @@ def validate_engine(data, where="engine.yaml"):
             if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
                 raise SchemaError(
                     f"{where}.rate_limit.{key}: expected positive number")
+    waf = data.get("waf")
+    if isinstance(waf, dict):
+        v = waf.get("retry_on_403")
+        if v is not None and not isinstance(v, bool):
+            raise SchemaError(
+                f"{where}.waf.retry_on_403: expected bool")
+        v = waf.get("retry_max")
+        if v is not None:
+            if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                raise SchemaError(
+                    f"{where}.waf.retry_max: expected non-negative int")
 
 
 _BROAD_WILDCARD_EXACT = {"*", "*.*", "0.0.0.0/0"}

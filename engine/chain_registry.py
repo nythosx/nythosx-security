@@ -143,11 +143,12 @@ def get_all_chains():
         },
         {
             "id": "bizlogic-chain",
-            "name": "Business Logic Chain",
+            "name": "Business Logic Chain (dynamic)",
             "priority": 85,
             "trigger": {
                 "mode": "any",
                 "conditions": [
+                    {"fact": "has_discovered_workflow"},
                     {"fact": "has_ecommerce"},
                     {"fact": "has_coupon"},
                     {"fact": "has_financial"},
@@ -156,6 +157,16 @@ def get_all_chains():
                 ],
             },
             "steps": [
+                {
+                    "id": "dynamic_scan",
+                    "tool": "bizlogic_dynamic",
+                    "args": {},
+                    "precondition": {
+                        "mode": "all",
+                        "conditions": [{"fact": "has_discovered_workflow"}],
+                    },
+                    "on_fail": "next",
+                },
                 {
                     "id": "coupon_abuse",
                     "tool": "bizlogic_coupon",
@@ -186,12 +197,12 @@ def get_all_chains():
                     "id": "workflow_skip",
                     "tool": "skip_workflow_step",
                     "args": {
-                        "final_path": "/api/order/confirm",
+                        "final_path": "{{ workflow_final_path }}",
                         "method": "POST",
                     },
                     "precondition": {
-                        "mode": "any",
-                        "conditions": [{"fact": "has_workflow"}],
+                        "mode": "all",
+                        "conditions": [{"fact": "has_discovered_workflow"}],
                     },
                     "on_fail": "abort",
                 },
@@ -345,6 +356,12 @@ def get_all_chains():
                 {
                     "id": "oauth_pkce",
                     "tool": "oauth_pkce",
+                    "args": {"auth_endpoint": "{{ oauth_auth_endpoint }}"},
+                    "on_fail": "next",
+                },
+                {
+                    "id": "oauth_flow_probe",
+                    "tool": "oauth_flow_probe",
                     "args": {"auth_endpoint": "{{ oauth_auth_endpoint }}"},
                     "on_fail": "abort",
                 },
@@ -826,14 +843,19 @@ def get_all_chains():
             "name": "BOLA / BFLA Data Exposure Chain",
             "priority": 98,
             "trigger": {
-                "mode": "all",
-                "conditions": [{"fact": "banking_requested"}],
+                "mode": "any",
+                "conditions": [
+                    {"fact": "banking_requested"},
+                    {"fact": "has_login"},
+                ],
             },
             "steps": [
                 {
                     "id": "bola_probe",
                     "tool": "bola_scan",
                     "args": {"base_url": "{{ api_base }}"},
+                    "requires": ["has_identity_a"],
+                    "provides": ["has_bola_signal"],
                     "on_fail": "next",
                 },
             ],
@@ -1124,6 +1146,148 @@ def get_all_chains():
                       "Drupal views/ajax Disclosure Chain", 104, "views"),
         _drupal_chain("university-org-recon-chain",
                       "University Org Recon Chain", 82, "org"),
+        {
+            "id": "saml-discovery-chain",
+            "name": "SAML Discovery Chain",
+            "priority": 49,
+            "trigger": {
+                "mode": "any",
+                "conditions": [{"fact": "has_login"}],
+            },
+            "steps": [
+                {
+                    "id": "saml_discover",
+                    "tool": "saml_discovery",
+                    "args": {"url": "{{ api_base }}"},
+                    "on_fail": "abort",
+                },
+            ],
+        },
+        {
+            "id": "mfa-bypass-chain",
+            "name": "MFA Bypass Chain",
+            "priority": 47,
+            "trigger": {
+                "mode": "all",
+                "conditions": [{"fact": "has_mfa"}],
+            },
+            "steps": [
+                {
+                    "id": "mfa_bypass",
+                    "tool": "mfa_bypass",
+                    "args": {"mfa_url": "{{ mfa_url }}"},
+                    "on_fail": "abort",
+                },
+            ],
+        },
+        {
+            "id": "password-reset-chain",
+            "name": "Password Reset Poisoning Chain",
+            "priority": 46,
+            "trigger": {
+                "mode": "any",
+                "conditions": [{"fact": "has_login"}],
+            },
+            "steps": [
+                {
+                    "id": "reset_poison",
+                    "tool": "password_reset_scan",
+                    "args": {"url": "{{ api_base }}"},
+                    "on_fail": "abort",
+                },
+            ],
+        },
+        {
+            "id": "cmdi-chain",
+            "name": "OS Command Injection Chain",
+            "priority": 45,
+            "trigger": {
+                "mode": "any",
+                "conditions": [
+                    {"fact": "has_search"},
+                    {"fact": "has_login"},
+                ],
+            },
+            "steps": [
+                {
+                    "id": "cmdi",
+                    "tool": "cmdi_scan",
+                    "args": {"url": "{{ target }}"},
+                    "on_fail": "abort",
+                },
+            ],
+        },
+        {
+            "id": "lfi-chain",
+            "name": "LFI Chain",
+            "priority": 41,
+            "trigger": {
+                "mode": "any",
+                "conditions": [
+                    {"fact": "has_upload"},
+                    {"fact": "has_search"},
+                ],
+            },
+            "steps": [
+                {
+                    "id": "lfi",
+                    "tool": "lfi_scan",
+                    "args": {"url": "{{ target }}"},
+                    "on_fail": "abort",
+                },
+            ],
+        },
+        {
+            "id": "ldap-chain",
+            "name": "LDAP Injection Chain",
+            "priority": 43,
+            "trigger": {
+                "mode": "all",
+                "conditions": [{"fact": "has_login"}],
+            },
+            "steps": [
+                {
+                    "id": "ldap",
+                    "tool": "ldap_scan",
+                    "args": {"login_url": "{{ login_url }}"},
+                    "on_fail": "abort",
+                },
+            ],
+        },
+        {
+            "id": "sse-chain",
+            "name": "Server-Sent Events Cross-User Disclosure Chain",
+            "priority": 101,
+            "trigger": {
+                "mode": "all",
+                "conditions": [{"fact": "has_multi_identity"}],
+            },
+            "steps": [
+                {
+                    "id": "sse_scan",
+                    "tool": "sse_scan",
+                    "args": {"base_url": "{{ api_base }}"},
+                    "on_fail": "next",
+                },
+            ],
+        },
+        {
+            "id": "mcp-remote-chain",
+            "name": "Remote MCP Server Probe Chain",
+            "priority": 102,
+            "trigger": {
+                "mode": "all",
+                "conditions": [{"fact": "has_llm_hint"}],
+            },
+            "steps": [
+                {
+                    "id": "mcp_remote_probe",
+                    "tool": "mcp_remote_probe",
+                    "args": {"url": "{{ target }}"},
+                    "on_fail": "next",
+                },
+            ],
+        },
     ]
 
 

@@ -323,8 +323,12 @@ def chain_stats(limit=0):
 
 def all_targets():
     conn = _connect()
+    # Query both 'findings' (for vuln targets) and 'runs' (for clean targets)
     rows = conn.execute(
-        "SELECT DISTINCT target FROM findings ORDER BY target"
+        "SELECT DISTINCT target FROM findings "
+        "UNION "
+        "SELECT DISTINCT target FROM runs "
+        "ORDER BY target"
     ).fetchall()
     conn.close()
     return [r[0] for r in rows]

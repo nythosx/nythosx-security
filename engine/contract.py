@@ -597,10 +597,60 @@ def wrap_evaluate(raw, otype):
     )
 
 
+
+@dataclass(frozen=True)
+class FindingKey:
+    tool: str
+    reason_prefix: str
+    severity: str
+
+    @classmethod
+    def from_finding(cls, finding):
+        if finding is None:
+            return cls("", "", "info")
+        tool = (finding.get("tool") or finding.get("pattern_id")
+                or finding.get("capability") or finding.get("type")
+                or finding.get("kind") or "")
+        reason = finding.get("reason") or ""
+        prefix = reason[:120].strip().lower()
+        severity = (finding.get("severity")
+                    or (finding.get("evidence") or {}).get("severity")
+                    or "medium")
+        return cls(tool=str(tool), reason_prefix=prefix,
+                   severity=str(severity).lower())
+
+
+@dataclass
+class DedupPolicy:
+    reason_prefix_chars: int = 120
+    normalize_case: bool = True
+    default_severity: str = "medium"
+
+    def key_for(self, finding):
+        return FindingKey.from_finding(self._normalize(finding))
+
+    def _normalize(self, finding):
+        if finding is None:
+            return {}
+        out = dict(finding)
+        reason = out.get("reason") or ""
+        truncated = reason[:self.reason_prefix_chars]
+        if self.normalize_case:
+            truncated = truncated.strip().lower()
+        out["reason"] = truncated
+        return out
+
+
+def is_duplicate(existing, candidate, policy=None):
+    p = policy or DedupPolicy()
+    return p.key_for(existing) == p.key_for(candidate)
+
+
 __all__ = [
     "Verdict", "Severity", "Outcome", "Finding", "ScanResult", "ScanBudget", "Capability",
     "VERDICT_RANK", "SEVERITY_RANK", "CONFIDENCE_BY_VERDICT",
     "coerce_verdict", "coerce_severity", "coerce_outcome",
     "make_result", "wrap_evaluate", "infer_verdict", "infer_reason",
     "infer_severity", "infer_target",
+    "FindingKey", "DedupPolicy", "is_duplicate",
 ]

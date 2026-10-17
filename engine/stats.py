@@ -138,5 +138,26 @@ def payload_is_slower_than_baseline(baseline, payload, p_threshold=0.05,
     return False, ev
 
 
+def split_batches(samples, n_batches):
+    if not samples or n_batches <= 0:
+        return []
+    n = len(samples)
+    size = max(1, n // n_batches)
+    out = []
+    for i in range(n_batches):
+        start = i * size
+        end = n if i == n_batches - 1 else (i + 1) * size
+        if start < n:
+            out.append(list(samples[start:end]))
+    return out
+
+
+def compare_batches(baseline, candidate, p_threshold=0.05, min_delta_ms=200.0):
+    decision, ev = payload_is_slower_than_baseline(
+        baseline, candidate, p_threshold=p_threshold,
+        min_delta_ms=min_delta_ms)
+    return {"signal": decision, "evidence": ev}
+
 __all__ = ["median", "mad", "robust_scale", "is_outlier",
-           "mann_whitney_u", "payload_is_slower_than_baseline"]
+           "mann_whitney_u", "payload_is_slower_than_baseline",
+           "split_batches", "compare_batches"]

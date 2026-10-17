@@ -72,6 +72,14 @@ def analyze(self_probe, neighbor_probes, resource_base=None):
                 and np.get("body_hash") != self_hash \
                 and len((np.get("body") or "").strip()) > 2:
             offenders.append(np)
+    from .bola_confirm import _same_body
+    _self_body = self_probe.get("body") or ""
+    _filtered = []
+    for _np in offenders:
+        if _same_body(_self_body, _np.get("body") or ""):
+            continue
+        _filtered.append(_np)
+    offenders = _filtered
     if offenders:
         evidence = {"offender_ids": [o["id"] for o in offenders],
                     "self_id": self_probe.get("id")}
@@ -97,8 +105,106 @@ def analyze(self_probe, neighbor_probes, resource_base=None):
             "evidence": {"self_id": self_probe.get("id")}}
 
 
+def _run_cross_user_probe(identity_url, resource_base, token_a, token_b,
+                          headers=None, cookies=None, engine_cfg=None,
+                          roe_guard=None):
+    from .bola_confirm import classify, CONFIRMED, REFUTED, INCONCLUSIVE
+    engine_cfg = engine_cfg if engine_cfg is not None else load_engine()
+    guard = roe_guard or ROEGuard(engine_cfg=engine_cfg)
+    http_cfg = engine_cfg.get("http", {})
+    rl_cfg = engine_cfg.get("rate_limit", {}) or {}
+    base_headers = dict(headers or {})
+    base_cookies = dict(cookies or {})
+
+    def _client_for(token):
+        h = dict(base_headers)
+        if token:
+            h["Authorization"] = f"Bearer {token}"
+        return HttpClient(
+            default_headers=h,
+            timeout=http_cfg.get("timeout_seconds", 30),
+            verify=http_cfg.get("verify_tls", True),
+            roe_guard=guard,
+            cookies=base_cookies,
+            rate_limit_global_rps=rl_cfg.get("global_rps", 10),
+            rate_limit_per_endpoint_rps=rl_cfg.get("per_endpoint_rps", 5),
+            rate_limit_burst=rl_cfg.get("burst", 20),
+        )
+
+    out = {"identity_url": identity_url, "resource_base": resource_base,
+           "ids_found": [], "result": None, "error": None,
+           "mode": "cross_user"}
+    client_a = _client_for(token_a)
+    client_b = _client_for(token_b)
+    try:
+        me = client_a.request("GET", identity_url)
+        if me.get("error"):
+            out["error"] = me["error"]
+            out["result"] = {"verdict": "UNKNOWN",
+                             "reason": me["error"], "evidence": {}}
+            return out
+        ids = extract_ids(me.get("body") or "")
+        out["ids_found"] = [{"field": f, "value": v} for f, v in ids]
+        base = resource_base.rstrip("/")
+        paths = []
+        seen = set()
+        for _, v in ids:
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            for cand in (n, n + 1, n + 2):
+                if cand <= 0:
+                    continue
+                p = f"{base}/{cand}"
+                if p not in seen:
+                    seen.add(p)
+                    paths.append(p)
+            if len(paths) >= 6:
+                break
+        if not paths:
+            paths = [f"{base}/1", f"{base}/2"]
+
+        responses_a = {}
+        responses_b = {}
+        for url in paths:
+            ra = client_a.request("GET", url)
+            rb = client_b.request("GET", url)
+            responses_a[url] = {"status": ra.get("status"),
+                                "body": ra.get("body") or ""}
+            responses_b[url] = {"status": rb.get("status"),
+                                "body": rb.get("body") or ""}
+        decision = classify(responses_a, responses_b, paths)
+        verdict_map = {CONFIRMED: "VULNERABLE",
+                       REFUTED: "PASS",
+                       INCONCLUSIVE: "UNKNOWN"}
+        out["result"] = {
+            "verdict": verdict_map.get(decision.status, "UNKNOWN"),
+            "reason": decision.reason,
+            "evidence": {"proof": decision.proof,
+                         "status": decision.status,
+                         "mode": "cross_user"},
+        }
+    finally:
+        try:
+            client_a.close()
+        except Exception:
+            pass
+        try:
+            client_b.close()
+        except Exception:
+            pass
+    return out
+
+
 def _run_probe_impl(identity_url, resource_base, headers=None, cookies=None,
-              engine_cfg=None, roe_guard=None):
+                    engine_cfg=None, roe_guard=None,
+                    token_a=None, token_b=None):
+    if token_b and token_a:
+        return _run_cross_user_probe(
+            identity_url, resource_base, token_a, token_b,
+            headers=headers, cookies=cookies,
+            engine_cfg=engine_cfg, roe_guard=roe_guard)
     engine_cfg = engine_cfg if engine_cfg is not None else load_engine()
     guard = roe_guard or ROEGuard(engine_cfg=engine_cfg)
     http_cfg = engine_cfg.get("http", {})

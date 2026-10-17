@@ -16,6 +16,8 @@ import uuid
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from . import external_http
+
 
 _CMD_OUTPUT_RE = re.compile(
     r"\buid=\d+\b|\bgid=\d+\b|\bgroups=\S+|^root:[^:]+:\d+:",
@@ -213,8 +215,13 @@ class OOBServer:
                 return None
             return q.popleft()
 
-    def wait_for_output(self, token, timeout=5.0, poll=0.1):
+    def wait_for_output(self, token, timeout=5.0, poll=0.5):
         if self._external_url:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if self._poll_external(token):
+                    return True
+                time.sleep(poll)
             return False
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -225,9 +232,27 @@ class OOBServer:
         with self._lock:
             return bool(self._outputs.get(token))
 
-    def wait_for_hit(self, token, timeout=5.0, poll=0.1):
+    def _poll_external(self, token):
+        if not self._external_url:
+            return False
+        try:
+            poll_url = f"{self._external_url.rstrip('/')}/poll?token={token}"
+            with external_http.Client(timeout=3.0, follow_redirects=True) as c:
+                r = c.get(poll_url)
+                if r.status_code == 200:
+                    data = r.json()
+                    return bool(data.get("hit") or data.get("hits") or data.get("interactions"))
+        except Exception:
+            pass
+        return False
+
+    def wait_for_hit(self, token, timeout=5.0, poll=0.5):
         if self._external_url:
-            # We cannot observe the external service from here.
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if self._poll_external(token):
+                    return True
+                time.sleep(poll)
             return False
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

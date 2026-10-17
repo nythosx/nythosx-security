@@ -76,18 +76,72 @@ async def _try_handshake(ws_url, origin=None, headers=None, timeout=8,
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def _run(coro):
+async def _try_graphql_subscription(ws_url, origin=None, headers=None,
+                                     timeout=8, verify=True):
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            raise RuntimeError("event loop already running")
-        return loop.run_until_complete(coro)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        import websockets
+    except ImportError:
+        return {"ok": False, "error": "websockets library not installed"}
+    h = dict(headers or {})
+    h.setdefault("Sec-WebSocket-Protocol", "graphql-ws")
+    if origin:
+        h["Origin"] = origin
+    ssl_ctx = None
+    if ws_url.startswith("wss"):
+        ssl_ctx = ssl_mod.create_default_context()
+        if not verify:
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl_mod.CERT_NONE
+    result = {"ok": False, "ack": False, "next": False,
+              "auth_rejected": False, "error": None, "frames": []}
+    try:
+        async with websockets.connect(
+            ws_url, extra_headers=h, open_timeout=timeout,
+            subprotocols=["graphql-ws"], ssl=ssl_ctx, close_timeout=2,
+        ) as ws:
+            await ws.send(json.dumps({"type": "connection_init",
+                                       "payload": {}}))
+            try:
+                msg = await asyncio.wait_for(ws.recv(), timeout=2)
+                result["frames"].append(msg[:300])
+                if "connection_ack" in msg:
+                    result["ack"] = True
+            except Exception:
+                pass
+            if not result["ack"]:
+                return result
+            await ws.send(json.dumps({
+                "id": "1", "type": "start",
+                "payload": {"query": "subscription { __typename }"},
+            }))
+            deadline = asyncio.get_event_loop().time() + 3
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=1)
+                except Exception:
+                    break
+                result["frames"].append(msg[:300])
+                low = msg.lower()
+                if '"next"' in msg or '"data"' in msg:
+                    result["next"] = True
+                    result["ok"] = True
+                    break
+                if '"error"' in msg:
+                    if any(w in low for w in ("unauthorized", "forbidden",
+                                              "token", "auth")):
+                        result["auth_rejected"] = True
+                    else:
+                        result["ok"] = True
+                    break
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {e}"
+    return result
+
+
+def _run(coro):
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def scan(target_url, headers=None, roe_guard=None, timeout=8):
@@ -127,6 +181,13 @@ def scan(target_url, headers=None, roe_guard=None, timeout=8):
     if cswsh.get("ok"):
         findings.append({"type": "cswsh_accepted_evil_origin",
                          "evidence": cswsh})
+
+    gql = _run(_try_graphql_subscription(
+        ws_url, origin="https://attacker.example.com",
+        headers=headers, timeout=timeout, verify=verify))
+    if gql.get("ok") and not gql.get("auth_rejected"):
+        findings.append({"type": "graphql_subscription_accepted",
+                         "evidence": gql})
 
     if findings:
         v = "VULNERABLE" if any(f["type"] in ("unauth_handshake",

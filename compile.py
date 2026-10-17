@@ -13,7 +13,7 @@ CODE_SUFFIXES = {
 }
 
 SKIP_DIRS = {
-    ".git", ".github", "__pycache__", ".pytest_cache",
+    ".git", ".md", ".github", "__pycache__", ".pytest_cache",
     ".venv", "venv", "env", ".env", "node_modules", "site-packages",
     ".mypy_cache", ".ruff_cache", ".idea", ".vscode", ".claude", ".claude1",
     "evidence", "findings", "reports", "logs", "sessions", "tests",

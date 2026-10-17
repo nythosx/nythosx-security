@@ -69,6 +69,79 @@ def _authorize_url(auth_endpoint, redirect_uri):
     return urlunparse(p._replace(query=urlencode(q, doseq=True)))
 
 
+_REFERRER_SAFE = frozenset({
+    "no-referrer", "same-origin", "strict-origin",
+    "strict-origin-when-cross-origin",
+})
+
+_REFERRER_RISKY = frozenset({
+    "unsafe-url", "no-referrer-when-downgrade",
+})
+
+
+def _parse_referrer_policy(header_value):
+    if not header_value:
+        return ""
+    return str(header_value).strip().lower()
+
+
+def _check_token_in_query_referrer_leak(auth_endpoint, headers=None,
+                                         timeout=8, verify=None,
+                                         roe_guard=None):
+    if verify is None:
+        verify = _verify_tls()
+    p = urlparse(auth_endpoint)
+    q = parse_qs(p.query)
+    q["response_type"] = ["token"]
+    q["client_id"] = ["sec-checker"]
+    q["redirect_uri"] = ["https://attacker.example.com/cb"]
+    q["state"] = ["state123"]
+    probe_url = urlunparse(p._replace(query=urlencode(q, doseq=True)))
+    viol = _roe_block(roe_guard, probe_url, "GET")
+    if viol:
+        return None
+    try:
+        with _http.Client(timeout=timeout, verify=verify,
+                          follow_redirects=False) as c:
+            r = c.get(probe_url, headers=headers or {})
+    except Exception:
+        return None
+    loc = r.headers.get("Location", "")
+    if not loc:
+        return None
+    if "#" in loc:
+        frag = loc.split("#", 1)[1]
+        if "access_token=" in frag or "id_token=" in frag:
+            return None
+    if "access_token=" not in loc and "id_token=" not in loc:
+        return None
+    try:
+        with _http.Client(timeout=timeout, verify=verify,
+                          follow_redirects=True) as c:
+            rp = c.get(auth_endpoint, headers=headers or {})
+    except Exception:
+        return None
+    policy = _parse_referrer_policy(rp.headers.get("Referrer-Policy"))
+    if policy in _REFERRER_SAFE:
+        return None
+    severity = "high" if policy in _REFERRER_RISKY else "medium"
+    if not policy:
+        reason = ("implicit flow returns token in URL query string "
+                  "with no explicit Referrer-Policy -- token leaks via "
+                  "Referer to any same-origin page the user navigates to")
+    else:
+        reason = (f"implicit flow returns token in URL query string "
+                  f"with weak Referrer-Policy '{policy}' -- token leaks "
+                  f"via Referer to third-party sites")
+    return {
+        "type": "referrer_token_leak",
+        "severity": severity,
+        "reason": reason,
+        "referrer_policy": policy or "",
+        "location": loc[:200],
+    }
+
+
 def scan(auth_endpoint, target_host=None, headers=None, roe_guard=None,
          timeout=8):
     verify = _verify_tls()
@@ -100,11 +173,26 @@ def scan(auth_endpoint, target_host=None, headers=None, roe_guard=None,
             findings.append({"bypass": label, "redirect_uri": ru,
                              "location": loc[:200]})
 
+    ref_finding = _check_token_in_query_referrer_leak(
+        auth_endpoint, headers=headers, timeout=timeout, verify=verify,
+        roe_guard=roe_guard)
+    if ref_finding:
+        findings.append(ref_finding)
+
     if findings:
+        bypasses = [f for f in findings if f.get("bypass")]
+        refs = [f for f in findings if f.get("type") == "referrer_token_leak"]
+        if bypasses:
+            verdict = "VULNERABLE"
+            severity = "high"
+            reason = f"redirect_uri bypass via {bypasses[0]['bypass']}"
+        else:
+            verdict = "SUSPICIOUS"
+            severity = refs[0].get("severity", "medium")
+            reason = refs[0].get("reason", "OAuth weakness")
         return ScanResult(
             capability="oauth_redirect_uri_scan", target=auth_endpoint,
-            verdict="VULNERABLE", severity="high",
-            reason=f"redirect_uri bypass via {findings[0]['bypass']}",
+            verdict=verdict, severity=severity, reason=reason,
             evidence={"findings": findings, "attempts": attempts},
         )
     if not any_handler_reached(attempts):

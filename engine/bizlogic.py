@@ -655,6 +655,41 @@ def _scan_impl(base_url, headers=None, timeout=8, verify=None, roe_guard=None,
             base_url, endpoints["protected_path"], headers=headers,
             timeout=timeout, verify=verify, roe_guard=roe_guard)
 
+    try:
+        from . import llm_service
+        from . import bizlogic_llm
+        client = llm_service.get_client("bizlogic_llm")
+        if client is not None:
+            model = bizlogic_llm.infer_app_model(
+                client,
+                {"base_url": base_url,
+                 "endpoints": sorted(endpoints.keys())},
+            )
+            llm_findings = bizlogic_llm.execute_flaws(
+                roe_guard, base_url, model)
+            if llm_findings:
+                out["probes"]["llm_inferred"] = {
+                    "verdict": "VULNERABLE",
+                    "reason": f"{len(llm_findings)} LLM-inferred flaw(s) confirmed",
+                    "evidence": {"findings": llm_findings,
+                                 "flaw_count": len(model.get("flaws") or [])},
+                }
+            else:
+                out["probes"]["llm_inferred"] = {
+                    "verdict": "PASS",
+                    "reason": (
+                        f"no LLM-inferred flaws confirmed "
+                        f"({len(model.get('flaws') or [])} proposed)"
+                    ),
+                    "evidence": {"flaw_count": len(model.get("flaws") or [])},
+                }
+    except Exception as e:
+        out["probes"]["llm_inferred"] = {
+            "verdict": "UNKNOWN",
+            "reason": f"llm inference failed: {type(e).__name__}: {e}",
+            "evidence": {},
+        }
+
     rank = {"VULNERABLE": 3, "SUSPICIOUS": 2, "PASS": 1, "UNKNOWN": 0}
     overall = "UNKNOWN"
     for p in out["probes"].values():

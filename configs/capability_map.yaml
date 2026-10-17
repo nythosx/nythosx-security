@@ -59,3 +59,15 @@ broken_access_control:
 unauthenticated_data_disclosure:
   requires: [anon]
   grants: read_data
+tenant_breach:
+  requires: [obtain_token]
+  grants: read_data
+state_abuse:
+  requires: [obtain_token]
+  grants: write_data
+tunnel_acl_bypass:
+  requires: [anon]
+  grants: pivot_internal
+execute_code:
+  requires: [anon]
+  grants: execute_code

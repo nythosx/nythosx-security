@@ -19,6 +19,7 @@ import re
 from urllib.parse import urlparse
 
 from . import http as _http
+from . import ssrf_bypass
 from .config import load_engine
 from .roe_guard import ROEGuard, ROEViolation
 
@@ -162,8 +163,37 @@ def _headers_from_kwargs(headers, params, pname, murl):
     return h
 
 
+def _params_from_fact_store(fact_store):
+    if fact_store is None:
+        return []
+    try:
+        keys = list(fact_store.all_keys())
+    except Exception:
+        return []
+    out = []
+    for key in keys:
+        if not str(key).startswith("param:"):
+            continue
+        try:
+            f = fact_store.get_fact(key)
+        except Exception:
+            continue
+        if f is None:
+            continue
+        node = f.value if isinstance(f.value, dict) else {}
+        cls = node.get("classification")
+        if cls not in ("loose_string", "container_typed"):
+            continue
+        name = node.get("name") or str(key).rsplit(":", 1)[-1]
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
 def _target_side_scan(base_url, params=None, headers=None, timeout=10,
-                      roe_guard=None):
+                      roe_guard=None, fact_store=None):
+    if not params and fact_store is not None:
+        params = _params_from_fact_store(fact_store)
     params = params or COMMON_SSRF_PARAMS[:10]
     attempts = []
     findings = []
@@ -176,8 +206,14 @@ def _target_side_scan(base_url, params=None, headers=None, timeout=10,
             "evidence": {},
         }
     try:
+        _allowed = ssrf_bypass.metadata_urls_allowed(roe_guard)
+        _bypass = ssrf_bypass.metadata_bypasses_allowed(roe_guard)
+        _all_metadata = list(_allowed) + list(_bypass)
+        if not _all_metadata:
+            return _internal_port_fallback(
+                client, base_url, params, headers, timeout, roe_guard)
         for pname in params:
-            for label, murl in METADATA_URLS:
+            for label, murl in _all_metadata:
                 h = _headers_from_kwargs(headers, None, pname, murl)
                 try:
                     r = client.get(base_url, params={pname: murl}, headers=h,
@@ -243,6 +279,93 @@ def _target_side_scan(base_url, params=None, headers=None, timeout=10,
         "reason": (f"no metadata markers reflected across {len(real)} "
                    f"target responses"),
         "evidence": {"attempts": attempts},
+    }
+
+
+_INTERNAL_MARKERS = (
+    ("redis", "-ERR", "-NOAUTH", "-NOPERM"),
+    ("postgresql", "invalid length of startup packet", "FATAL:"),
+    ("mysql", "mysql_native_password"),
+    ("elasticsearch", "You Know, for Search", '"cluster_name"'),
+    ("docker", '"Id":', '"Image":'),
+    ("etcd", "etcdserver",),
+    ("k8s", "Unauthorized"),
+)
+
+
+def _internal_markers_in(body):
+    if not body:
+        return []
+    out = []
+    for tup in _INTERNAL_MARKERS:
+        name = tup[0]
+        for n in tup[1:]:
+            if n and n in body:
+                out.append(name)
+                break
+    return out
+
+
+def _internal_port_fallback(client, base_url, params, headers, timeout,
+                             roe_guard):
+    attempts = []
+    findings = []
+    probes_sent = 0
+    max_probes = 30
+    bypasses = ssrf_bypass.internal_port_bypasses()
+    for pname in params[:5]:
+        for label, url in bypasses:
+            if probes_sent >= max_probes:
+                break
+            if not ssrf_bypass.roe_allows_url(roe_guard, url):
+                continue
+            probes_sent += 1
+            try:
+                r = client.get(base_url, params={pname: url},
+                               headers=headers or {},
+                               follow_redirects=False)
+            except _http.ROEBlock as e:
+                return {"verdict": "UNKNOWN",
+                        "reason": f"ROE_BLOCK: {e}",
+                        "evidence": {}}
+            except Exception as e:
+                attempts.append({"param": pname, "target": label,
+                                  "error": f"{type(e).__name__}: {e}"})
+                continue
+            body = r.text or ""
+            attempts.append({"param": pname, "target": label,
+                              "status": r.status_code,
+                              "body_len": len(body)})
+            markers = _internal_markers_in(body)
+            if markers:
+                findings.append({"param": pname, "target": label,
+                                  "markers": markers,
+                                  "preview": body[:300]})
+                break
+        if findings:
+            break
+    if findings:
+        return {
+            "verdict": "VULNERABLE",
+            "reason": (f"internal port reachable via SSRF bypass "
+                       f"(metadata blocked by ROE): "
+                       f"{findings[0]['markers']} on "
+                       f"{findings[0]['target']}"),
+            "evidence": {"findings": findings, "attempts": attempts,
+                          "roe_fallback": True},
+        }
+    live = [a for a in attempts if a.get("status") is not None]
+    if not live:
+        return {
+            "verdict": "UNKNOWN",
+            "reason": "no internal port reachable (metadata blocked by ROE)",
+            "evidence": {"attempts": attempts, "roe_fallback": True},
+        }
+    return {
+        "verdict": "PASS",
+        "reason": ("no internal port reachable "
+                    "(metadata blocked by ROE, bypass attempted)"),
+        "evidence": {"attempts": attempts, "roe_fallback": True},
     }
 
 
@@ -332,7 +455,7 @@ def _self_probe_scan(base_url=None, timeout=8, verify=None, roe_guard=None,
 # --- public entry point ----------------------------------------------------
 def _scan_impl(base_url=None, timeout=8, verify=None, roe_guard=None,
                include_protocol_smuggling=False, fuzz_param_url=None,
-               self_probe=None, params=None, headers=None):
+               self_probe=None, params=None, headers=None, fact_store=None):
     if self_probe is None:
         self_probe = _direct_metadata_allowed()
     if self_probe or not base_url:
@@ -346,7 +469,7 @@ def _scan_impl(base_url=None, timeout=8, verify=None, roe_guard=None,
         verify = _verify_tls()
     return _target_side_scan(
         base_url, params=params, headers=headers, timeout=timeout,
-        roe_guard=roe_guard,
+        roe_guard=roe_guard, fact_store=fact_store,
     )
 
 

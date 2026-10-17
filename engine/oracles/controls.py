@@ -68,6 +68,34 @@ def _nc_generic(payload):
     return "benign-control-" + str(payload)[:8]
 
 
+def _nc_bola(payload):
+    return {"control": "self_resource_probe"}
+
+
+def _nc_idor(payload):
+    return "999999999"
+
+
+def _nc_mass_assignment(payload):
+    return {"__benign_probe__": True}
+
+
+def _nc_jwt(payload):
+    return {"control": "expired_valid_signature"}
+
+
+def _nc_graphql(payload):
+    return "{ __typename }"
+
+
+def _nc_access_bypass(payload):
+    return "/definitely-not-a-real-path-xyz"
+
+
+def _nc_cache_deception(payload):
+    return "/nonexistent.css"
+
+
 NEGATIVE_CONTROLS = {
     "xss": _nc_xss,
     "dom_xss": _nc_xss,
@@ -78,6 +106,23 @@ NEGATIVE_CONTROLS = {
     "ssti": _nc_ssti,
     "crlf": _nc_crlf,
     "nosql": _nc_nosql,
+    "bola_scan": _nc_bola,
+    "bola_harvest": _nc_bola,
+    "bola": _nc_bola,
+    "idor": _nc_idor,
+    "idor_scan": _nc_idor,
+    "mass_assignment": _nc_mass_assignment,
+    "jwt_attack": _nc_jwt,
+    "jwt_weak_secret": _nc_jwt,
+    "jwt_forge": _nc_jwt,
+    "graphql_scan": _nc_graphql,
+    "graphql_deep": _nc_graphql,
+    "graphql_data_dump": _nc_graphql,
+    "graphql_schema_walk": _nc_graphql,
+    "access_bypass": _nc_access_bypass,
+    "access_bypass_scan": _nc_access_bypass,
+    "cache_deception": _nc_cache_deception,
+    "cache_deception_scan": _nc_cache_deception,
 }
 
 

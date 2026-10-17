@@ -30,6 +30,72 @@ def _fake_ip(i):
     return f"10.{random.randint(0,255)}.{random.randint(0,255)}.{i % 255}"
 
 
+def _fake_ipv6(i):
+    a = random.randint(1, 0xffff)
+    b = random.randint(1, 0xffff)
+    return "::ffff:%d.%d.%d.1" % (i % 255, a % 256, b % 256)
+
+
+def _parallelism_probe(url, roe_guard=None, timeout=8, count=10):
+    """Detect if the rate limiter keys on IP only or IP+token."""
+    verify = _verify_tls()
+    try:
+        client = _http.Client(timeout=timeout, verify=verify,
+                              follow_redirects=False)
+    except Exception as e:
+        return {"verdict": "UNKNOWN",
+                "reason": "client init failed: %s" % type(e).__name__}
+    same_xff = []
+    diff_xff = []
+    token_xff = []
+    try:
+        for _ in range(2):
+            try:
+                r = client.get(url,
+                                headers={"X-Forwarded-For": "10.0.0.1"},
+                                skip_rate_limit=True)
+                same_xff.append(r.status_code)
+            except Exception:
+                same_xff.append(None)
+        for i in range(count):
+            try:
+                r = client.get(url,
+                                headers={"X-Forwarded-For": _fake_ipv6(i)},
+                                skip_rate_limit=True)
+                diff_xff.append(r.status_code)
+            except Exception:
+                diff_xff.append(None)
+        for _ in range(2):
+            try:
+                r = client.get(url,
+                                headers={"X-Forwarded-For": "10.0.0.2",
+                                          "Authorization": "Bearer test"},
+                                skip_rate_limit=True)
+                token_xff.append(r.status_code)
+            except Exception:
+                token_xff.append(None)
+    finally:
+        client.close()
+    same_limited = any(s == 429 for s in same_xff)
+    diff_ok = sum(1 for s in diff_xff if s in (200, 201, 202))
+    diff_total = len([s for s in diff_xff if s is not None])
+    evidence = {"same_xff_statuses": same_xff,
+                "diff_xff_statuses": diff_xff,
+                "token_xff_statuses": token_xff}
+    if diff_total > 0 and diff_ok >= diff_total * 0.9:
+        return {"verdict": "VULNERABLE",
+                "reason": "IPv6 XFF rotation bypasses limiter (%d/%d)" % (
+                    diff_ok, diff_total),
+                "evidence": evidence}
+    if same_limited:
+        return {"verdict": "PASS",
+                "reason": "IP-keyed limiter enforced",
+                "evidence": evidence}
+    return {"verdict": "UNKNOWN",
+            "reason": "limiter behavior unclear",
+            "evidence": evidence}
+
+
 def test_bypass(url, roe_guard=None, count=30, timeout=8,
                 method="GET", token=None):
     verify = _verify_tls()

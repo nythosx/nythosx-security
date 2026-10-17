@@ -54,10 +54,10 @@ brain:
   provider: llm
   model: ''
   llm:
-    provider: gemini
-    model: gemini-flash-lite-latest
-    base_url: ''
-    api_key_env: ''
+    provider: nvidia                                    # was: gemini
+    model: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning                # was: gemini-flash-lite-latest
+    base_url: https://integrate.api.nvidia.com/v1      # was: ''
+    api_key_env: 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                        # was: ''
   tools: {}
 correlator:
   enabled: true
@@ -67,9 +67,9 @@ coverage:
   include_untested: true
 orchestrator:
   budget:
-    max_iterations: 5
-    max_http_requests: 500
-    max_duration_seconds: 300
+    max_http_requests: 5000     
+    max_duration_seconds: 1800
+    max_requests_per_host: 2500 
     max_hypotheses_per_iter: 20
     convergence_window: 2
 weak_password:
@@ -190,6 +190,11 @@ banking:
 
 outcome:
   track: true
+
+waf:
+  enabled: true
+  retry_on_403: true
+  retry_max: 6
 
 approval:
   mode: off

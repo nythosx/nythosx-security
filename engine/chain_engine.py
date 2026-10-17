@@ -1,15 +1,21 @@
 
+import json
+import re
 import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .state_machine import AppState, ContextWallet
+from .invariants import InvariantOracle
+from .mcts_agent import MCTSAgent
 from .config import load_engine, load_targets, discovery_config
 from .roe_guard import ROEGuard, ROEViolation
 from . import progress
 from .facts import FactStore
 from .scoring import rank_chains, load_history
 from . import hooks as _hooks
+from .contract import FindingKey
 
 ROOT = Path(__file__).parent.parent.absolute()
 
@@ -25,10 +31,18 @@ def _confidence_to_float(c):
 
 
 _EXTRA_HANDLERS = {}
+_TOOL_SPECS = {}
 
 
-def register_tool(name, handler):
+def register_tool(name, handler, requires=None, provides=None,
+                  destructive=None, idempotent=None):
     _EXTRA_HANDLERS[name] = handler
+    _TOOL_SPECS[name] = {
+        "requires": list(requires or []),
+        "provides": list(provides or []),
+        "destructive": destructive,
+        "idempotent": idempotent,
+    }
     cls = globals().get("ChainOrchestrator")
     if cls is not None and hasattr(cls, "_TOOL_HANDLERS"):
         cls._TOOL_HANDLERS[name] = handler
@@ -197,6 +211,23 @@ class ChainOrchestrator:
             "errors": [],
         }
         self.diagnostics = []
+        
+        # --- Substrate #2: Multi-Identity Session Broker ---
+        self.identity_broker = None
+        self._chain_dispatched = {}
+        try:
+            from .identity_broker import IdentityBroker
+            self.identity_broker = IdentityBroker(
+                self.target, self.roe_guard,
+                engine_cfg=self.engine_cfg,
+                fact_store=self.fact_store,
+                diag=self._diag,
+                warn=self._warn,
+            )
+        except Exception:
+            pass
+        self._register_identity_providers()
+        # ---------------------------------------------------
 
         try:
             self.roe_guard.check_url(self.target, "GET")
@@ -305,6 +336,11 @@ class ChainOrchestrator:
         self._emit("fact", {"key": key, "value": value, "source": source})
 
     def has_fact(self, key, value=None):
+        f = self.fact_store.get_fact(key)
+        if f is not None:
+            if value is None:
+                return True
+            return f.value == value
         if key not in self.facts:
             return False
         if value is None:
@@ -312,6 +348,9 @@ class ChainOrchestrator:
         return self.facts[key]["value"] == value
 
     def get_fact(self, key, default=None):
+        f = self.fact_store.get_fact(key)
+        if f is not None:
+            return f.value
         return self.facts.get(key, {}).get("value", default)
 
     def set_context(self, key, value):
@@ -393,6 +432,49 @@ class ChainOrchestrator:
                     self._run_bundle_analysis(bundles)
                 except Exception as e:
                     self.recon["errors"].append(f"bundle_analysis: {e}")
+                
+                # --- Substrate #4: Client-Side Ground Truth (SPA Parser) ---
+                try:
+                    from .spa_parser import parse_bundle
+                    from . import discovery as _disc
+                    spa_routes, spa_flags, spa_guards, spa_apis = set(), set(), set(), set()
+                    spa_flows = {}
+                    for b in bundles[:5]:
+                        text = _disc.fetch_js_text(b["url"])
+                        if text:
+                            parsed = parse_bundle(text)
+                            spa_routes.update(parsed["routes"])
+                            spa_flags.update(parsed["flags"])
+                            spa_guards.update(parsed["guards"])
+                            spa_apis.update(parsed["hidden_apis"])
+                            for _fname, _steps in (parsed.get("flows") or {}).items():
+                                if _fname in spa_flows:
+                                    for _s in _steps:
+                                        if _s not in spa_flows[_fname]:
+                                            spa_flows[_fname].append(_s)
+                                else:
+                                    spa_flows[_fname] = list(_steps)
+                    
+                    if spa_routes or spa_apis:
+                        self.add_fact("client_side_routes", sorted(spa_routes)[:50], source="spa_parser")
+                        self.add_fact("client_side_apis", sorted(spa_apis)[:50], source="spa_parser")
+                        for api in spa_apis:
+                            if api not in self.recon["api_paths"]:
+                                self.recon["api_paths"].append(api)
+                        self._activity(f"SPA Parser: found {len(spa_routes)} routes, {len(spa_apis)} hidden APIs", stage="recon")
+                    if spa_flows:
+                        self.add_fact("has_discovered_workflow", True, source="spa_parser")
+                        self.set_context("workflow_steps", spa_flows)
+                        _wf_endpoints = self._build_workflow_endpoints(spa_flows)
+                        if _wf_endpoints:
+                            self.set_context("workflow_endpoints", _wf_endpoints)
+                        _final_path = self._extract_workflow_final_path(spa_flows)
+                        if _final_path:
+                            self.set_context("workflow_final_path", _final_path)
+                        self._activity(f"SPA Parser: discovered {len(spa_flows)} workflow(s)", stage="recon")
+                except Exception as e:
+                    self.recon["errors"].append(f"spa_parser: {e}")
+                # -----------------------------------------------------------
         except Exception as e:
             self.recon["errors"].append(f"js_extraction: {e}")
 
@@ -412,6 +494,40 @@ class ChainOrchestrator:
                         if p["verdict"] in ("live_api", "exists", "auth_required")]
                 self.add_fact("verified_endpoint_count", len(live),
                               source="endpoint_probe")
+                
+                # --- Phase 3: LLM-Guided Intelligent Endpoint Discovery ---
+                if self.triage_brain and getattr(self.triage_brain, 'client', None):
+                    try:
+                        from .intelligent_discovery import intelligent_endpoint_discovery
+                        self._activity("Running LLM-guided intelligent endpoint discovery...", stage="recon")
+                        
+                        valid_paths = [p["path"] for p in probes if p["verdict"] in ("live_api", "exists", "auth_required")]
+                        failed_paths = [p["path"] for p in probes if p["verdict"] in ("not_found", "catch_all", "unreachable")]
+                        
+                        llm_client = self.triage_brain.client
+                        new_endpoints = intelligent_endpoint_discovery(
+                            base_url=api_base,
+                            valid_paths=valid_paths,
+                            failed_paths=failed_paths,
+                            llm_client=llm_client,
+                            roe_guard=self.roe_guard
+                        )
+                        
+                        if new_endpoints:
+                            self._activity(f"Discovered {len(new_endpoints)} new endpoints via LLM inference!", stage="recon")
+                            for ep in new_endpoints:
+                                self.recon["endpoint_probes"].append({
+                                    "path": ep["path"],
+                                    "verdict": "live_api" if ep["status"] in (200, 201, 401, 403) else "unknown",
+                                    "status": ep["status"],
+                                    "content_type": ep.get("content_type", "")
+                                })
+                                if ep["path"] not in self.recon["api_paths"]:
+                                    self.recon["api_paths"].append(ep["path"])
+                                    self.add_fact("llm_discovered_endpoint", ep["path"], source="llm_inference")
+                    except Exception as e:
+                        self._diag("recon", "warning", f"LLM intelligent discovery failed: {e}")
+                # ------------------------------------------------------------------------
         except Exception as e:
             self.recon["errors"].append(f"candidate_path_probe: {e}")
 
@@ -465,6 +581,25 @@ class ChainOrchestrator:
         except Exception as e:
             self.recon["errors"].append(f"login: {e}")
 
+        self._activity("Probing MFA endpoints", stage="recon")
+        try:
+            self._probe_mfa_endpoints(api_base)
+        except Exception as e:
+            self.recon["errors"].append(f"mfa_probe: {e}")
+
+        # --- Substrate #2: Initialize Identity Broker ---
+        if self.identity_broker:
+            self._activity("Initializing multi-identity session broker", stage="recon")
+            try:
+                self.identity_broker.initialize(adapter or {})
+                auth_count = len(self.identity_broker.get_all_authenticated())
+                if auth_count >= 2:
+                    self.add_fact("has_multi_identity", True, source="identity_broker")
+                    self._activity(f"Identity broker established {auth_count} sessions", stage="recon")
+            except Exception as e:
+                self.recon["errors"].append(f"identity_broker: {e}")
+        # -----------------------------------------------
+
         if self._budget_dead():
             self._warn("budget_exceeded",
                        "recon aborted before banking probe: budget exhausted")
@@ -482,6 +617,33 @@ class ChainOrchestrator:
             self._diag("recon", "warning", f"banking_recon failed: {e}")
 
         self._emit("phase", {"name": "recon", "status": "done"})
+
+    def _build_workflow_endpoints(self, flows):
+        base = (self.get_fact("api_base") or self.target or "").rstrip("/")
+        if not base:
+            return {}
+        endpoints = {}
+        for name, paths in (flows or {}).items():
+            for p in paths:
+                pl = str(p).lower()
+                if any(k in pl for k in ("coupon", "promo", "redeem", "discount")):
+                    if "coupon" not in endpoints:
+                        endpoints["coupon"] = {"code": "WELCOME50"}
+                if any(k in pl for k in ("checkout", "order", "transfer",
+                                          "withdraw", "payment")):
+                    if "race_endpoint" not in endpoints:
+                        endpoints["race_endpoint"] = {"path": p, "count": 20}
+        return endpoints
+
+    def _extract_workflow_final_path(self, flows):
+        final_kw = ("confirm", "complete", "submit", "finalize", "final",
+                    "pay", "checkout/success", "checkout/done")
+        for name, paths in (flows or {}).items():
+            for p in reversed(paths):
+                pl = str(p).lower()
+                if any(k in pl for k in final_kw):
+                    return p
+        return None
 
     def _infer_facts_from_paths(self, paths):
         combined = " ".join(str(p) for p in paths).lower()
@@ -527,6 +689,9 @@ class ChainOrchestrator:
             self.add_fact("has_xml_hint", True, source="js_paths")
         if any(k in combined for k in ("/grpc", "/h2", "/http2")):
             self.add_fact("has_http2_hint", True, source="js_paths")
+        if ("{id}" in combined or "<int:id>" in combined
+                or re.search(r"/\d+(?:/|\s|$)", combined)):
+            self.add_fact("has_id_endpoints", True, source="js_paths")
 
     def _extract_versions(self, server, powered_by):
         import re
@@ -587,6 +752,9 @@ class ChainOrchestrator:
                 if "upload" in low or low.endswith("/import"):
                     self.add_fact("has_upload", True, source="route_probe")
                     self.set_context("upload_url", url)
+                if re.search(r"/\d+(?:/|$)", path):
+                    self.add_fact("has_id_endpoints", True,
+                                  source="route_probe")
         except Exception:
             pass
 
@@ -694,6 +862,69 @@ class ChainOrchestrator:
                        "login attempt did not yield a usable token",
                        api_base=api_base)
 
+    def _probe_mfa_endpoints(self, api_base):
+        from urllib.parse import urlparse
+        from . import http as _http
+        if not api_base:
+            return
+        parsed = urlparse(api_base)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        paths = [
+            "/mfa/verify", "/api/mfa/verify", "/api/2fa/verify",
+            "/api/auth/mfa/verify", "/api/auth/2fa/verify",
+            "/mfa/challenge", "/api/mfa/challenge",
+            "/2fa/verify", "/api/two-factor/verify",
+        ]
+        for path in paths:
+            url = origin + path
+            try:
+                self.roe_guard.check_url(url, "GET")
+            except Exception:
+                continue
+            try:
+                with _http.Client(timeout=6, follow_redirects=False) as c:
+                    r = c.get(url)
+            except Exception:
+                continue
+            if r.status_code in (200, 401, 403, 405):
+                self.add_fact("has_mfa", True, source="route_probe")
+                self.set_context("mfa_url", url)
+                self._activity(
+                    f"MFA endpoint discovered: {url} (HTTP {r.status_code})",
+                    stage="recon")
+                return
+
+    def _augment_with_synth(self, selected):
+        try:
+            from .brains.chain_synth import ChainSynthesizer
+            from . import llm_service
+            client = llm_service.get_client("chain_synth")
+            if client is None:
+                return selected
+            synth = ChainSynthesizer(client=client)
+            facts_flat = {
+                k: (v.get("value") if isinstance(v, dict) else v)
+                for k, v in self.facts.items()
+            }
+            existing = {c["id"] for c in selected}
+            for sc in synth.synthesize_from_facts(facts_flat, existing):
+                selected.append({
+                    "id": sc["id"],
+                    "name": sc["name"],
+                    "priority": 35,
+                    "trigger": {"mode": "any",
+                                "conditions": [{"fact": "framework"}]},
+                    "steps": [{
+                        "id": "llm_planner_probe",
+                        "tool": "llm_planner_probe",
+                        "args": {"narrative": sc["narrative"]},
+                        "on_fail": "next",
+                    }],
+                })
+        except Exception:
+            pass
+        return selected
+
     def select_chains(self, chains=None):
         if chains is None:
             chains = _default_chains()
@@ -710,6 +941,7 @@ class ChainOrchestrator:
                 except Exception:
                     pass
             if selected:
+                selected = self._augment_with_synth(selected)
                 self.plan = [c["id"] for c in selected]
                 return selected
         except Exception:
@@ -719,6 +951,7 @@ class ChainOrchestrator:
             if self._matches_trigger(chain.get("trigger", {})):
                 selected.append(chain)
         selected.sort(key=lambda c: -c.get("priority", 0))
+        selected = self._augment_with_synth(selected)
         self.plan = [c["id"] for c in selected]
         return selected
 
@@ -742,11 +975,39 @@ class ChainOrchestrator:
         results = []
         for cond in conditions:
             key = cond.get("fact")
+            op = cond.get("op")
             expected = cond.get("value")
-            if expected is None:
-                results.append(self.has_fact(key))
+            actual = self.get_fact(key)
+            exists = self.has_fact(key)
+            if op is None:
+                op = "equals" if "value" in cond else "exists"
+            if op == "exists":
+                results.append(exists)
+            elif op == "equals":
+                results.append(exists and actual == expected)
+            elif op == "not_equals":
+                results.append(exists and actual != expected)
+            elif op == "contains":
+                results.append(exists and isinstance(actual, (str, list))
+                               and expected in actual)
+            elif op == "gt":
+                results.append(exists
+                               and isinstance(actual, (int, float))
+                               and not isinstance(actual, bool)
+                               and actual > expected)
+            elif op == "lt":
+                results.append(exists
+                               and isinstance(actual, (int, float))
+                               and not isinstance(actual, bool)
+                               and actual < expected)
+            elif op == "in":
+                results.append(exists and actual in (expected or []))
+            elif op == "regex":
+                import re as _re
+                results.append(exists and isinstance(actual, str)
+                               and bool(_re.search(str(expected), actual)))
             else:
-                results.append(self.get_fact(key) == expected)
+                results.append(False)
         if mode == "all":
             return all(results)
         if mode == "none":
@@ -806,7 +1067,6 @@ class ChainOrchestrator:
             step_result = self._execute_step(chain_id, step)
             if (step_result.get("verdict") == "VULNERABLE"
                     and "confirmation_status" not in step_result
-                    and self._is_idempotent_tool(step["tool"])
                     and not self._budget_exceeded()):
                 step_result = self._confirm_step(chain_id, step, step_result)
             if (step_result.get("verdict") == "SUSPICIOUS"
@@ -840,7 +1100,8 @@ class ChainOrchestrator:
                 kind = step_result.get("unknown_kind") or _classify_unknown(step_result)
                 if kind == "timeout":
                     time.sleep(2.0)
-                    retry = self._execute_step(chain_id, step)
+                    retry = self._execute_step(chain_id, step,
+                                                allow_duplicate=True)
                     retry["retried"] = True
                     result["steps"].append(retry)
                     if retry.get("verdict") != "UNKNOWN":
@@ -1047,9 +1308,19 @@ class ChainOrchestrator:
         if len(self.state_conversation) > cap:
             self.state_conversation = self.state_conversation[-cap:]
 
-    def _execute_step(self, chain_id, step):
+    def _execute_step(self, chain_id, step, allow_duplicate=False):
         step_id = step["id"]
         tool = step["tool"]
+
+        if not allow_duplicate:
+            seen = self._chain_dispatched.setdefault(chain_id, set())
+            if step_id in seen:
+                entry = {"id": step_id, "verdict": "SKIP",
+                         "reason": (f"duplicate dispatch of "
+                                     f"step '{step_id}'")}
+                self._emit("step_skip", entry)
+                return entry
+            seen.add(step_id)
 
         self._emit("step_start", {"chain": chain_id, "step": step_id,
                                    "tool": tool})
@@ -1058,7 +1329,8 @@ class ChainOrchestrator:
 
         start = time.monotonic()
         try:
-            result = self._dispatch_tool(tool, step.get("args", {}))
+            result = self._dispatch_tool(tool, step.get("args", {}),
+                                          step=step)
             if not isinstance(result, dict):
                 result = {"verdict": "UNKNOWN",
                           "reason": "tool returned non-dict"}
@@ -1092,6 +1364,91 @@ class ChainOrchestrator:
             self._record_exchange(chain_id, step, result)
             return result
 
+    def _register_identity_providers(self):
+        try:
+            self.fact_store.register_provider(
+                "has_identity_a", self._provide_identity_a)
+            self.fact_store.register_provider(
+                "has_identity_b", self._provide_identity_b)
+            self.fact_store.register_provider(
+                "identity_broker_available",
+                self._provide_identity_broker)
+        except Exception:
+            pass
+
+    def _ensure_broker(self):
+        if getattr(self, "identity_broker", None) is not None:
+            return self.identity_broker
+        try:
+            from .identity_broker import IdentityBroker
+            self.identity_broker = IdentityBroker(
+                self.target, self.roe_guard,
+                engine_cfg=self.engine_cfg,
+                fact_store=self.fact_store,
+                diag=self._diag,
+                warn=self._warn,
+            )
+        except Exception as e:
+            self._diag("identity_broker", "warning",
+                       f"broker init failed: {type(e).__name__}: {e}")
+            return None
+        return self.identity_broker
+
+    def _provide_identity_a(self, store, context):
+        return self._provide_identity("user_a")
+
+    def _provide_identity_b(self, store, context):
+        return self._provide_identity("user_b")
+
+    def _provide_identity(self, name):
+        broker = self._ensure_broker()
+        if broker is None:
+            return False
+        if name not in broker.identities:
+            try:
+                broker.initialize()
+            except Exception as e:
+                self._diag("identity_broker", "warning",
+                           f"broker.initialize failed: "
+                           f"{type(e).__name__}: {e}")
+                return False
+        if name not in broker.identities:
+            return False
+        letter = name[-1]
+        self.add_fact(f"has_identity_{letter}", True,
+                      source="identity_broker")
+        return True
+
+    def _provide_identity_broker(self, store, context):
+        broker = self._ensure_broker()
+        if broker is None:
+            self.add_fact("identity_broker_available", False,
+                          source="identity_broker")
+            return False
+        try:
+            broker.initialize()
+        except Exception:
+            self.add_fact("identity_broker_available", False,
+                          source="identity_broker")
+            return False
+        ok = broker.has_two_identities()
+        self.add_fact("identity_broker_available", ok,
+                      source="identity_broker")
+        return ok
+
+    def _record_provides(self, provides, tool, result):
+        verdict = result.get("verdict", "UNKNOWN")
+        if isinstance(verdict, str):
+            ok = verdict in ("VULNERABLE", "SUSPICIOUS", "PASS")
+            confidence = {"VULNERABLE": 0.9, "SUSPICIOUS": 0.7,
+                          "PASS": 0.85}.get(verdict, 0.5)
+        else:
+            ok = False
+            confidence = 0.5
+        for key in provides:
+            self.add_fact(key, ok, source=f"tool:{tool}",
+                          confidence=confidence)
+
     def _resolve_args(self, args):
         return {k: self._resolve_value(v) for k, v in args.items()}
 
@@ -1117,7 +1474,7 @@ class ChainOrchestrator:
         "blind_ssrf", "blind_xss", "second_order_check",
     }
 
-    def _dispatch_tool(self, tool, args):
+    def _dispatch_tool(self, tool, args, step=None):
         if tool in self._DESTRUCTIVE_TOOLS and not self.allow_destructive:
             return {
                 "verdict": "UNKNOWN",
@@ -1136,11 +1493,43 @@ class ChainOrchestrator:
                 }
         except Exception:
             pass
+        spec = _TOOL_SPECS.get(tool) or {}
+        requires = list(spec.get("requires") or [])
+        provides = list(spec.get("provides") or [])
+        if isinstance(step, dict):
+            for r in step.get("requires") or []:
+                if r not in requires:
+                    requires.append(r)
+            for p in step.get("provides") or []:
+                if p not in provides:
+                    provides.append(p)
+        if requires:
+            missing, produced = self.fact_store.resolve_all(
+                requires, context=self)
+            if missing:
+                self._emit("dependency_missing", {
+                    "tool": tool,
+                    "requires": requires,
+                    "missing": missing,
+                    "produced_by": [{"key": k, "provider": p}
+                                     for k, p in produced],
+                })
+                return {
+                    "verdict": "UNKNOWN",
+                    "reason": (f"preconditions unmet for '{tool}': "
+                                f"{', '.join(missing)}"),
+                    "evidence": {"requires": requires,
+                                 "missing": missing,
+                                 "produced_by": [k for k, _ in produced]},
+                }
         resolved = self._resolve_args(args)
         handler = _EXTRA_HANDLERS.get(tool) or self._TOOL_HANDLERS.get(tool)
         if not handler:
             return {"verdict": "UNKNOWN", "reason": f"unknown tool: {tool}"}
-        return handler(self, resolved)
+        result = handler(self, resolved)
+        if provides and isinstance(result, dict):
+            self._record_provides(provides, tool, result)
+        return result
 
     def _tool_jwt_attack(self, args):
         from . import jwt_attacks
@@ -1238,7 +1627,8 @@ class ChainOrchestrator:
 
         base = args.get("base_url") or self.target
         out = ssrf_cloud.scan(base_url=base, timeout=8,
-                               roe_guard=self.roe_guard)
+                               roe_guard=self.roe_guard,
+                               fact_store=getattr(self, "fact_store", None))
         raw = getattr(out, "raw", None) or {}
         if isinstance(raw, dict):
             verdict = raw.get("overall", "UNKNOWN")
@@ -1847,7 +2237,11 @@ class ChainOrchestrator:
         return {"verdict": r["verdict"], "reason": r.reason,
                 "evidence": r.evidence or {}}
 
-    _NON_IDEMPOTENT_TOOLS = {"second_order_check", "timing_injection"}
+    _NON_IDEMPOTENT_TOOLS = {
+        "second_order_check", "timing_injection",
+        "cmdi_scan", "ldap_scan", "lfi_scan",
+        "password_reset_scan", "mfa_bypass", "saml_xsw",
+    }
 
     def _is_idempotent_tool(self, tool_name):
         if tool_name in self._NON_IDEMPOTENT_TOOLS:
@@ -1950,6 +2344,9 @@ class ChainOrchestrator:
                            f"tool '{step['tool']}' returned VULNERABLE on "
                            f"negative control; suppressing finding")
                 return original
+        if not self._is_idempotent_tool(step["tool"]):
+            original["confirmation_status"] = "control_passed_no_rerun"
+            return original
         _t.sleep(1.5)
         try:
             retry = self._dispatch_tool(step["tool"], step.get("args", {}))
@@ -2222,6 +2619,55 @@ class ChainOrchestrator:
         "lockout_scan": "lockout_probe",
     }
 
+
+    def _tool_mcts_bizlogic(self, args):
+        from .state_machine import AppState, ContextWallet
+        from .invariants import InvariantOracle
+        from .mcts_agent import MCTSAgent
+        from . import http as _http
+        
+        target = args.get("url") or self.target
+        max_rollouts = int(args.get("max_rollouts") or 20)
+        
+        class OrchHTTPClient:
+            def __init__(self, orch):
+                self.orch = orch
+            def request(self, method, url, json=None, data=None, headers=None, params=None):
+                try:
+                    with _http.Client(timeout=10, verify=True, follow_redirects=False) as c:
+                        r = c.request(method.upper(), url, json=json, data=data, headers=headers or {}, params=params)
+                        return r
+                except Exception as e:
+                    class ErrResp:
+                        status_code = None
+                        text = str(e)
+                        headers = {}
+                    return ErrResp()
+        
+        client = OrchHTTPClient(self)
+        oracle = InvariantOracle()
+        
+        llm_client = None
+        try:
+            from . import llm_service
+            llm_client = llm_service.get_client("mcts_agent")
+        except Exception:
+            pass
+            
+        agent = MCTSAgent(llm_client=llm_client, oracle=oracle, max_rollouts=max_rollouts)
+        initial_state = AppState(name="start")
+        initial_state.context_wallet = ContextWallet()
+        
+        path = agent.search(initial_state, client)
+        
+        if path:
+            return {
+                "verdict": "SUSPICIOUS",
+                "reason": f"MCTS found a path with {len(path)} steps that may break invariants",
+                "evidence": {"path": path}
+            }
+        return {"verdict": "PASS", "reason": "MCTS found no invariant-breaking paths", "evidence": {}}
+
     _TOOL_HANDLERS = {
         "jwt_attack": _tool_jwt_attack,
         "subdomain_takeover": _tool_subdomain_takeover,
@@ -2269,6 +2715,7 @@ class ChainOrchestrator:
         "ssti_scan": _tool_ssti_scan,
         "nosql_scan": _tool_nosql_scan,
         "xxe_scan": _tool_xxe_scan,
+        "mcts_bizlogic": _tool_mcts_bizlogic,
     }
 
     def _apply_step_context(self, step, result):
@@ -2338,6 +2785,17 @@ class ChainOrchestrator:
         if not inferred:
             inferred = _infer_outcome(step["tool"], "VULNERABLE", result.get("evidence") or {})
             result["outcome"] = inferred
+        _new_key = FindingKey.from_finding({
+            "tool": step["tool"],
+            "reason": result.get("reason", ""),
+            "severity": (result.get("evidence") or {}).get("severity", "high"),
+        })
+        for _existing in self.findings:
+            if FindingKey.from_finding(_existing) == _new_key:
+                _existing["confidence"] = max(
+                    float(_existing.get("confidence", 0.0) or 0.0),
+                    confidence)
+                return
         self.findings.append({
             "chain": chain_id,
             "step": step["id"],
@@ -2368,6 +2826,38 @@ class ChainOrchestrator:
             _hooks.fire_post_finding(self, chain_id, step, result)
         except Exception:
             pass
+            
+        # --- Substrate #1: Exploit-to-Recon Feedback Loop ---
+        self._post_finding_feedback(result)
+        # ----------------------------------------------------
+
+    def _post_finding_feedback(self, result):
+        """Implements the Exploit-to-Recon Feedback Loop.
+        When a finding grants a new capability (e.g. cracked JWT), 
+        update the Identity Broker and emit facts to unlock dependent chains.
+        """
+        tool = result.get("tool") or ""
+        evidence = result.get("evidence") or {}
+        
+        if "jwt" in tool and evidence.get("secret"):
+            self.add_fact("has_forged_token", True, source="feedback_loop")
+            self._diag("feedback", "info", f"JWT secret cracked: {evidence['secret'][:4]}...")
+            
+        if "ssrf" in tool and evidence.get("credentials"):
+            self.add_fact("has_extracted_credentials", True, source="feedback_loop")
+
+        try:
+            from .post_exploit import harvest_and_pivot
+            body = str(evidence.get("body") or evidence.get("preview") or "")
+            gained = harvest_and_pivot(
+                self, {"tool": tool, "evidence": evidence},
+                response_body=body,
+            )
+            for g in gained:
+                self._diag("pivot", "info", f"post-exploit gain: {g}")
+        except Exception as e:
+            self._diag("pivot", "warning",
+                       f"harvest_and_pivot failed: {type(e).__name__}: {e}")
 
     def _step_confidence(self, step, result):
         v = result.get("verdict", "UNKNOWN")
@@ -2645,6 +3135,57 @@ class ChainOrchestrator:
             "stopped_reason": self.stopped_reason,
             "diagnostics": self.diagnostics,
         }
+
+
+def _tool_llm_planner_probe(orch, args):
+    try:
+        from .brains.exploit_planner import ExploitPlanner
+        from . import llm_service
+        from . import http as _http
+    except Exception as e:
+        return {"verdict": "UNKNOWN", "reason": f"import: {e}"}
+    client = llm_service.get_client("exploit_planner")
+    if client is None:
+        return {"verdict": "UNKNOWN", "reason": "no LLM key for planner"}
+    planner = ExploitPlanner(
+        client=client, roe_guard=orch.roe_guard,
+        target=orch.target,
+        allow_write_methods=bool(orch.allow_destructive),
+    )
+    history = list(getattr(orch, "state_conversation", []) or [])[-10:]
+    state = {
+        "target": orch.target,
+        "history": history,
+        "narrative": str(args.get("narrative") or "")[:2000],
+    }
+    last = history[-1] if history else None
+    step = planner.next_step(state, last)
+    if not step:
+        return {"verdict": "UNKNOWN", "reason": "planner returned no step"}
+    kwargs = {}
+    if step.get("body") is not None:
+        kwargs["json"] = step["body"]
+    try:
+        with _http.Client(timeout=15, follow_redirects=False) as c:
+            r = c.request(step["method"], step["url"], **kwargs)
+    except _http.ROEBlock as e:
+        return {"verdict": "UNKNOWN", "reason": f"ROE_BLOCK: {e}"}
+    except Exception as e:
+        return {"verdict": "UNKNOWN", "reason": f"{type(e).__name__}: {e}"}
+    body = r.text or ""
+    ok = r.status_code in (200, 201, 202) and bool(body)
+    return {
+        "verdict": "SUSPICIOUS" if ok else "PASS",
+        "reason": f"planner step {step['method']} {step['url']} -> {r.status_code}",
+        "evidence": {
+            "url": step["url"], "status": r.status_code,
+            "preview": body[:400],
+            "narrative": state["narrative"][:400],
+        },
+    }
+
+
+register_tool("llm_planner_probe", _tool_llm_planner_probe)
 
 
 def run_chain(target, roe_guard=None, engine_cfg=None, job_id=None,

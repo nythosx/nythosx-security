@@ -420,19 +420,62 @@ def apollo_federation_probe(endpoint, types, headers, timeout, verify, roe_guard
         return {"verdict": "UNKNOWN",
                 "reason": "no interface types in schema; CVE-2025-64530 not testable",
                 "evidence": {}}
-    hints = []
-    for it in interface_types[:5]:
-        for f in (it.get("fields") or [])[:5]:
-            hints.append({"interface": it["name"], "field": f})
-    return {"verdict": "SUSPICIOUS",
-            "reason": f"{len(interface_types)} interface type(s) found; if "
-                      f"@authenticated/@requiresScopes/@policy is set on "
-                      f"interface fields, CVE-2025-64530 may allow bypass via "
-                      f"inline fragments",
-            "evidence": {"interfaces": hints[:10],
+    import json as _json
+    findings = []
+    tested = 0
+    for it in interface_types[:3]:
+        iface_name = it.get("name") or ""
+        fields = it.get("fields") or []
+        if not iface_name or not fields:
+            continue
+        field = fields[0]
+        queries = [
+            ("direct",
+             ('{ __type(name: "' + iface_name +
+              '") { name kind fields { name } } }')),
+            ("inline_fragment",
+             ('{ __typename }')),
+        ]
+        for label, q in queries:
+            tested += 1
+            r = _post(endpoint, {"query": q}, headers, timeout,
+                      verify, roe_guard)
+            if r.get("blocked"):
+                return {"verdict": "UNKNOWN",
+                        "reason": r.get("error", "ROE_BLOCK"),
+                        "evidence": {}}
+            if r.get("status") is None:
+                continue
+            body = r.get("body") or ""
+            try:
+                data = _json.loads(body)
+            except Exception:
+                continue
+            if data.get("data") and not data.get("errors"):
+                findings.append({
+                    "interface": iface_name,
+                    "field": field,
+                    "test": label,
+                    "status": r.get("status"),
+                    "preview": body[:200],
+                })
+    if findings:
+        return {
+            "verdict": "SUSPICIOUS",
+            "reason": (f"CVE-2025-64530 candidate: {len(findings)} "
+                       f"interface field(s) reached without directive "
+                       f"enforcement across {tested} probe(s)"),
+            "evidence": {"findings": findings,
                          "cve": "CVE-2025-64530",
-                         "remediation": "verify composition version >= 2.9.5 / "
-                                        "2.10.4 / 2.11.5 / 2.12.1"}}
+                         "remediation": ("upgrade federation composition to "
+                                          "2.9.5 / 2.10.4 / 2.11.5 / 2.12.1")},
+        }
+    return {
+        "verdict": "PASS",
+        "reason": (f"{len(interface_types)} interface type(s) found; "
+                   f"no direct-query bypass observed across {tested} probe(s)"),
+        "evidence": {"interfaces_tested": min(len(interface_types), 3)},
+    }
 
 
 def field_suggestion_probe(endpoint, recursive_field, headers, timeout, verify,
@@ -462,6 +505,70 @@ def field_suggestion_probe(endpoint, recursive_field, headers, timeout, verify,
     return {"verdict": "PASS",
             "reason": "no 'Did you mean' suggestions leaked",
             "evidence": {}}
+
+
+SENSITIVE_GRAPHQL_FIELDS = [
+    "email", "role", "isAdmin", "is_admin", "ssn", "phone", "address",
+    "password", "passwordHash", "apiKey", "api_key", "internalNotes",
+    "internal_notes", "deletedAt", "deleted_at",
+]
+
+ROOT_FIELD_CANDIDATES_FOR_AUTHZ = [
+    "me", "user", "viewer", "account", "profile", "currentUser", "users",
+]
+
+
+def field_authz_probe(endpoint, headers, timeout, verify, roe_guard):
+    findings = []
+    attempts = []
+    for root in ROOT_FIELD_CANDIDATES_FOR_AUTHZ[:4]:
+        for field in SENSITIVE_GRAPHQL_FIELDS[:8]:
+            query = "{ " + root + " { " + field + " } }"
+            resp = _post(endpoint, {"query": query}, headers, timeout,
+                         verify, roe_guard)
+            if resp.get("blocked"):
+                return {"verdict": "UNKNOWN",
+                        "reason": f"ROE_BLOCK: {resp.get('error', '')}",
+                        "evidence": {"attempts": attempts}}
+            if not _is_graphql_response(resp):
+                continue
+            attempts.append({"root": root, "field": field,
+                             "status": resp.get("status")})
+            try:
+                data = json.loads(resp.get("body") or "")
+            except Exception:
+                continue
+            payload = (data.get("data") or {}).get(root)
+            if not isinstance(payload, dict):
+                continue
+            value = payload.get(field)
+            if value is None:
+                continue
+            if isinstance(value, str) and len(value) > 3:
+                findings.append({"root": root, "field": field,
+                                  "value_preview": value[:60]})
+            elif isinstance(value, (int, float, bool)):
+                findings.append({"root": root, "field": field,
+                                  "value": value})
+            if len(findings) >= 5:
+                break
+        if len(findings) >= 5:
+            break
+
+    if findings:
+        return {
+            "verdict": "VULNERABLE", "severity": "high",
+            "reason": (f"{len(findings)} sensitive field(s) readable in the "
+                        f"current auth context"),
+            "evidence": {"findings": findings, "attempts": attempts[:20]},
+        }
+    if not attempts:
+        return {"verdict": "UNKNOWN",
+                "reason": "no GraphQL response to field_authz probes",
+                "evidence": {"attempts": attempts}}
+    return {"verdict": "PASS",
+            "reason": f"no sensitive fields returned across {len(attempts)} query(ies)",
+            "evidence": {"attempts": attempts[:20]}}
 
 
 def _scan_impl(base_url, headers=None, timeout=15, roe_guard=None, verify=None,
@@ -518,11 +625,13 @@ def _scan_impl(base_url, headers=None, timeout=15, roe_guard=None, verify=None,
         endpoint, types, headers, timeout, verify, roe_guard)
     results["field_suggestion"] = field_suggestion_probe(
         endpoint, recursive_field, headers, timeout, verify, roe_guard)
+    results["field_authz"] = field_authz_probe(
+        endpoint, headers, timeout, verify, roe_guard)
 
     rank = {"VULNERABLE": 3, "SUSPICIOUS": 2, "PASS": 1, "UNKNOWN": 0}
     overall = "UNKNOWN"
     for key in ("depth_limit", "batch_array", "batch_alias", "csrf_form",
-                "apollo_federation", "field_suggestion"):
+                "apollo_federation", "field_suggestion", "field_authz"):
         r = results.get(key) or {}
         if rank.get(r.get("verdict"), 0) > rank.get(overall, 0):
             overall = r["verdict"]

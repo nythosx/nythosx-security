@@ -55,6 +55,39 @@ def load_creds(path=None):
         return yaml.safe_load(fh) or {}
 
 
+def creds_from_broker(broker):
+    if broker is None:
+        return None
+    try:
+        a = broker.get_identity("user_a")
+        b = broker.get_identity("user_b")
+    except Exception:
+        return None
+    if not (a and b):
+        return None
+    return {
+        "login": {
+            "url": a.login_url or "",
+            "type": "json",
+            "username_field": "email",
+            "password_field": "password",
+            "token_path": "token",
+        },
+        "accounts": {
+            "user_a": {
+                "username": a.username,
+                "password": a.password,
+                "known_ids": list(a.known_ids),
+            },
+            "user_b": {
+                "username": b.username,
+                "password": b.password,
+                "known_ids": list(b.known_ids),
+            },
+        },
+    }
+
+
 def build_sessions(creds, verify=True):
     """Return {context_name: SessionContext}. anon is always present."""
     sessions = {"anon": SessionContext("anon")}
@@ -284,10 +317,12 @@ def compute_differentials(context_sets):
 
 def scan(base_url, creds=None, creds_path=None, endpoints=None,
          roe_guard=None, fact_store=None, engine_cfg=None, verify=True,
-         confirm_fn=None):
+         confirm_fn=None, broker=None):
     """Run the differential crawl and emit facts + IDOR confirmations."""
     if creds is None:
         creds = load_creds(creds_path)
+        if creds is None and broker is not None:
+            creds = creds_from_broker(broker)
     if roe_guard is None:
         try:
             from .config import load_engine
@@ -357,7 +392,8 @@ def scan(base_url, creds=None, creds_path=None, endpoints=None,
 
 
 __all__ = [
-    "SessionContext", "load_creds", "build_sessions", "crawl_context",
+    "SessionContext", "load_creds", "creds_from_broker",
+    "build_sessions", "crawl_context",
     "compute_differentials", "id_substitution_candidates", "scan",
     "endpoint_key", "ID_SUBST_NEIGHBOR_BOUND", "MAX_REQUESTS_PER_ENDPOINT",
 ]

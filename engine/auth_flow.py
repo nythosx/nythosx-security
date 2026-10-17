@@ -39,6 +39,48 @@ def _decode_jwt_payload(token):
         return None
 
 
+def _detect_mfa_response(parsed):
+    if not isinstance(parsed, dict):
+        return None
+    for flag in ("mfa_required", "mfaRequired", "requires_mfa",
+                  "requiresMfa", "totp_required", "totpRequired",
+                  "otp_required", "otpRequired", "two_factor_required",
+                  "twoFactorRequired", "needs_mfa", "needsMfa",
+                  "challenge_required", "challengeRequired"):
+        v = parsed.get(flag)
+        if v is True or (isinstance(v, str)
+                         and v.lower() in ("true", "required")):
+            return _extract_mfa_context(parsed)
+    for key in ("data", "result"):
+        inner = parsed.get(key)
+        if isinstance(inner, dict):
+            found = _detect_mfa_response(inner)
+            if found:
+                return found
+    return None
+
+
+def _extract_mfa_context(parsed):
+    ctx = {}
+    for k in ("challenge_token", "challengeToken", "mfa_token",
+              "mfaToken", "session_id", "sessionId", "temp_token",
+              "tempToken", "challenge", "verification_id",
+              "verificationId"):
+        v = parsed.get(k)
+        if isinstance(v, str) and v:
+            ctx[k] = v[:200]
+    for key in ("data", "result"):
+        inner = parsed.get(key)
+        if isinstance(inner, dict):
+            for k in ("challenge_token", "challengeToken", "mfa_token",
+                      "mfaToken", "session_id", "sessionId",
+                      "temp_token", "tempToken"):
+                v = inner.get(k)
+                if isinstance(v, str) and v:
+                    ctx[k] = v[:200]
+    return ctx
+
+
 def perform_login(login_url, username, password, login_type="json",
                   username_field="email", password_field="password",
                   extra_fields=None, headers=None, token_path=None,
@@ -81,6 +123,14 @@ def perform_login(login_url, username, password, login_type="json",
 
     body = r.get("body") or ""
     parsed = _try_parse_json(body)
+
+    if parsed is not None:
+        mfa_info = _detect_mfa_response(parsed)
+        if mfa_info:
+            result["mfa_required"] = True
+            result["mfa_challenge"] = mfa_info
+            client.close()
+            return result
 
     token = None
     if parsed is not None and token_path:

@@ -107,24 +107,42 @@ def test_roe_allows_safe_path():
     assert g.check_url("http://site.test/api/users", "GET") is True
 
 
-def test_roe_time_window_closed():
+def test_roe_time_window_closed(monkeypatch):
+    from datetime import datetime as _dt, timezone as _tz
+    from engine import roe_guard as _rg
     from engine.roe_guard import ROEViolation
+
+    monkeypatch.setattr(
+        _rg, "_utc_now",
+        lambda: _dt(2026, 1, 1, 12, 0, 0, tzinfo=_tz.utc),
+    )
+
     g = _guard({
         "enabled": True,
         "scope": {"in_scope": ["site.test"], "out_of_scope": [],
                   "allowed_methods": ["GET"], "forbidden_paths": []},
-        "time_window": {"enabled": True, "start": "03:00", "end": "03:01"},
+        "time_window": {"enabled": True, "start": "03:00",
+                          "end": "03:01"},
     })
     with pytest.raises(ROEViolation, match="TIME WINDOW"):
         g.check_url("http://site.test/", "GET")
 
 
-def test_roe_time_window_open():
+def test_roe_time_window_open(monkeypatch):
+    from datetime import datetime as _dt, timezone as _tz
+    from engine import roe_guard as _rg
+
+    monkeypatch.setattr(
+        _rg, "_utc_now",
+        lambda: _dt(2026, 1, 1, 12, 0, 0, tzinfo=_tz.utc),
+    )
+
     g = _guard({
         "enabled": True,
         "scope": {"in_scope": ["site.test"], "out_of_scope": [],
                   "allowed_methods": ["GET"], "forbidden_paths": []},
-        "time_window": {"enabled": True, "start": "00:00", "end": "23:59"},
+        "time_window": {"enabled": True, "start": "00:00",
+                          "end": "23:59"},
     })
     assert g.check_url("http://site.test/", "GET") is True
 
@@ -248,32 +266,19 @@ def test_http_client_redirect_same_origin(permissive_roe):
 
 
 # ---------- leaf migration sanity ----------
-ALLOWED_RAW_HTTPX = {
-    # Non-target: talks to OSV.dev. Its docstring explicitly documents that
-    # ROE does not apply to external vulnerability databases.
-    "engine/sca.py",
-    # Non-target: talks to OpenAI / Anthropic / Gemini APIs on behalf of
-    # the LLM brain, not to the scan target.
-    "engine/brains/llm.py",
-    # Target traffic, but this file is scheduled for a full rewrite in
-    # Phase 4 (orchestrator merge + destructive gating). Migrating it now
-    # would break the file-touch-once invariant.
-    "engine/orchestrator.py",
-    # Non-target: talks to NVD for CVE lookup. Same exception class as SCA
-    # (external vulnerability DB, not the scan target).
-    "engine/cve_lookup.py",
-    # Non-target: talks to web.archive.org and CommonCrawl indexes. Same
-    # exception class (external archive, not the scan target).
-    "engine/recon/wayback.py",
-    # Non-target: talks to crt.sh (Certificate Transparency). Same exception.
-    "engine/recon/ct_logs.py",
-    # Non-target: talks to S3/GCS/Azure's own hostnames to check for
-    # publicly-misconfigured buckets guessed from the domain name. Same
-    # exception class — these are third-party cloud provider endpoints,
-    # not the scan target itself.
-    "engine/cloud_storage.py",
-    "engine/firebase_probe.py",
-}
+# Every external, non-target service call routes through
+# engine/external_http.py: shared external rate limiter + per-host
+# circuit breaker + TLS from config, no target budget consumed.
+#
+# engine/http.py, engine/http_client.py, and engine/external_http.py
+# are excluded by the loop below: they are the three wrappers and are
+# the one legitimate place where httpx.Client(...) may appear.
+# engine/http_async.py uses httpx.AsyncClient, which this check does
+# not match.
+#
+# If a new module needs to talk to a non-target external service, add
+# it to the wrapper rather than re-adding an entry here.
+ALLOWED_RAW_HTTPX = set()
 
 
 def test_no_leaf_module_calls_raw_httpx_client():
@@ -281,7 +286,8 @@ def test_no_leaf_module_calls_raw_httpx_client():
     root = ROOT_SRC / "engine"
     offenders = []
     for p in root.rglob("*.py"):
-        if p.name in ("http.py", "http_client.py"):
+        if p.name in ("http.py", "http_client.py",
+                       "external_http.py"):
             continue
         rel = str(p.relative_to(ROOT_SRC)).replace("\\", "/")
         if rel in ALLOWED_RAW_HTTPX:

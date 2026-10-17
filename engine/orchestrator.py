@@ -523,21 +523,69 @@ class Orchestrator:
     def _pick_verdict(pattern, context):
         oracles = pattern.get("oracles", [])
         rank = {"VULNERABLE": 3, "SUSPICIOUS": 2, "PASS": 1, "UNKNOWN": 0}
-        best = None
+        evaluated = []
         for o in oracles:
             r = oracle.evaluate(o, context)
-            rv = r.get("verdict") if hasattr(r, "get") else getattr(r, "verdict", "UNKNOWN")
-            if best is None:
-                best = (rv, r)
-                continue
-            if rank.get(rv, 0) > rank.get(best[0], 0):
-                best = (rv, r)
-        if best is None:
+            rv = (r.get("verdict") if hasattr(r, "get")
+                  else getattr(r, "verdict", "UNKNOWN"))
+            ev = getattr(r, "evidence", None)
+            if ev is None and hasattr(r, "get"):
+                ev = r.get("evidence")
+            if not isinstance(ev, dict):
+                ev = {}
+            conf_raw = ev.get("signal_strength")
+            try:
+                conf = float(conf_raw) if conf_raw is not None else None
+            except (TypeError, ValueError):
+                conf = None
+            if conf is None:
+                conf = {"VULNERABLE": 0.9, "SUSPICIOUS": 0.6,
+                        "PASS": 0.8, "UNKNOWN": 0.3}.get(rv, 0.5)
+            nc_status = ev.get("confirmation_status") or ""
+            nc_passed = nc_status not in (
+                "tool_unsound", "oracle_disabled", "unconfirmed")
+            evaluated.append({
+                "oracle": o, "finding": r, "verdict": rv,
+                "confidence": float(conf), "nc_passed": bool(nc_passed),
+            })
+
+        if not evaluated:
             return "UNKNOWN", "no oracles evaluated", {}
-        rv, r = best
-        reason = r.get("reason") if hasattr(r, "get") else getattr(r, "reason", "")
-        ev = r.get("evidence") if hasattr(r, "get") else getattr(r, "evidence", {})
-        return rv, reason, ev
+
+        best = max(evaluated, key=lambda e: rank.get(e["verdict"], 0))
+        best_rv = best["verdict"]
+        corroboration_note = ""
+
+        if best_rv == "VULNERABLE":
+            try:
+                from .oracles.controls import corroborate, OracleSignal
+                signals = []
+                for e in evaluated:
+                    if e["verdict"] != "VULNERABLE":
+                        continue
+                    fam = (e["oracle"].get("type")
+                           if isinstance(e["oracle"], dict) else "?")
+                    signals.append(OracleSignal(
+                        family=str(fam),
+                        confidence=float(e["confidence"]),
+                        negative_control_passed=bool(e["nc_passed"]),
+                    ))
+                status, why = corroborate(signals)
+                if status != "CONFIRMED":
+                    best_rv = "SUSPICIOUS"
+                    corroboration_note = f"[corroboration: {why}] "
+            except Exception as e:
+                corroboration_note = (
+                    f"[corroboration failed: {type(e).__name__}: {e}] ")
+
+        f = best["finding"]
+        reason = (f.get("reason") if hasattr(f, "get")
+                  else getattr(f, "reason", "")) or ""
+        ev_out = (f.get("evidence") if hasattr(f, "get")
+                  else getattr(f, "evidence", None))
+        if not isinstance(ev_out, dict):
+            ev_out = {}
+        return best_rv, (corroboration_note + reason), ev_out
 
     def _apply_login(self, state, credentials, job_id=None):
         username = credentials.get("username", "")

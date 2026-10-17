@@ -98,6 +98,50 @@ def _looks_accepted(resp):
     return True
 
 
+def _extract_upload_url(resp):
+    import re
+    body = resp.get("body") or ""
+    try:
+        import json
+        data = json.loads(body)
+        if isinstance(data, dict):
+            for key in ("url", "file_url", "path", "location",
+                         "download_url", "href"):
+                v = data.get(key)
+                if isinstance(v, str) and v.startswith(("http://", "https://", "/")):
+                    return v
+            inner = data.get("data")
+            if isinstance(inner, dict):
+                for key in ("url", "file_url", "path", "location"):
+                    v = inner.get(key)
+                    if isinstance(v, str) and v.startswith(("http://", "https://", "/")):
+                        return v
+    except Exception:
+        pass
+    loc = resp.get("location") or ""
+    if loc.startswith(("http://", "https://", "/")):
+        return loc
+    m = re.search(r'"url"\s*:\s*"([^"]+)"', body)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _check_execution(file_url, marker, timeout, verify, roe_guard):
+    viol = _roe_block(roe_guard, file_url, "GET")
+    if viol:
+        return None
+    try:
+        with _http.Client(timeout=timeout, verify=verify,
+                          follow_redirects=True) as c:
+            r = c.get(file_url)
+        if r.status_code == 200 and marker in (r.text or ""):
+            return (r.text or "")[:500]
+    except Exception:
+        pass
+    return None
+
+
 def scan(upload_url, headers=None, roe_guard=None, timeout=15,
          field_name="file"):
     verify = _verify_tls()
@@ -122,9 +166,30 @@ def scan(upload_url, headers=None, roe_guard=None, timeout=15,
             )
         attempts.append({"variant": label, "status": r.get("status")})
         if _looks_accepted(r):
-            findings.append({"variant": label, "filename": filename,
-                             "content_type": ctype})
+            entry = {"variant": label, "filename": filename,
+                     "content_type": ctype}
+            if label in ("plain_php", "double_ext", "case_php", "phtml",
+                         "php5", "php7", "jpeg_polyglot"):
+                _file_url = _extract_upload_url(r)
+                if _file_url:
+                    _exec_result = _check_execution(
+                        _file_url, "SEC_CHECKER_UPLOAD_PROBE",
+                        timeout, verify, roe_guard)
+                    if _exec_result:
+                        entry["executable"] = True
+                        entry["execution_url"] = _file_url
+                        entry["execution_preview"] = _exec_result[:200]
+            findings.append(entry)
 
+    executable = [f for f in findings if f.get("executable")]
+    if executable:
+        return ScanResult(
+            capability="upload_scan", target=upload_url,
+            verdict="VULNERABLE", severity="critical",
+            reason=(f"uploaded file executes: {executable[0]['filename']} "
+                    f"at {executable[0]['execution_url']}"),
+            evidence={"findings": findings, "attempts": attempts},
+        )
     dangerous = [f for f in findings
                  if any(k in f["variant"] for k in
                         ("plain_php", "double_ext", "case_php", "phtml",

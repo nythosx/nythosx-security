@@ -98,7 +98,7 @@ def _discover_id_endpoints(orch, base):
 
 
 def _sequential_id_check(base, token, endpoints, timeout, verify,
-                         max_rows=5):
+                         max_rows=5, broker=None):
     hits = []
     for path in endpoints:
         if not ID_PATH_RE.search(path):
@@ -106,6 +106,12 @@ def _sequential_id_check(base, token, endpoints, timeout, verify,
         r1 = _get(base, path, token, timeout, verify)
         if r1.get("status") != 200:
             continue
+        if broker is not None:
+            try:
+                if r1.get("body"):
+                    broker.learn_ids_from_response("user_a", r1["body"])
+            except Exception:
+                pass
         rows = _rows(r1)
         if not rows:
             continue
@@ -130,53 +136,125 @@ def _sequential_id_check(base, token, endpoints, timeout, verify,
     }
 
 
+def _parse_json(body):
+    import json as _j
+    try:
+        return _j.loads(body)
+    except Exception:
+        return None
+
+
+def _bearer_from_headers(headers):
+    if not headers:
+        return ""
+    for k, v in headers.items():
+        if k.lower() == "authorization" and isinstance(v, str):
+            if v.lower().startswith("bearer "):
+                return v[7:]
+            return v
+    return ""
+
+
+def _broker_tokens(orch):
+    broker = getattr(orch, "identity_broker", None)
+    if broker is None:
+        return "", ""
+    a = ""
+    b = ""
+    try:
+        ctx_a = broker.get_identity("user_a")
+        ctx_b = broker.get_identity("user_b")
+    except Exception:
+        return "", ""
+    if ctx_a is not None:
+        a = (ctx_a.token or _bearer_from_headers(ctx_a.headers)) or ""
+    if ctx_b is not None:
+        b = (ctx_b.token or _bearer_from_headers(ctx_b.headers)) or ""
+    return a, b
+
+
 def _cross_user_check(base, token_a, token_b, endpoints, timeout, verify,
-                      max_rows=5):
-    findings = []
+                      max_rows=5, broker=None):
+    from .bola_confirm import (classify as _classify, CONFIRMED,
+                                REFUTED, INCONCLUSIVE)
+    responses_a = {}
+    responses_b = {}
     probes = []
     for path in endpoints:
         if not path.startswith("/"):
             path = "/" + path
         ra = _get(base, path, token_a, timeout, verify)
         rb = _get(base, path, token_b, timeout, verify)
-        probes.append({"path": path, "a_status": ra.get("status"),
-                       "b_status": rb.get("status")})
         if ra.get("roe_block") or rb.get("roe_block"):
             return {"verdict": "UNKNOWN",
                     "reason": "ROE_BLOCK during BOLA probe",
                     "evidence": {"probes": probes}}
-        if ra.get("status") != 200 or rb.get("status") != 200:
-            continue
-        rows_a = _rows(ra)
-        rows_b = _rows(rb)
-        if not rows_a or not rows_b:
-            continue
-        if ra.get("body") == rb.get("body"):
-            continue
-        findings.append({
-            "url": rb["url"],
-            "path": path,
-            "status": 200,
-            "a_rows": len(rows_a),
-            "b_rows": len(rows_b),
-            "b_extracted": min(len(rows_b), max_rows),
-            "b_rows_sample": rows_b[:max_rows],
-        })
-        if len(findings) >= 5:
-            break
+        responses_a[path] = {"status": ra.get("status"),
+                              "body": ra.get("body") or ""}
+        responses_b[path] = {"status": rb.get("status"),
+                              "body": rb.get("body") or ""}
+        if broker is not None:
+            try:
+                if ra.get("status") == 200 and ra.get("body"):
+                    broker.learn_ids_from_response("user_a", ra["body"])
+                if rb.get("status") == 200 and rb.get("body"):
+                    broker.learn_ids_from_response("user_b", rb["body"])
+            except Exception:
+                pass
+        probes.append({"path": path, "a_status": ra.get("status"),
+                       "b_status": rb.get("status")})
 
-    if findings:
-        total = sum(f["b_extracted"] for f in findings)
+    decision = _classify(responses_a, responses_b,
+                         list(responses_a.keys()))
+
+    if decision.status == CONFIRMED:
+        findings = []
+        for path, rb in responses_b.items():
+            ra = responses_a.get(path) or {}
+            if rb.get("status") != 200:
+                continue
+            rb_parsed = _parse_json(rb.get("body") or "")
+            rows_b = _rows({"status": 200, "parsed": rb_parsed,
+                             "url": base.rstrip("/") + path})
+            from .bola_confirm import _same_body
+            if ra.get("status") == 200 and _same_body(
+                    ra.get("body") or "", rb.get("body") or ""):
+                continue
+            findings.append({
+                "url": base.rstrip("/") + path,
+                "path": path,
+                "status": 200,
+                "a_rows": len(_rows({"status": 200,
+                                       "parsed": _parse_json(
+                                           ra.get("body") or "")})),
+                "b_rows": len(rows_b),
+                "b_extracted": min(len(rows_b), max_rows),
+                "b_rows_sample": rows_b[:max_rows],
+            })
+            if len(findings) >= 5:
+                break
         return {
             "verdict": "VULNERABLE",
-            "reason": f"user-B token returned distinct rows on {len(findings)} endpoint(s) ({total} row(s) extracted)",
+            "reason": decision.reason,
             "evidence": {"findings": findings, "probes": probes,
-                         "mode": "cross_user"},
+                          "mode": "cross_user",
+                          "proof": decision.proof,
+                          "status": decision.status},
+        }
+    if decision.status == REFUTED:
+        return {
+            "verdict": "PASS",
+            "reason": decision.reason,
+            "evidence": {"mode": "cross_user", "probes": probes,
+                          "proof": decision.proof,
+                          "status": decision.status},
         }
     return {
-        "verdict": "PASS",
-        "reason": "no cross-user data exposure detected between the two sessions",
-        "evidence": {"mode": "cross_user", "probes": probes},
+        "verdict": "UNKNOWN",
+        "reason": decision.reason,
+        "evidence": {"mode": "cross_user", "probes": probes,
+                      "proof": decision.proof,
+                      "status": decision.status},
     }
 
 
@@ -188,6 +266,13 @@ def _tool_bola_scan(orch, args):
 
     token_a = args.get("token_a") or orch.get_context("jwt_token") or ""
     token_b = args.get("token_b") or orch.get_context("jwt_token_b") or ""
+
+    if not token_a or not token_b:
+        broker_a, broker_b = _broker_tokens(orch)
+        if not token_a and broker_a:
+            token_a = broker_a
+        if not token_b and broker_b:
+            token_b = broker_b
 
     if not token_a:
         return {"verdict": "UNKNOWN",
@@ -212,12 +297,15 @@ def _tool_bola_scan(orch, args):
                 identity_a = payload_a[k]
                 break
 
+    _broker = getattr(orch, "identity_broker", None)
     if token_b:
         result = _cross_user_check(base, token_a, token_b, endpoints,
-                                   timeout, verify, max_rows=max_rows)
+                                   timeout, verify, max_rows=max_rows,
+                                   broker=_broker)
     else:
         result = _sequential_id_check(base, token_a, endpoints,
-                                      timeout, verify, max_rows=max_rows)
+                                      timeout, verify, max_rows=max_rows,
+                                      broker=_broker)
 
     evidence = dict(result.get("evidence") or {})
     evidence["identity_a"] = identity_a
@@ -246,13 +334,16 @@ def _tool_bola_scan(orch, args):
     return out
 
 
-register_tool("bola_scan", _tool_bola_scan)
+register_tool("bola_scan", _tool_bola_scan,
+              requires=["has_identity_a"],
+              provides=["has_bola_signal"])
 
 
 def harvest_sequential_ids(base_url, endpoint_template, token,
                            id_range=range(1, 501), max_records=100,
                            headers=None, timeout=10, roe_guard=None,
-                           mode="probe", target=None, hard_ceiling=5000):
+                           mode="probe", target=None, hard_ceiling=5000,
+                           known_ids=None):
     """Walk the ID space of an endpoint and collect records.
 
     endpoint_template: path with {id} placeholder, e.g. /api/orders/{id}
@@ -266,7 +357,35 @@ def harvest_sequential_ids(base_url, endpoint_template, token,
         return harvested
 
     consecutive_miss = 0
-    for obj_id in id_range:
+    import re as _re
+    _UUID_RE = _re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+    _ids_to_try = list(id_range)
+    if known_ids:
+        _seen = set(_ids_to_try)
+        _prepended = []
+        for _k in known_ids:
+            if _k not in _seen:
+                _prepended.append(_k)
+                _seen.add(_k)
+        _ids_to_try = _prepended + _ids_to_try
+
+    probe_path = endpoint_template.replace("{id}", "1").replace("<int:id>", "1")
+    harvested_uuids = []
+    try:
+        r0 = _get(base_url, probe_path, token, timeout, False)
+        if r0.get("status") == 200:
+            harvested_uuids = sorted(set(_UUID_RE.findall(r0.get("body") or "")))
+    except Exception:
+        pass
+
+    if harvested_uuids:
+        _ids_to_try = list(harvested_uuids)
+        if known_ids:
+            for k in known_ids:
+                if k not in _ids_to_try:
+                    _ids_to_try.append(k)
+
+    for obj_id in _ids_to_try:
         if mode == "probe" and len(harvested) >= max_records:
             break
         if len(harvested) >= hard_ceiling:
@@ -327,12 +446,21 @@ def _tool_bola_harvest(orch, args):
     max_records = int(args.get("max_records") or 100)
     endpoint_template = template.replace("{{ api_base }}", base)
     mode = args.get("mode") or ("harvest" if getattr(orch, "harvest_mode", False) else "probe")
+    _broker = getattr(orch, "identity_broker", None)
+    _known_ids = []
+    if _broker is not None:
+        for _name in ("user_a", "user_b", "admin"):
+            _ctx = _broker.get_identity(_name)
+            if _ctx is not None and _ctx.known_ids:
+                _known_ids = list(_ctx.known_ids)
+                break
     harvested = harvest_sequential_ids(
         base, endpoint_template, token,
         max_records=max_records,
         timeout=int(args.get("timeout") or 10),
         roe_guard=orch.roe_guard,
         mode=mode, target=orch.target,
+        known_ids=_known_ids,
     )
     if not harvested:
         return {"verdict": "PASS",
@@ -342,11 +470,23 @@ def _tool_bola_harvest(orch, args):
     for h in harvested:
         if h.get("owner_value") is not None:
             owners.add(str(h["owner_value"]))
+    own_id = None
+    _tok = (args.get("token") or orch.get_context("jwt_token")
+            or orch.get_context("jwt_token_b") or "")
+    if _tok:
+        _decoded = _decode_jwt_payload(_tok)
+        if _decoded:
+            for _k in ("sub", "user_id", "uid", "email", "username"):
+                if _decoded.get(_k):
+                    own_id = str(_decoded[_k])
+                    break
     sample_fields = []
     if harvested and harvested[0].get("rows"):
         sample_fields = list(harvested[0]["rows"][0].keys())[:8]
-    verdict = "VULNERABLE" if len(owners) >= 2 or len(harvested) >= 3 \
-              else "SUSPICIOUS"
+    cross_user = len(owners) >= 2
+    single_owner_other = (len(owners) == 1 and own_id is not None
+                          and own_id not in owners and len(harvested) >= 3)
+    verdict = "VULNERABLE" if (cross_user or single_owner_other) else "SUSPICIOUS"
     return {
         "verdict": verdict,
         "reason": (f"harvested {len(harvested)} record(s) across "

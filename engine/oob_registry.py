@@ -4,7 +4,7 @@ The whole process uses one OOBServer. Its mode is decided once, from
 configs/engine.yaml:
 
     oob:
-      external_enabled: false
+      external_enabled: true
       callback_url: ''
 
 When external_enabled is true and callback_url is set, payloads point at

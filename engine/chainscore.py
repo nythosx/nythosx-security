@@ -20,6 +20,7 @@ heuristic (`engine.scoring`) stays available behind `--legacy-scoring`.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,6 +31,9 @@ IMPACT_WEIGHTS = ROOT / "configs" / "impact_weights.yaml"
 ALPHA = 1.0
 BETA = 9.0
 PROBE_FANOUT = 6
+_STATS_CACHE = {}
+_STATS_CACHE_LOCK = threading.Lock()
+_STATS_CACHE_MAX = 8
 BEAM_WIDTH = 5
 BEAM_DEPTH = 2
 
@@ -92,33 +96,48 @@ def _vuln_class(chain):
 def load_stats(path=None):
     """Aggregate stats/chains.jsonl into per-(class,framework) and per-oracle
     counters. Returns {"vuln": {...}, "oracle": {...}}.
+
+    Result is memoized by (path, mtime) so the file is not re-read per chain.
     """
     p = Path(path) if path else STATS_FILE
+    try:
+        mtime = p.stat().st_mtime if p.exists() else 0.0
+    except Exception:
+        mtime = 0.0
+    cache_key = (str(p), mtime)
+    with _STATS_CACHE_LOCK:
+        cached = _STATS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     vuln = {}
     oracle = {}
-    if not p.exists():
-        return {"vuln": vuln, "oracle": oracle}
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except Exception:
-            continue
-        vc = rec.get("vuln_class")
-        fw = rec.get("framework") or "generic"
-        if vc:
-            key = f"{vc}|{fw}"
-            slot = vuln.setdefault(key, {"attempts": 0, "hits": 0})
-            slot["attempts"] += int(rec.get("attempts", 0) or 0)
-            slot["hits"] += int(rec.get("hits", 0) or 0)
-        orc = rec.get("oracle")
-        if orc:
-            oslot = oracle.setdefault(orc, {"confirmed": 0, "fp": 0})
-            oslot["confirmed"] += int(rec.get("confirmed", 0) or 0)
-            oslot["fp"] += int(rec.get("fp", 0) or 0)
-    return {"vuln": vuln, "oracle": oracle}
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            vc = rec.get("vuln_class")
+            fw = rec.get("framework") or "generic"
+            if vc:
+                key = f"{vc}|{fw}"
+                slot = vuln.setdefault(key, {"attempts": 0, "hits": 0})
+                slot["attempts"] += int(rec.get("attempts", 0) or 0)
+                slot["hits"] += int(rec.get("hits", 0) or 0)
+            orc = rec.get("oracle")
+            if orc:
+                oslot = oracle.setdefault(orc, {"confirmed": 0, "fp": 0})
+                oslot["confirmed"] += int(rec.get("confirmed", 0) or 0)
+                oslot["fp"] += int(rec.get("fp", 0) or 0)
+    result = {"vuln": vuln, "oracle": oracle}
+    with _STATS_CACHE_LOCK:
+        if len(_STATS_CACHE) >= _STATS_CACHE_MAX:
+            _STATS_CACHE.clear()
+        _STATS_CACHE[cache_key] = result
+    return result
 
 
 def record_run(entries, path=None):
@@ -137,7 +156,59 @@ def beta_posterior(hits, attempts, alpha=ALPHA, beta=BETA):
     return (hits + alpha) / (attempts + alpha + beta)
 
 
+def _normalize_rejection_id(s):
+    return str(s or "").replace("-", "_").lower()
+
+
+_REJECTIONS_CACHE = {"key": None, "data": {}}
+
+
+def _load_rejections_cached(path):
+    try:
+        mtime = path.stat().st_mtime if path.exists() else 0.0
+    except Exception:
+        mtime = 0.0
+    key = (str(path), mtime)
+    if _REJECTIONS_CACHE["key"] == key:
+        return _REJECTIONS_CACHE["data"]
+    try:
+        import json as _json
+        raw = _json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    _REJECTIONS_CACHE["key"] = key
+    _REJECTIONS_CACHE["data"] = raw
+    return raw
+
+
+def _is_rejected(chain):
+    try:
+        from . import program_memory
+        raw = _load_rejections_cached(program_memory.REJECTIONS_FILE)
+    except Exception:
+        return False
+    rejected = {
+        _normalize_rejection_id(k)
+        for k, v in raw.items()
+        if int(v or 0) >= 3
+    }
+    if not rejected:
+        return False
+    chain_id = _normalize_rejection_id(chain.get("id") or "")
+    if chain_id and chain_id in rejected:
+        return True
+    for step in chain.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        tool = _normalize_rejection_id(step.get("tool") or "")
+        if tool and tool in rejected:
+            return True
+    return False
+
+
 def p_vuln(chain, framework, stats):
+    if _is_rejected(chain):
+        return 0.0
     vc = _vuln_class(chain)
     fw = framework or "generic"
     slot = (stats.get("vuln") or {}).get(f"{vc}|{fw}")

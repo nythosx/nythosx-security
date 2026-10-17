@@ -81,7 +81,26 @@ def _annotate_with_triage(result, context):
     return result
 
 
-_ORACLE_LLM_CACHE = {}
+import json as _json
+from pathlib import Path as _Path
+_ORACLE_LLM_CACHE_PATH = _Path(__file__).parent.parent / "findings" / "llm_oracle_cache.json"
+
+def _load_oracle_llm_cache():
+    try:
+        if _ORACLE_LLM_CACHE_PATH.exists():
+            return _json.loads(_ORACLE_LLM_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def _save_oracle_llm_cache(cache):
+    try:
+        _ORACLE_LLM_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _ORACLE_LLM_CACHE_PATH.write_text(_json.dumps(cache, default=str), encoding="utf-8")
+    except Exception:
+        pass
+
+_ORACLE_LLM_CACHE = _load_oracle_llm_cache()
 _ORACLE_LLM_BORDERLINE_TYPES = ("pattern_match", "header_value_match",
                                 "body_contains", "regex_match")
 
@@ -173,6 +192,7 @@ def _annotate_with_oracle_llm(result, oracle, context):
     else:
         decision = _oracle_llm_call(client, oracle, result, body, ctype)
         _ORACLE_LLM_CACHE[cache_key] = decision
+        _save_oracle_llm_cache(_ORACLE_LLM_CACHE)
     if decision is None:
         return result
     if decision.get("meaningful") is False:
@@ -725,74 +745,101 @@ def _no_auth_200(oracle, context):
 
 
 def _timing_delta(oracle, context):
-    timings = [s.get("time_ms") for s in context.get("steps", []) if s.get("time_ms")]
-    if len(timings) < 4:
-        return {"verdict": "UNKNOWN", "reason": "need >= 4 timings", "evidence": {}}
-    mean = statistics.mean(timings)
-    stdev = statistics.pstdev(timings)
-    sigma = oracle.get("sigma", 3.0)
-    max_delta = max(abs(t - mean) for t in timings)
-    if stdev > 0 and max_delta > sigma * stdev:
-        return {
-            "verdict": oracle.get("verdict", "SUSPICIOUS"),
-            "reason": f"timing delta {max_delta:.1f}ms > {sigma}sigma",
-            "evidence": {"mean_ms": round(mean, 3), "stdev_ms": round(stdev, 3),
-                          "max_delta_ms": round(max_delta, 3)},
-        }
-    return {"verdict": "PASS", "reason": "no timing anomaly",
-            "evidence": {"mean_ms": round(mean, 3), "stdev_ms": round(stdev, 3)}}
+    from .stats import payload_is_slower_than_baseline
+    steps = context.get("steps", [])
+    timed = [s for s in steps if s.get("time_ms") is not None]
+    if len(timed) < 6:
+        return {"verdict": "UNKNOWN",
+                "reason": "need >= 6 timings for robust test",
+                "evidence": {"samples": len(timed)}}
+    names = [s.get("step_name") for s in timed]
+    unique = list(dict.fromkeys(n for n in names if n))
+    if len(unique) >= 2:
+        baseline = [s["time_ms"] for s in timed
+                    if s.get("step_name") == unique[-2]]
+        candidate = [s["time_ms"] for s in timed
+                     if s.get("step_name") == unique[-1]]
+    else:
+        mid = len(timed) // 2
+        baseline = [s["time_ms"] for s in timed[:mid]]
+        candidate = [s["time_ms"] for s in timed[mid:]]
+    if len(baseline) < 4 or len(candidate) < 4:
+        return {"verdict": "UNKNOWN",
+                "reason": "insufficient samples per batch",
+                "evidence": {"baseline_n": len(baseline),
+                             "candidate_n": len(candidate)}}
+    decision, ev = payload_is_slower_than_baseline(baseline, candidate)
+    ev["oracle"] = "timing_delta"
+    if decision:
+        return {"verdict": oracle.get("verdict", "SUSPICIOUS"),
+                "reason": f"robust timing delta (delta={ev['delta_ms']:.0f}ms)",
+                "evidence": ev}
+    return {"verdict": "PASS",
+            "reason": "no robust timing signal",
+            "evidence": ev}
 
 
 def _timing_vs_baseline(oracle, context):
+    from .stats import payload_is_slower_than_baseline
     baseline = context.get("baseline")
     if not baseline:
         return {"verdict": "UNKNOWN", "reason": "no baseline", "evidence": {}}
-    timings = [s.get("time_ms") for s in context.get("steps", []) if s.get("time_ms")]
-    if not timings:
-        return {"verdict": "UNKNOWN", "reason": "no timings", "evidence": {}}
-    mean = baseline.get("mean_ms", 0)
-    stdev = baseline.get("stdev_ms", 0)
-    sigma = oracle.get("sigma", 3.0)
-    if stdev <= 0:
-        return {"verdict": "UNKNOWN", "reason": "baseline stdev=0", "evidence": {}}
-    max_delta = max(abs(t - mean) for t in timings)
-    if max_delta > sigma * stdev:
-        return {
-            "verdict": oracle.get("verdict", "SUSPICIOUS"),
-            "reason": f"delta {max_delta:.1f}ms > {sigma}sigma baseline",
-            "evidence": {"baseline_mean": mean, "baseline_stdev": stdev,
-                          "max_delta": round(max_delta, 3)},
-        }
-    return {"verdict": "PASS", "reason": "within baseline", "evidence": {}}
+    baseline_samples = baseline.get("timing_samples") or []
+    timings = [s.get("time_ms") for s in context.get("steps", [])
+               if s.get("time_ms") is not None]
+    if not baseline_samples or not timings:
+        return {"verdict": "UNKNOWN",
+                "reason": "missing baseline samples or step timings",
+                "evidence": {"baseline_n": len(baseline_samples),
+                             "candidate_n": len(timings)}}
+    decision, ev = payload_is_slower_than_baseline(baseline_samples, timings)
+    ev["oracle"] = "timing_vs_baseline"
+    if decision:
+        return {"verdict": oracle.get("verdict", "SUSPICIOUS"),
+                "reason": f"robust delta vs baseline (delta={ev['delta_ms']:.0f}ms)",
+                "evidence": ev}
+    return {"verdict": "PASS",
+            "reason": "no robust timing signal vs baseline",
+            "evidence": ev}
 
 
 def _timing_difference(oracle, context):
+    from .stats import payload_is_slower_than_baseline
     steps = context.get("steps", [])
-    if len(steps) < 2:
-        return {"verdict": "UNKNOWN", "reason": "need >= 2 steps", "evidence": {}}
-    step_names = [s.get("step_name") for s in steps]
-    unique = list(dict.fromkeys(step_names))
+    if len(steps) < 6:
+        return {"verdict": "UNKNOWN",
+                "reason": "need >= 6 steps for robust comparison",
+                "evidence": {"samples": len(steps)}}
+    names = [s.get("step_name") for s in steps]
+    unique = list(dict.fromkeys(n for n in names if n))
     if len(unique) >= 2:
-        batch1 = [s.get("time_ms", 0) for s in steps if s.get("step_name") == unique[-2]]
-        batch2 = [s.get("time_ms", 0) for s in steps if s.get("step_name") == unique[-1]]
+        baseline = [s.get("time_ms") for s in steps
+                    if s.get("step_name") == unique[-2]
+                    and s.get("time_ms") is not None]
+        candidate = [s.get("time_ms") for s in steps
+                     if s.get("step_name") == unique[-1]
+                     and s.get("time_ms") is not None]
     else:
-        batch1 = [steps[0].get("time_ms", 0)]
-        batch2 = [steps[1].get("time_ms", 0)]
-    if not batch1 or not batch2:
-        return {"verdict": "UNKNOWN", "reason": "empty batches", "evidence": {}}
-    m1 = statistics.mean(batch1)
-    m2 = statistics.mean(batch2)
-    diff = abs(m1 - m2)
-    threshold_ms = oracle.get("threshold_ms", 50)
-    if diff > threshold_ms:
-        return {
-            "verdict": oracle.get("verdict", "SUSPICIOUS"),
-            "reason": f"timing diff {diff:.1f}ms > {threshold_ms}ms",
-            "evidence": {"batch1_mean": round(m1, 3), "batch2_mean": round(m2, 3),
-                          "diff_ms": round(diff, 3)},
-        }
-    return {"verdict": "PASS", "reason": f"diff {diff:.1f}ms within threshold",
-            "evidence": {"diff_ms": round(diff, 3)}}
+        mid = len(steps) // 2
+        baseline = [s.get("time_ms") for s in steps[:mid]
+                    if s.get("time_ms") is not None]
+        candidate = [s.get("time_ms") for s in steps[mid:]
+                     if s.get("time_ms") is not None]
+    if len(baseline) < 3 or len(candidate) < 3:
+        return {"verdict": "UNKNOWN",
+                "reason": "insufficient samples per batch",
+                "evidence": {"baseline_n": len(baseline),
+                             "candidate_n": len(candidate)}}
+    decision, ev = payload_is_slower_than_baseline(
+        baseline, candidate, p_threshold=0.05, min_delta_ms=100.0)
+    ev["oracle"] = "timing_difference"
+    if decision:
+        return {"verdict": oracle.get("verdict", "SUSPICIOUS"),
+                "reason": f"robust timing difference (delta={ev['delta_ms']:.0f}ms)",
+                "evidence": ev}
+    return {"verdict": "PASS",
+            "reason": "no robust timing difference",
+            "evidence": ev}
 
 
 def _response_differs(oracle, context):
@@ -1567,7 +1614,7 @@ _HANDLERS = {
 
 
 _CATCHALL_GATED = {"state_inconsistent", "response_differs", "timing_difference",
-                   "timing_delta", "expected_status_mismatch"}
+                   "timing_delta", "expected_status_mismatch", "pattern_match"}
 
 
 def _catch_all_blocks(context):

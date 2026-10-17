@@ -26,6 +26,12 @@ class ROEViolation(Exception):
     pass
 
 
+def _utc_now():
+    """Boundary seam so tests can freeze the clock without patching
+    the datetime module globally."""
+    return datetime.now(timezone.utc)
+
+
 class ROEGuard:
     def __init__(self, roe=None, engine_cfg=None):
         self.roe = roe if roe is not None else load_roe()
@@ -76,7 +82,7 @@ class ROEGuard:
             eh, em = (int(x) for x in end.split(":")[:2])
         except Exception:
             return
-        now = datetime.now(timezone.utc).time()
+        now = _utc_now().time()
         s = dtime(sh, sm)
         e = dtime(eh, em)
         if s <= e:

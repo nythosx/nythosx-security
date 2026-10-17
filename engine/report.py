@@ -602,9 +602,13 @@ _SARIF_LEVEL = {"critical": "error", "high": "error",
                 "medium": "warning", "low": "note", "info": "note"}
 
 
-def generate_sarif(target):
+def generate_sarif(target, since=None):
     rows = ledger.findings_for_target(target)
-    findings = _dedupe(_findings_to_dicts(rows))
+    findings = _findings_to_dicts(rows)
+    if since:
+        findings = [f for f in findings
+                    if (f.get("timestamp") or "") > since]
+    findings = _dedupe(findings)
     from . import redact as _redact
     findings = _redact.redact_dict(findings)
     sarif = {
@@ -819,13 +823,17 @@ def build_capability_chains(findings):
         return []
 
 
-def _build_context(target, engine_cfg=None):
+def _build_context(target, engine_cfg=None, since=None):
     if engine_cfg is None:
         from .config import load_engine
         engine_cfg = load_engine()
     threshold = engine_cfg.get("report", {}).get("severity_threshold", "info")
     rows = ledger.findings_for_target(target)
-    findings = _dedupe(_findings_to_dicts(rows))
+    findings = _findings_to_dicts(rows)
+    if since:
+        findings = [f for f in findings
+                    if (f.get("timestamp") or "") > since]
+    findings = _dedupe(findings)
     try:
         from . import context as _ctx
         for f in findings:
@@ -905,10 +913,10 @@ def _html_to_pdf(html_str, out_path):
             browser.close()
 
 
-def generate(target, fmt="html", engine_cfg=None):
+def generate(target, fmt="html", engine_cfg=None, since=None):
     if fmt == "sarif":
-        return generate_sarif(target)
-    context = _build_context(target, engine_cfg)
+        return generate_sarif(target, since=since)
+    context = _build_context(target, engine_cfg, since=since)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in target)[:80]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")

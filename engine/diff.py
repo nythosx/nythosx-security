@@ -135,11 +135,19 @@ class SemanticDiff:
 
         c_body = candidate.get("body") or ""
         c_len = len(c_body)
+        
+        # --- Substrate #3: Per-Endpoint Noise Model ---
+        try:
+            from .noise_model import strip_noise
+            c_body_for_diff = strip_noise(c_body)
+        except Exception:
+            c_body_for_diff = c_body
+        # -----------------------------------------------
         if baseline.body_len:
             result.length_delta_pct = abs(c_len - baseline.body_len) / baseline.body_len
             result.notes.append("len delta " + str(round(result.length_delta_pct, 2)))
 
-        c_struct = build_structure(c_body, candidate.get("content_type", ""))
+        c_struct = build_structure(c_body_for_diff, candidate.get("content_type", ""))
         if baseline.structure is not None and c_struct is not None:
             a = _structural_hash(baseline.structure)
             b = _structural_hash(c_struct)

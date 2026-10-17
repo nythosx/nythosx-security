@@ -24,6 +24,7 @@ from urllib.parse import urlparse, parse_qs
 import httpx
 
 from ..config import load_engine
+from .. import external_http
 
 
 WAYBACK_CDX = "http://web.archive.org/cdx/search/cdx"
@@ -67,7 +68,7 @@ def _fetch_wayback(domain, limit, timeout):
         "fl": "original",
     }
     try:
-        with httpx.Client(timeout=timeout, verify=_verify_tls()) as c:
+        with external_http.Client(timeout=timeout, verify=_verify_tls()) as c:
             r = c.get(WAYBACK_CDX, params=params)
         if r.status_code != 200:
             return []
@@ -88,7 +89,7 @@ def _fetch_commoncrawl(domain, index, limit, timeout):
     url = f"http://index.commoncrawl.org/{index}-index"
     params = {"url": f"{domain}/*", "output": "json", "limit": str(limit)}
     try:
-        with httpx.Client(timeout=timeout, verify=_verify_tls()) as c:
+        with external_http.Client(timeout=timeout, verify=_verify_tls()) as c:
             r = c.get(url, params=params)
         if r.status_code != 200:
             return []

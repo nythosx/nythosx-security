@@ -15,6 +15,7 @@ from functools import lru_cache
 import httpx
 
 from .config import load_engine
+from . import external_http
 
 
 NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
@@ -123,7 +124,7 @@ def _lookup_cached(vendor, product, version, api_key, timeout):
     if api_key:
         headers["apiKey"] = api_key
     try:
-        with httpx.Client(timeout=timeout, headers=headers) as c:
+        with external_http.Client(timeout=timeout, headers=headers) as c:
             r = c.get(NVD_API, params={"cpeName": cpe})
         if r.status_code != 200:
             return ()

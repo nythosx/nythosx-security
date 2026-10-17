@@ -7,12 +7,18 @@ def test_firebase_probe_does_not_use_engine_http():
     )
 
 
-def test_firebase_probe_uses_raw_httpx():
+def test_firebase_probe_uses_external_http():
+    """firebase_probe must route through engine.external_http, not raw httpx.
+
+    Firebase API endpoints are a non-target external service. The shared
+    external rate limiter and per-host circuit breaker live in
+    engine.external_http; calling httpx.Client directly would bypass both.
+    """
     import inspect
     import engine.firebase_probe as fp
     src = inspect.getsource(fp)
-    assert "httpx.Client(" in src, (
-        "firebase_probe must call httpx.Client directly")
+    assert "external_http.Client(" in src, (
+        "firebase_probe must call external_http.Client")
 
 
 def test_firebase_candidate_hosts_are_third_party():

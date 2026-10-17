@@ -462,6 +462,56 @@ def _collect_csp_headers(url, headers, timeout, verify_tls, roe_guard):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def _csp_analysis(csp_header):
+    if not csp_header:
+        return {"present": False, "bypassable": True, "verdict": "no_csp",
+                "notes": ["no Content-Security-Policy header present"],
+                "directives": []}
+    directives = {}
+    for part in csp_header.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        bits = part.split(None, 1)
+        name = bits[0].lower()
+        vals = bits[1].split() if len(bits) > 1 else []
+        directives[name] = vals
+    script_src = (directives.get("script-src")
+                  or directives.get("default-src") or [])
+    script_src_lower = [s.lower() for s in script_src]
+    notes = []
+    bypassable = False
+    if "'unsafe-inline'" in script_src_lower:
+        if ("'strict-dynamic'" not in script_src_lower
+                and not any(s.startswith("'nonce-") for s in script_src_lower)
+                and not any(s.startswith("'sha") for s in script_src_lower)):
+            bypassable = True
+            notes.append("'unsafe-inline' present without strict-dynamic/"
+                         "nonce/hash")
+    if "'unsafe-eval'" in script_src_lower:
+        bypassable = True
+        notes.append("'unsafe-eval' present (eval/Function allowed)")
+    if "*" in script_src:
+        bypassable = True
+        notes.append("wildcard script-src")
+    if "data:" in script_src_lower:
+        bypassable = True
+        notes.append("data: script-src")
+    if "base-uri" not in directives:
+        bypassable = True
+        notes.append("missing base-uri directive")
+    if "object-src" not in directives:
+        bypassable = True
+        notes.append("missing object-src directive")
+    return {
+        "present": True,
+        "bypassable": bypassable,
+        "verdict": "bypassable" if bypassable else "enforced",
+        "notes": notes,
+        "directives": sorted(directives.keys()),
+    }
+
+
 def _scan_impl(url, headers=None, timeout_ms=15000, roe_guard=None, verify_tls=None,
          include_mxss=True):
     if verify_tls is None:
@@ -512,6 +562,8 @@ def _scan_impl(url, headers=None, timeout_ms=15000, roe_guard=None, verify_tls=N
                                        verify_tls, roe_guard)
     if isinstance(csp_headers, dict) and "error" not in csp_headers:
         out["results"]["csp"] = _trusted_types_from_response(csp_headers)
+        _csp_hdr = (out["results"]["csp"] or {}).get("csp_header", "")
+        out["results"]["csp_analysis"] = _csp_analysis(_csp_hdr)
 
     if include_mxss:
         mxss = _mxss_probe(url, timeout_ms, verify_tls)
@@ -523,9 +575,17 @@ def _scan_impl(url, headers=None, timeout_ms=15000, roe_guard=None, verify_tls=N
 
     if executable:
         out["verdict"] = "VULNERABLE"
+        _csp_info = out["results"].get("csp_analysis") or {}
+        if not _csp_info.get("present"):
+            _csp_note = " (no CSP header)"
+        elif _csp_info.get("bypassable"):
+            _csp_note = " + CSP bypass"
+        else:
+            _csp_note = " + enforced CSP (execution blocked in browser)"
         out["reason"] = (f"DOM XSS confirmed via source→sink flow "
                          f"({executable[0]['source']} → "
-                         f"{', '.join(executable[0]['sinks'])})")
+                         f"{', '.join(executable[0]['sinks'])})"
+                         f"{_csp_note}")
     elif out["results"]["mxss"]:
         out["verdict"] = "VULNERABLE"
         out["reason"] = (f"mXSS confirmed via "

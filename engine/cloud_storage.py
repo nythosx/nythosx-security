@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from . import external_http
+
 from .config import load_engine
 from .contract import Capability, ScanResult
 
@@ -159,8 +161,8 @@ def classify(status, body):
 
 def _probe(url, timeout, verify):
     try:
-        with httpx.Client(timeout=timeout, verify=verify,
-                          follow_redirects=False) as c:
+        with external_http.Client(timeout=timeout, verify=verify,
+                                  follow_redirects=False) as c:
             r = c.get(url)
         return {"url": url, "status": r.status_code,
                 "body": (r.text or "")[:10000]}
@@ -209,8 +211,8 @@ async def scan_async(domain, timeout=8, endpoints=None, max_buckets=None):
             }
 
     try:
-        async with httpx.AsyncClient(timeout=timeout, verify=verify,
-                                      follow_redirects=False) as c:
+        async with external_http.AsyncClient(timeout=timeout, verify=verify,
+                                              follow_redirects=False) as c:
             tasks = []
             for bucket in buckets:
                 for ep in eps:

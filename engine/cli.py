@@ -703,17 +703,21 @@ def cmd_report(args):
         return
     target = args[0]
     fmt = "html"
+    since = None
     i = 1
     while i < len(args):
         if args[i] == "--format" and i + 1 < len(args):
             fmt = args[i + 1]
+            i += 2
+        elif args[i] == "--since" and i + 1 < len(args):
+            since = args[i + 1]
             i += 2
         else:
             i += 1
     resolved = _resolve_report_target(target)
     if resolved != target:
         console.print(f"[dim]Resolved target: {resolved}[/dim]")
-    path = report.generate(resolved, fmt=fmt)
+    path = report.generate(resolved, fmt=fmt, since=since)
     console.print(f"[green]Report:[/green] {path}")
 
 
@@ -2911,7 +2915,9 @@ def cmd_chain(args):
     return _compute_fail_exit([], fail_on)
 
 
-def _print_chain_report(report):
+def _print_chain_report(report, console=None):
+    if console is None:
+        console = globals()["console"]
     v = report.get("verdict", "UNKNOWN")
     color = VERDICT_COLOR.get(v, "white")
     console.print()
@@ -3134,6 +3140,119 @@ def cmd_hunt(args):
             "findings": report["findings"],
         }, indent=2, default=str))
 
+    return 0
+
+
+def cmd_monitor(args):
+    if not args:
+        console.print("[red]Usage: monitor <targets.yaml> [--interval N] "
+                      "[--iterations N] [--once] [--webhook URL][/red]")
+        return 0
+    import urllib.request
+    target_file = args[0]
+    interval = 86400
+    iterations = None
+    webhook = None
+    i = 1
+    while i < len(args):
+        if args[i] == "--interval" and i + 1 < len(args):
+            interval = int(args[i + 1])
+            i += 2
+        elif args[i] == "--iterations" and i + 1 < len(args):
+            iterations = int(args[i + 1])
+            i += 2
+        elif args[i] == "--once":
+            iterations = 1
+            i += 1
+        elif args[i] == "--webhook" and i + 1 < len(args):
+            webhook = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(
+            Path(target_file).read_text(encoding="utf-8")) or {}
+        targets = data.get("targets") or {}
+        urls = [str(t.get("url")) for t in targets.values()
+                if isinstance(t, dict) and t.get("url")]
+    except Exception as e:
+        console.print(f"[red]Cannot load {target_file}: {e}[/red]")
+        return 1
+    if not urls:
+        console.print("[yellow]No targets with URL in file[/yellow]")
+        return 0
+
+    def on_change(target, diff):
+        console.print(
+            f"[cyan]{target}[/cyan] change: "
+            f"+{len(diff['new_subdomains'])} subdomains, "
+            f"+{len(diff['new_endpoints'])} endpoints, "
+            f"+{len(diff['new_findings'])} findings")
+        if webhook:
+            try:
+                payload = json.dumps({
+                    "target": target,
+                    "diff": {
+                        "new_subdomains": diff["new_subdomains"],
+                        "new_endpoints": diff["new_endpoints"],
+                        "new_findings": [
+                            {"tool": t, "reason": r}
+                            for t, r in diff["new_findings"]
+                        ],
+                    },
+                }).encode()
+                req = urllib.request.Request(
+                    webhook, data=payload,
+                    headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=10)
+            except Exception:
+                pass
+
+    from . import monitor as _mon
+    console.print(f"[cyan]Monitor[/cyan] {len(urls)} target(s), "
+                  f"interval={interval}s, iterations={iterations or 'unlimited'}")
+    try:
+        _mon.run_monitor(urls, interval_sec=interval,
+                         on_change=on_change, iterations=iterations)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Monitor stopped[/yellow]")
+    return 0
+
+
+def cmd_mark_na(args):
+    if not args:
+        console.print("[red]Usage: mark-na <finding_id> [--threshold N][/red]")
+        return 0
+    try:
+        fid = int(args[0])
+    except ValueError:
+        console.print(f"[red]Invalid finding id: {args[0]}[/red]")
+        return 1
+    threshold = 3
+    i = 1
+    while i < len(args):
+        if args[i] == "--threshold" and i + 1 < len(args):
+            threshold = int(args[i + 1])
+            i += 2
+        else:
+            i += 1
+    from . import program_memory
+    finding = ledger.get_finding(fid)
+    if finding is None:
+        console.print(f"[red]No finding with id {fid}[/red]")
+        return 1
+    pid = finding.get("pattern_id") or ""
+    if not pid:
+        console.print(f"[red]Finding {fid} has no pattern_id[/red]")
+        return 1
+    program_memory.record_rejection(pid, reason="user_marked_na")
+    data = program_memory._load(program_memory.REJECTIONS_FILE)
+    count = int(data.get(pid, 0))
+    now_rejected = program_memory.is_rejected(pid, threshold=threshold)
+    status = "SUPPRESSED" if now_rejected else "still active"
+    console.print(f"pattern_id={pid} rejections={count}/{threshold} "
+                  f"({status})")
     return 0
 
 
@@ -3747,8 +3866,77 @@ def cmd_mcp_scan(args):
     return 0
 
 
+
+def cmd_discover(args):
+    if not args or "--help" in args or "-h" in args:
+        console.print("[cyan]Usage: discover <url> [--framework ID] [--max N][/cyan]")
+        console.print("  LLM-guided endpoint discovery. Finds hidden APIs (like chatbots).")
+        return 0
+    
+    url = args[0]
+    max_suggestions = 15
+    framework = "generic"
+    i = 1
+    while i < len(args):
+        if args[i] == "--framework" and i + 1 < len(args):
+            framework = args[i + 1]; i += 2
+        elif args[i] == "--max" and i + 1 < len(args):
+            max_suggestions = int(args[i + 1]); i += 2
+        else:
+            i += 1
+
+    from .intelligent_discovery import intelligent_endpoint_discovery
+    from .brains.llm import make_brain_from_config, LLMBrain
+    from .config import load_engine
+    from .roe_guard import ROEGuard
+
+    engine_cfg = load_engine()
+    brain = make_brain_from_config(engine_cfg.get("brain"))
+
+    llm_client = None
+    if isinstance(brain, LLMBrain) and brain.client:
+        llm_client = brain.client
+        console.print(f"[dim]Using LLM: {brain.model}[/dim]")
+    else:
+        console.print("[yellow]LLM not configured. Running standard discovery only.[/yellow]")
+
+    console.print(f"[cyan]Intelligent Discovery:[/cyan] {url}")
+    console.print(f"[dim]Framework: {framework} | Max suggestions: {max_suggestions}[/dim]")
+
+    guard = ROEGuard(engine_cfg=engine_cfg)
+    results = intelligent_endpoint_discovery(
+        base_url=url,
+        valid_paths=[],
+        failed_paths=[],
+        llm_client=llm_client,
+        timeout=10,
+        roe_guard=guard
+    )
+
+    if not results:
+        console.print("[yellow]No new endpoints discovered.[/yellow]")
+        return 0
+
+    t = Table(title=f"Discovered Endpoints ({len(results)})")
+    t.add_column("Path", style="cyan")
+    t.add_column("Status", style="yellow")
+    t.add_column("Content-Type", style="white")
+    t.add_column("Size", style="dim")
+
+    for r in results:
+        t.add_row(
+            r.get("path", "?"),
+            str(r.get("status", "?")),
+            (r.get("content_type", "") or "")[:40],
+            str(r.get("size", 0))
+        )
+    console.print(t)
+    return 0
+
+
 COMMANDS = {
     "list": cmd_list,
+    "discover": cmd_discover,
     "unauth-scan": cmd_unauth_scan,
     "banking-hunt": cmd_banking_hunt,
     "diagnose": cmd_diagnose,
@@ -3764,6 +3952,8 @@ COMMANDS = {
     "chain": cmd_chain,
     "chain-stats": cmd_chain_stats,
     "verify-fix": cmd_verify_fix,
+    "monitor": cmd_monitor,
+    "mark-na": cmd_mark_na,
     "profile": cmd_profile,
     "enumerate": cmd_enumerate,
     "login": cmd_login,

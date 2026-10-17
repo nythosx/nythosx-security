@@ -76,7 +76,8 @@ _ENGINE_DEFAULTS = {
     "diff": {"signal_threshold": 0.8, "pass_threshold": 0.4},
     "scoring": {"enabled": True, "history_window": 20},
     "triage": {"enabled": True, "borderline_low": 0.4, "borderline_high": 0.8},
-    "waf": {"enabled": True, "fingerprint_depth": 3, "max_encodings": 20},
+    "waf": {"enabled": True, "fingerprint_depth": 3, "max_encodings": 20,
+            "retry_on_403": True, "retry_max": 6},
     "iteration": {"enabled": False, "max_sweeps": 3, "min_budget_remaining": 0.2},
     "confirm": {"enabled": True, "max_attempts": 3, "read_only": True},
     "cve_lookup": {
@@ -118,6 +119,16 @@ _ENGINE_DEFAULTS = {
         "timeout_seconds": 8,
     },
     "banking": copy.deepcopy(_BANKING_DEFAULTS),
+    "mcts": {
+        "enabled": True,
+        "max_rollouts": 50,
+        "exploration_constant": 1.414,
+    },
+    "transport_mutation": {
+        "enabled": True,
+        "max_retries": 3,
+        "enabled_mutations": ["ja3", "chunked", "h2_continuation"],
+    },
 }
 
 

@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from . import external_http
 from .chain_engine import register_tool
 from .config import load_engine
 
@@ -34,8 +35,8 @@ def _tool_firebase_probe(orch, args):
     attempts = []
     for candidate in _firebase_candidates(target):
         try:
-            with httpx.Client(timeout=8, verify=verify,
-                              follow_redirects=False) as c:
+            with external_http.Client(timeout=8, verify=verify,
+                                  follow_redirects=False) as c:
                 r = c.get(candidate)
         except Exception as e:
             attempts.append({"url": candidate,

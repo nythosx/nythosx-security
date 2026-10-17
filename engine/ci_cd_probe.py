@@ -4,7 +4,6 @@ from .chain_engine import register_tool
 from .config import load_engine
 from . import http as _http
 
-
 _PATHS = [
     "/.github/workflows/ci.yml",
     "/.github/workflows/main.yml",
@@ -35,6 +34,10 @@ def _tool_ci_cd_probe(orch, args):
     verify = _verify_tls()
     hits = []
     attempts = []
+    
+    # Fetch soft-404 baseline to ignore catch-all pages
+    neg_fp = getattr(orch, "_negative_baseline", None)
+    
     for path in _PATHS:
         try:
             with _http.Client(timeout=8, verify=verify,
@@ -44,6 +47,20 @@ def _tool_ci_cd_probe(orch, args):
             attempts.append({"path": path, "error": f"{type(e).__name__}: {e}"})
             continue
         attempts.append({"path": path, "status": r.status_code})
+        
+        # Skip if this is a catch-all page (soft-404)
+        if neg_fp and neg_fp.get("catch_all"):
+            body = r.text or ""
+            ct = r.headers.get("Content-Type", "").lower()
+            is_html = "text/html" in ct
+            size = len(body)
+            nsize = neg_fp.get("size") or 0
+            status = r.status_code
+            
+            if status == neg_fp.get("status") and is_html and neg_fp.get("is_html"):
+                if not nsize or abs(size - nsize) <= max(80, int(nsize * 0.15)):
+                    continue  # It's a catch-all page, skip!
+
         if r.status_code != 200:
             continue
         body = r.text or ""

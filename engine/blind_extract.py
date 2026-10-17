@@ -41,10 +41,13 @@ def _send(url, param, payload, method, headers, timeout, verify, roe_guard):
                           follow_redirects=False) as c:
             if method.upper() == "POST":
                 r = c.post(url, data={param: payload},
-                           headers=headers or {}, skip_rate_limit=True)
+                           headers=headers or {})
             else:
                 r = c.get(url, params={param: payload},
-                          headers=headers or {}, skip_rate_limit=True)
+                          headers=headers or {})
+        if r.status_code == 429:
+            return {"status": 429, "error": "rate_limited",
+                    "elapsed_ms": (time.monotonic() - t0) * 1000.0}
         return {"status": r.status_code,
                 "body": (r.text or "")[:2000],
                 "elapsed_ms": (time.monotonic() - t0) * 1000.0}

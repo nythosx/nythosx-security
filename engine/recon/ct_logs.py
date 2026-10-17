@@ -18,6 +18,7 @@ import socket
 import httpx
 
 from ..config import load_engine
+from .. import external_http
 
 
 CRT_SH_ENDPOINT = "https://crt.sh/"
@@ -43,7 +44,7 @@ def _cfg():
 
 def query_crt_sh(domain, timeout=25):
     try:
-        with httpx.Client(timeout=timeout, verify=_verify_tls()) as c:
+        with external_http.Client(timeout=timeout, verify=_verify_tls()) as c:
             r = c.get(CRT_SH_ENDPOINT, params={
                 "q": f"%25.{domain}",
                 "output": "json",

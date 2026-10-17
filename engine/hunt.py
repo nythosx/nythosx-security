@@ -232,6 +232,56 @@ def _render_findings(console, findings):
             console.print(f"           [dim]evidence: {pairs}[/dim]")
 
 
+def _has_live_subdomains(facts):
+    entry = (facts or {}).get("live_subdomains")
+    if not entry:
+        return False
+    value = entry.get("value") if isinstance(entry, dict) else entry
+    return bool(value)
+
+
+def _run_ct_and_takeover(target, facts, findings_pool):
+    if _has_live_subdomains(facts):
+        return
+    try:
+        from .recon import ct_logs
+    except ImportError:
+        return
+    try:
+        ct = ct_logs.harvest(target, resolve=True)
+    except Exception:
+        return
+    if not ct or not ct.get("live"):
+        return
+    try:
+        from . import subdomain_takeover
+    except ImportError:
+        return
+    urls = [f"https://{x['name']}" for x in ct["live"]
+            if isinstance(x, dict) and x.get("name")]
+    if not urls:
+        return
+    try:
+        r = subdomain_takeover.scan(urls)
+    except Exception:
+        return
+    verdict = r.get("verdict") if hasattr(r, "get") else getattr(r, "verdict", None)
+    if verdict in ("VULNERABLE", "SUSPICIOUS"):
+        findings_pool.append({
+            "source": "standalone",
+            "chain": "subdomain-takeover-chain",
+            "step": "subdomain_takeover",
+            "tool": "subdomain_takeover",
+            "verdict": verdict,
+            "severity": "high" if verdict == "VULNERABLE" else "medium",
+            "reason": (r.get("reason") if hasattr(r, "get")
+                       else getattr(r, "reason", "")) or "",
+            "evidence": (r.get("evidence") if hasattr(r, "get")
+                         else getattr(r, "evidence", {})) or {},
+            "confidence": 0.7,
+        })
+
+
 def hunt(target, budget_sec=600, max_findings=25, allow_destructive=False,
          include_standalone=True, console=None, verbose=True, banking=False):
     console = console or Console()
@@ -276,6 +326,9 @@ def hunt(target, budget_sec=600, max_findings=25, allow_destructive=False,
         if verbose:
             console.print("  [dim]standalone: cloud storage enumeration[/dim]")
         _run_cloud_storage(target, pool)
+        if verbose:
+            console.print("  [dim]standalone: CT logs + takeover[/dim]")
+        _run_ct_and_takeover(target, report.get("facts") or {}, pool)
 
     unique = _dedupe_and_sort(pool)
     top = unique[:max_findings]

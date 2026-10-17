@@ -67,6 +67,16 @@ def _decrypt_lines(blob):
         return []
 
 
+def _ingest(target, kind, chain_id, outcome, body):
+    try:
+        from . import evidence_warehouse as _wh
+        _wh.ingest(target=target, endpoint="(artifact)",
+                   kind=f"artifact:{kind}", status=0,
+                   body=body, chain_id=chain_id)
+    except Exception:
+        pass
+
+
 def write(target, kind, value, chain_id="", outcome=""):
     if not target:
         return None
@@ -88,10 +98,12 @@ def write(target, kind, value, chain_id="", outcome=""):
             token = _encrypt_lines(lines)
             if token is not None:
                 enc_path.write_bytes(token)
+                _ingest(target, kind, chain_id, outcome, line)
                 return str(enc_path)
         plain = _path_plain(target)
         with plain.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
+        _ingest(target, kind, chain_id, outcome, line)
         return str(plain)
 
 

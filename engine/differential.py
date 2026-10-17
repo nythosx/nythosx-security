@@ -31,6 +31,14 @@ from .roe_guard import ROEGuard, ROEViolation
 from . import http as _http
 
 
+def _strip_noise_body(body):
+    try:
+        from .noise_model import strip_noise
+        return strip_noise(body or "")
+    except Exception:
+        return body or ""
+
+
 CAPABILITY = Capability(
     name="differential_scan",
     description=("Cross-auth differential: probe endpoints as anon + two users "
@@ -317,23 +325,24 @@ def scan(target_url, endpoints=None, credentials_a=None, credentials_b=None,
             continue
 
         if r_anon["status"] in (200, 201, 202) and r_a and r_a.get("status") in (200, 201, 202):
-            if (r_anon.get("body_hash") != r_a.get("body_hash")
-                    and _session_headers(session_a)):
-                b_anon = build_structure(r_anon.get("body", ""),
+            _ba = _strip_noise_body(r_anon.get("body", ""))
+            _bb = _strip_noise_body(r_a.get("body", ""))
+            if (_ba != _bb and _session_headers(session_a)):
+                b_anon = build_structure(_ba,
                                           r_anon.get("content_type", ""))
-                b_auth = build_structure(r_a.get("body", ""),
+                b_auth = build_structure(_bb,
                                           r_a.get("content_type", ""))
                 if b_anon is not None and b_auth is not None:
                     base_snap = BaselineSnapshot(
                         url=url, method="GET", status=r_anon["status"],
-                        body=r_anon.get("body", ""),
-                        body_len=len(r_anon.get("body", "")),
+                        body=_ba,
+                        body_len=len(_ba),
                         timing_samples=[10.0],
                         structure=b_anon,
                     )
                     d = diffs.compare(base_snap, {
                         "status": r_a["status"],
-                        "body": r_a.get("body", ""),
+                        "body": _bb,
                         "time_ms": 10.0,
                         "content_type": r_a.get("content_type", ""),
                         "headers": {},
@@ -347,26 +356,28 @@ def scan(target_url, endpoints=None, credentials_a=None, credentials_b=None,
                             severity="high",
                             evidence_extra={"structural_delta": d.structural_delta}))
 
+        _ba = _strip_noise_body(r_a.get("body", "")) if r_a else ""
+        _bb = _strip_noise_body(r_b.get("body", "")) if r_b else ""
         if (r_a and r_b
                 and r_a.get("status") in (200, 201, 202)
                 and r_b.get("status") in (200, 201, 202)
-                and r_a.get("body_hash") != r_b.get("body_hash")):
-            b_a = build_structure(r_a.get("body", ""), r_a.get("content_type", ""))
-            b_b = build_structure(r_b.get("body", ""), r_b.get("content_type", ""))
+                and _ba != _bb):
+            b_a = build_structure(_ba, r_a.get("content_type", ""))
+            b_b = build_structure(_bb, r_b.get("content_type", ""))
             if b_a is not None and b_b is not None:
                 snap_a = BaselineSnapshot(
                     url=url, method="GET", status=r_a["status"],
-                    body=r_a.get("body", ""), body_len=len(r_a.get("body", "")),
+                    body=_ba, body_len=len(_ba),
                     timing_samples=[10.0], structure=b_a,
                 )
                 d = diffs.compare(snap_a, {
                     "status": r_b["status"],
-                    "body": r_b.get("body", ""),
+                    "body": _bb,
                     "time_ms": 10.0,
                     "content_type": r_b.get("content_type", ""),
                     "headers": {},
                 })
-                if d.structural_delta > 0.25:
+                if d.structural_delta > 0.25 or d.length_delta_pct > 0.3:
                     findings.append(_diff_finding(
                         r_a, r_b, url, "bola_cross_user",
                         f"user A and user B get structurally different "

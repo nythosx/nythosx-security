@@ -92,7 +92,7 @@ budget:
   max_requests_per_host: 500
 oob:
   callback_url: ''
-  external_enabled: false
+  external_enabled: true
 redaction:
   enabled: true
   extra_patterns: []

